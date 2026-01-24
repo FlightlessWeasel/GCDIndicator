@@ -7,6 +7,12 @@
 ## SavedVariablesPerCharacter: GCDIndicator_Positions, GCDIndicator_Settings
 ## Category: aJasonBrown
 
+# Libraries
 Libs\LibStub\LibStub.lua
 Libs\LibGCDI\LibGCDI.lua
+
+# Core addon (creates GCDI namespace)
 GCDIndicator.lua
+
+# Options UI module (requires GCDI namespace)
+Libs\LibGCDI-Options\LibGCDI-Options.lua
