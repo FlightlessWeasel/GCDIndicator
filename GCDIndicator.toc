@@ -4,7 +4,7 @@
 ## Notes: Simple bar that flashes red during Global Cooldown (GCD)
 ## Version: 260124
 ## IconTexture: Interface\Icons\Inv_10_inscription3_darkmoondeckbox_black.blp
-## SavedVariablesPerCharacter: GCDIndicator_Positions
+## SavedVariablesPerCharacter: GCDIndicator_Positions, GCDIndicator_Settings
 ## Category: aJasonBrown
 
 Libs\LibStub\LibStub.lua
