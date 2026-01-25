@@ -125,9 +125,6 @@ local function reset_positions()
 end
 
 do
-    DEFAULT_CHAT_FRAME:AddMessage("/gcdi : Config position of GCD Indicator");
-    DEFAULT_CHAT_FRAME:AddMessage("/gcdr : Reset position to default");
-
     StaticPopupDialogs["gcdiConfig"] = {
         text = "Config position of GCD Indicator",
         button1 = "Save",
