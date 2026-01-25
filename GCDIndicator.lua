@@ -32,62 +32,8 @@ local C_Timer = C_Timer
 local pairs = pairs
 local wipe = wipe
 
--- Forward declare functions for popups
+-- Forward declare functions
 local save_profile, delete_profile
-
--- Static popup dialogs (must be global)
-StaticPopupDialogs["GCDI_SAVE_PROFILE"] = {
-	text = "Enter profile name:",
-	button1 = "Save",
-	button2 = "Cancel",
-	hasEditBox = true,
-	OnAccept = function(self)
-		local name = self.editBox:GetText()
-		if name and name ~= "" and save_profile then
-			save_profile(name)
-			C_Timer.After(0.2, function()
-				if GCDI.refresh_options_frame then GCDI.refresh_options_frame() end
-			end)
-		end
-	end,
-	OnShow = function(self)
-		self.editBox:SetText("")
-		self.editBox:SetFocus()
-	end,
-	EditBoxOnEnterPressed = function(self)
-		local parent = self:GetParent()
-		local name = self:GetText()
-		if name and name ~= "" and save_profile then
-			save_profile(name)
-			C_Timer.After(0.2, function()
-				if GCDI.refresh_options_frame then GCDI.refresh_options_frame() end
-			end)
-		end
-		parent:Hide()
-	end,
-	timeout = 0,
-	whileDead = true,
-	hideOnEscape = true,
-	preferredIndex = 3,
-}
-
-StaticPopupDialogs["GCDI_DELETE_PROFILE"] = {
-	text = "Delete profile '%s'?",
-	button1 = "Delete",
-	button2 = "Cancel",
-	OnAccept = function(self, data)
-		if data and delete_profile then
-			delete_profile(data)
-			C_Timer.After(0.2, function()
-				if GCDI.refresh_options_frame then GCDI.refresh_options_frame() end
-			end)
-		end
-	end,
-	timeout = 0,
-	whileDead = true,
-	hideOnEscape = true,
-	preferredIndex = 3,
-}
 
 -- Constants
 local GCD_SPELL_ID = 61304
@@ -215,16 +161,34 @@ local function stopTimerBar(bar)
 	bar:SetValue(0)
 end
 
-local function deepcopy(orig)
-	local copy
-	if type(orig) == 'table' then
-		copy = {}
-		for k, v in pairs(orig) do
-			copy[k] = deepcopy(v)
-		end
-	else
-		copy = orig
+local function deepcopy(orig, seen)
+	if type(orig) ~= 'table' then
+		return orig
 	end
+	
+	-- Handle circular references
+	seen = seen or {}
+	if seen[orig] then
+		return seen[orig]
+	end
+	
+	local copy = {}
+	seen[orig] = copy
+	
+	for k, v in pairs(orig) do
+		-- Skip frame objects and functions (they can't be deep copied)
+		local vtype = type(v)
+		if vtype == 'function' then
+			-- skip functions
+		elseif vtype == 'table' and type(v.GetObjectType) == 'function' then
+			-- skip WoW frame objects
+		elseif vtype == 'userdata' then
+			-- skip userdata
+		else
+			copy[k] = deepcopy(v, seen)
+		end
+	end
+	
 	return copy
 end
 
@@ -324,6 +288,10 @@ save_profile = function(name)
 		itemOrder = deepcopy(settings.itemOrder or {}),
 		buffSettings = deepcopy(settings.buffSettings or {}),
 		buffOrder = deepcopy(settings.buffOrder or {}),
+		-- Save catalogs so we don't need to rescan
+		spellCatalog = deepcopy(GCDI.spellCatalog),
+		itemCatalog = deepcopy(GCDI.itemCatalog),
+		buffCatalog = deepcopy(GCDI.buffCatalog),
 	}
 	settings.currentProfile = name
 	
@@ -348,7 +316,21 @@ function GCDI.load_profile(name)
 	settings.buffOrder = deepcopy(profile.buffOrder or {})
 	settings.currentProfile = name
 	
+	-- Load saved catalogs if available (avoids rescanning)
+	if profile.spellCatalog then
+		GCDI.spellCatalog = deepcopy(profile.spellCatalog)
+	end
+	if profile.itemCatalog then
+		GCDI.itemCatalog = deepcopy(profile.itemCatalog)
+	end
+	if profile.buffCatalog then
+		GCDI.buffCatalog = deepcopy(profile.buffCatalog)
+	end
+	
 	rebuild_spell_bars()
+	rebuild_item_bars()
+	rebuild_buff_bars()
+	reposition_all()
 	if GCDI.refresh_options_frame then GCDI.refresh_options_frame() end
 	
 	print("|cff00ff00GCDIndicator:|r Profile '" .. name .. "' loaded!")
@@ -379,6 +361,10 @@ function GCDI.auto_save_to_profile()
 		itemOrder = deepcopy(settings.itemOrder or {}),
 		buffSettings = deepcopy(settings.buffSettings or {}),
 		buffOrder = deepcopy(settings.buffOrder or {}),
+		-- Save catalogs so we don't need to rescan
+		spellCatalog = deepcopy(GCDI.spellCatalog),
+		itemCatalog = deepcopy(GCDI.itemCatalog),
+		buffCatalog = deepcopy(GCDI.buffCatalog),
 	}
 end
 
@@ -511,19 +497,10 @@ end
 -- GCD BAR UPDATE
 -- ═══════════════════════════════════════════════════════════════════════════
 
-local gcdInitialized = false
-
 local function update_gcd()
 	if previewMode then return end  -- Skip updates in preview mode
-	if not gcdInitialized then
-		if UnitAffectingCombat("player") then
-			gcdInitialized = true
-		else
-			main_frame.gcdbar:SetValue(0)
-			return
-		end
-	end
 	
+	-- Use duration object (safe API for secret values)
 	local durObj = C_Spell.GetSpellCooldownDuration(GCD_SPELL_ID)
 	applyTimerToBar(main_frame.gcdbar, durObj)
 end
@@ -2011,6 +1988,18 @@ local function scan_action_bars()
 end
 
 GCDI.scan_action_bars = scan_action_bars
+GCDI.scan_spells = function()
+	scan_spellbook()
+	rebuild_spell_bars()
+end
+GCDI.scan_items = function()
+	scan_items()
+	rebuild_item_bars()
+end
+GCDI.scan_buffs = function()
+	scan_buffs()
+	rebuild_buff_bars()
+end
 
 local function schedule_scan(delay)
 	if previewMode then return end  -- Don't scan/rebuild in preview mode
@@ -2075,6 +2064,7 @@ local function on_event(self, event, arg1, arg2, ...)
 		update_aggro_indicator()
 		schedule_scan(0.5)
 		update_all_resources()
+		update_gcd()  -- Initialize GCD bar
 		-- Try to detect native range after a delay (in case player has a target)
 		C_Timer.After(3, detect_native_range_for_spells)
 		
@@ -2206,14 +2196,17 @@ local function init()
 	sep1:SetPoint("LEFT", stanceIndicator, "RIGHT", 0, 0)
 	sep1:SetColorTexture(0, 0, 0, 1)
 	
+	-- White background for GCD (outside clip, ensures visibility)
+	local gcdWhiteBg = gcdCombatContainer:CreateTexture(nil, "ARTWORK")
+	gcdWhiteBg:SetSize(configs.size, configs.size)
+	gcdWhiteBg:SetPoint("LEFT", sep1, "RIGHT", 0, 0)
+	gcdWhiteBg:SetColorTexture(1, 1, 1, 1)
+	
 	local gcdClip = CreateFrame("Frame", nil, gcdCombatContainer)
 	gcdClip:SetSize(configs.size, configs.size)
 	gcdClip:SetPoint("LEFT", sep1, "RIGHT", 0, 0)
 	gcdClip:SetClipsChildren(true)
-	
-	local gcdBg = gcdClip:CreateTexture(nil, "BACKGROUND")
-	gcdBg:SetAllPoints()
-	gcdBg:SetColorTexture(1, 1, 1, 1)
+	gcdClip:SetFrameLevel(gcdCombatContainer:GetFrameLevel() + 1)
 	
 	local gcdbar = CreateFrame("StatusBar", nil, gcdClip)
 	gcdbar:SetStatusBarTexture("Interface\\Buttons\\WHITE8X8")
@@ -2324,6 +2317,9 @@ local function init()
 		combatbar:SetStatusBarColor(1, 0, 0)
 	end
 	
+	-- Initialize GCD bar immediately (don't wait for events)
+	update_gcd()
+	
 	schedule_scan(0.1)
 	C_Timer.After(1.0, function()
 		if #spellBars == 0 then
@@ -2359,6 +2355,7 @@ local function init()
 	if settings.currentProfile and settings.profiles and settings.profiles[settings.currentProfile] then
 		C_Timer.After(0.5, function()
 			local profile = settings.profiles[settings.currentProfile]
+			
 			settings.globalRangeFallback = profile.globalRangeFallback or 0
 			settings.spellSettings = deepcopy(profile.spellSettings or {})
 			settings.spellOrder = deepcopy(profile.spellOrder or {})
@@ -2366,6 +2363,18 @@ local function init()
 			settings.itemOrder = deepcopy(profile.itemOrder or {})
 			settings.buffSettings = deepcopy(profile.buffSettings or {})
 			settings.buffOrder = deepcopy(profile.buffOrder or {})
+			
+			-- Load saved catalogs (avoids rescanning and proc issues)
+			if profile.spellCatalog then
+				GCDI.spellCatalog = deepcopy(profile.spellCatalog)
+			end
+			if profile.itemCatalog then
+				GCDI.itemCatalog = deepcopy(profile.itemCatalog)
+			end
+			if profile.buffCatalog then
+				GCDI.buffCatalog = deepcopy(profile.buffCatalog)
+			end
+			
 			rebuild_spell_bars()
 			rebuild_buff_bars()
 			print("|cff00ff00GCDIndicator:|r Profile '" .. settings.currentProfile .. "' loaded")
@@ -2378,7 +2387,8 @@ local function init()
 	C_Timer.NewTicker(0.05, function()
 		tickCount = tickCount + 1
 		
-		-- Every tick (0.05s): Item cooldown animation, charge indicators
+		-- Every tick (0.05s): GCD, Item cooldown animation, charge indicators
+		update_gcd()
 		animate_item_bars()
 		update_charge_indicators_tick()
 		

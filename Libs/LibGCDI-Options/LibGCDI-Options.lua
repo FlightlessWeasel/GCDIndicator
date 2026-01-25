@@ -23,6 +23,9 @@ local itemsTabElements = {}
 local buffsTabElements = {}
 local currentTab = "spells"
 
+-- Forward declarations
+local refresh_profiles_tab
+
 -- ═══════════════════════════════════════════════════════════════════════════
 -- UTILITY FUNCTIONS
 -- ═══════════════════════════════════════════════════════════════════════════
@@ -79,6 +82,9 @@ end
 local function refresh_spells_tab()
 	if not optionsFrame or not optionsFrame.spellsScrollChild then return end
 	
+	-- Always sync settings reference
+	settings = GCDI.settings
+	
 	-- Clear existing spell rows
 	for _, row in pairs(spellRows) do
 		row:Hide()
@@ -99,35 +105,54 @@ local function refresh_spells_tab()
 		GCDI.UpdateRangeIndicators()
 	end)
 	globalDropdown:SetPoint("LEFT", globalLabel, "RIGHT", -5, -2)
+	
+	-- Rescan Spells button
+	local rescanSpellsBtn = CreateFrame("Button", nil, scrollChild, "UIPanelButtonTemplate")
+	rescanSpellsBtn:SetSize(100, 22)
+	rescanSpellsBtn:SetPoint("LEFT", globalDropdown, "RIGHT", 100, 2)
+	rescanSpellsBtn:SetText("Rescan Spells")
+	rescanSpellsBtn:SetScript("OnClick", function()
+		GCDI.scan_spells()
+		C_Timer.After(0.2, refresh_spells_tab)
+	end)
+	rescanSpellsBtn:SetScript("OnEnter", function(self)
+		GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+		GameTooltip:SetText("Rescan Spells")
+		GameTooltip:AddLine("Re-scan your spellbook for new abilities.", 1, 1, 1, true)
+		GameTooltip:AddLine("Only affects spells, not items or buffs.", 0.7, 0.7, 0.7, true)
+		GameTooltip:Show()
+	end)
+	rescanSpellsBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
+	
 	yOffset = yOffset - 35
 	
-	-- Column headers
+	-- Column headers (row starts at x=10, so add 10 to row-relative positions)
 	local enabledHeader = scrollChild:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-	enabledHeader:SetPoint("TOPLEFT", 10, yOffset)
+	enabledHeader:SetPoint("TOPLEFT", 14, yOffset)  -- checkbox at row LEFT 0, centered
 	enabledHeader:SetText("On")
 	
 	local selfCastHeader = scrollChild:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-	selfCastHeader:SetPoint("TOPLEFT", 38, yOffset)
+	selfCastHeader:SetPoint("TOPLEFT", 40, yOffset)  -- checkbox at row LEFT 28, centered
 	selfCastHeader:SetText("Self")
 	
 	local iconTrackHeader = scrollChild:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-	iconTrackHeader:SetPoint("TOPLEFT", 66, yOffset)
+	iconTrackHeader:SetPoint("TOPLEFT", 70, yOffset)  -- checkbox at row LEFT 56, centered
 	iconTrackHeader:SetText("Ico")
 	
 	local spellNameHeader = scrollChild:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-	spellNameHeader:SetPoint("TOPLEFT", 98, yOffset)
+	spellNameHeader:SetPoint("TOPLEFT", 94, yOffset)  -- icon at row LEFT 84
 	spellNameHeader:SetText("Spell")
 	
 	local nativeHeader = scrollChild:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-	nativeHeader:SetPoint("TOPLEFT", 198, yOffset)
+	nativeHeader:SetPoint("TOPLEFT", 210, yOffset)  -- indicator at row LEFT 200
 	nativeHeader:SetText("|cff00ff00N|r")
 	
 	local rangeHeader = scrollChild:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-	rangeHeader:SetPoint("TOPLEFT", 228, yOffset)
+	rangeHeader:SetPoint("TOPLEFT", 240, yOffset)  -- dropdown at row LEFT 213 (+ dropdown padding)
 	rangeHeader:SetText("Range Override")
 	
 	local orderHeader = scrollChild:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-	orderHeader:SetPoint("TOPLEFT", 410, yOffset)
+	orderHeader:SetPoint("TOPLEFT", 415, yOffset)  -- buttons at row LEFT 405
 	orderHeader:SetText("Order")
 	yOffset = yOffset - 20
 	
@@ -188,7 +213,17 @@ local function refresh_spells_tab()
 		checkbox:SetPoint("LEFT", 0, 0)
 		checkbox:SetChecked(spellSettings.enabled ~= false)
 		checkbox:SetScript("OnClick", function(self)
-			spellSettings.enabled = self:GetChecked()
+			local newValue = self:GetChecked()
+			
+			-- Update via GCDI.settings to ensure main file sees the change
+			if not GCDI.settings.spellSettings then
+				GCDI.settings.spellSettings = {}
+			end
+			if not GCDI.settings.spellSettings[spellID] then
+				GCDI.settings.spellSettings[spellID] = {}
+			end
+			GCDI.settings.spellSettings[spellID].enabled = newValue
+			
 			GCDI.auto_save_to_profile()
 			GCDI.rebuild_spell_bars()
 			GCDI.refresh_options_frame()
@@ -200,8 +235,12 @@ local function refresh_spells_tab()
 		selfCastCheckbox:SetPoint("LEFT", 28, 0)
 		selfCastCheckbox:SetChecked(spellSettings.selfCast == true)
 		selfCastCheckbox:SetScript("OnClick", function(self)
-			spellSettings.selfCast = self:GetChecked()
+			if not GCDI.settings.spellSettings[spellID] then
+				GCDI.settings.spellSettings[spellID] = {}
+			end
+			GCDI.settings.spellSettings[spellID].selfCast = self:GetChecked()
 			GCDI.auto_save_to_profile()
+			GCDI.rebuild_spell_bars()
 			GCDI.UpdateRangeIndicators()
 		end)
 		selfCastCheckbox:SetScript("OnEnter", function(self)
@@ -219,8 +258,12 @@ local function refresh_spells_tab()
 		trackIconCheckbox:SetPoint("LEFT", 56, 0)
 		trackIconCheckbox:SetChecked(spellSettings.trackIcon == true)
 		trackIconCheckbox:SetScript("OnClick", function(self)
-			spellSettings.trackIcon = self:GetChecked()
+			if not GCDI.settings.spellSettings[spellID] then
+				GCDI.settings.spellSettings[spellID] = {}
+			end
+			GCDI.settings.spellSettings[spellID].trackIcon = self:GetChecked()
 			GCDI.auto_save_to_profile()
+			GCDI.rebuild_spell_bars()
 		end)
 		trackIconCheckbox:SetScript("OnEnter", function(self)
 			GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
@@ -254,10 +297,10 @@ local function refresh_spells_tab()
 			rangeIndicatorText:SetText("|cff888888-|r")
 		end
 		
-		-- Tooltip for indicator
+		-- Tooltip for indicator (same position as the indicator text)
 		local indicatorTooltip = CreateFrame("Frame", nil, row)
-		indicatorTooltip:SetPoint("LEFT", 168, 0)
-		indicatorTooltip:SetSize(20, 20)
+		indicatorTooltip:SetPoint("LEFT", 198, 0)
+		indicatorTooltip:SetSize(24, 24)
 		indicatorTooltip:SetScript("OnEnter", function(self)
 			GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
 			if spellSettings.hasNativeRange then
@@ -279,24 +322,33 @@ local function refresh_spells_tab()
 		
 		local function initSpellRangeDropdown(self, level)
 			local info = UIDropDownMenu_CreateInfo()
+			local currentSpellSettings = GCDI.settings.spellSettings and GCDI.settings.spellSettings[spellID] or {}
 			
-			if spellSettings.hasNativeRange then
+			if currentSpellSettings.hasNativeRange then
 				info.text = "|cff00ff00Native|r"
 				info.value = -1
-				info.checked = (spellSettings.rangeFallback == nil)
+				info.checked = (currentSpellSettings.rangeFallback == nil)
 				info.func = function()
-					spellSettings.rangeFallback = nil
+					if not GCDI.settings.spellSettings[spellID] then
+						GCDI.settings.spellSettings[spellID] = {}
+					end
+					GCDI.settings.spellSettings[spellID].rangeFallback = nil
 					UIDropDownMenu_SetSelectedID(rangeDropdown, 1)
+					GCDI.auto_save_to_profile()
 					GCDI.UpdateRangeIndicators()
 				end
 				UIDropDownMenu_AddButton(info, level)
 			else
 				info.text = "Use Global"
 				info.value = -1
-				info.checked = (spellSettings.rangeFallback == nil)
+				info.checked = (currentSpellSettings.rangeFallback == nil)
 				info.func = function()
-					spellSettings.rangeFallback = nil
+					if not GCDI.settings.spellSettings[spellID] then
+						GCDI.settings.spellSettings[spellID] = {}
+					end
+					GCDI.settings.spellSettings[spellID].rangeFallback = nil
 					UIDropDownMenu_SetSelectedID(rangeDropdown, 1)
+					GCDI.auto_save_to_profile()
 					GCDI.UpdateRangeIndicators()
 				end
 				UIDropDownMenu_AddButton(info, level)
@@ -307,10 +359,14 @@ local function refresh_spells_tab()
 				info = UIDropDownMenu_CreateInfo()
 				info.text = opt.name
 				info.value = opt.index
-				info.checked = (spellSettings.rangeFallback == opt.index)
+				info.checked = (currentSpellSettings.rangeFallback == opt.index)
 				info.func = function()
-					spellSettings.rangeFallback = opt.index
+					if not GCDI.settings.spellSettings[spellID] then
+						GCDI.settings.spellSettings[spellID] = {}
+					end
+					GCDI.settings.spellSettings[spellID].rangeFallback = opt.index
 					UIDropDownMenu_SetSelectedID(rangeDropdown, listIdx + 1)
+					GCDI.auto_save_to_profile()
 					GCDI.UpdateRangeIndicators()
 				end
 				UIDropDownMenu_AddButton(info, level)
@@ -382,6 +438,9 @@ end
 local function refresh_items_tab()
 	if not optionsFrame or not optionsFrame.itemsScrollChild then return end
 	
+	-- Always sync settings reference
+	settings = GCDI.settings
+	
 	-- Clear existing item rows
 	for _, row in pairs(itemRows) do
 		row:Hide()
@@ -403,6 +462,25 @@ local function refresh_items_tab()
 		table.insert(itemsTabElements, element)
 		return element
 	end
+	
+	-- Rescan Items button
+	local rescanItemsBtn = track(CreateFrame("Button", nil, scrollChild, "UIPanelButtonTemplate"))
+	rescanItemsBtn:SetSize(100, 22)
+	rescanItemsBtn:SetPoint("TOPLEFT", 10, yOffset)
+	rescanItemsBtn:SetText("Rescan Items")
+	rescanItemsBtn:SetScript("OnClick", function()
+		GCDI.scan_items()
+		C_Timer.After(0.2, refresh_items_tab)
+	end)
+	rescanItemsBtn:SetScript("OnEnter", function(self)
+		GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+		GameTooltip:SetText("Rescan Items")
+		GameTooltip:AddLine("Re-scan for trinkets and consumables.", 1, 1, 1, true)
+		GameTooltip:AddLine("Only affects items, not spells or buffs.", 0.7, 0.7, 0.7, true)
+		GameTooltip:Show()
+	end)
+	rescanItemsBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
+	yOffset = yOffset - 30
 	
 	-- Column headers
 	local enabledHeader = track(scrollChild:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall"))
@@ -480,7 +558,16 @@ local function refresh_items_tab()
 		checkbox:SetPoint("LEFT", 0, 0)
 		checkbox:SetChecked(itemSettings.enabled ~= false)
 		checkbox:SetScript("OnClick", function(self)
-			itemSettings.enabled = self:GetChecked()
+			local newValue = self:GetChecked()
+			-- Update via GCDI.settings to ensure main file sees the change
+			if not GCDI.settings.itemSettings then
+				GCDI.settings.itemSettings = {}
+			end
+			if not GCDI.settings.itemSettings[itemKey] then
+				GCDI.settings.itemSettings[itemKey] = {}
+			end
+			GCDI.settings.itemSettings[itemKey].enabled = newValue
+			
 			GCDI.auto_save_to_profile()
 			GCDI.rebuild_item_bars()
 			GCDI.reposition_all()
@@ -493,7 +580,10 @@ local function refresh_items_tab()
 		chargesCheckbox:SetPoint("LEFT", 28, 0)
 		chargesCheckbox:SetChecked(itemSettings.showCharges == true)
 		chargesCheckbox:SetScript("OnClick", function(self)
-			itemSettings.showCharges = self:GetChecked()
+			if not GCDI.settings.itemSettings[itemKey] then
+				GCDI.settings.itemSettings[itemKey] = {}
+			end
+			GCDI.settings.itemSettings[itemKey].showCharges = self:GetChecked()
 			GCDI.auto_save_to_profile()
 			GCDI.rebuild_item_bars()
 			GCDI.reposition_all()
@@ -581,6 +671,9 @@ end
 local function refresh_buffs_tab()
 	if not optionsFrame or not optionsFrame.buffsScrollChild then return end
 	
+	-- Always sync settings reference
+	settings = GCDI.settings
+	
 	-- Clear existing buff rows
 	for _, row in pairs(buffRows) do
 		row:Hide()
@@ -602,6 +695,25 @@ local function refresh_buffs_tab()
 		table.insert(buffsTabElements, element)
 		return element
 	end
+	
+	-- Rescan Buffs button
+	local rescanBuffsBtn = track(CreateFrame("Button", nil, scrollChild, "UIPanelButtonTemplate"))
+	rescanBuffsBtn:SetSize(100, 22)
+	rescanBuffsBtn:SetPoint("TOPLEFT", 10, yOffset)
+	rescanBuffsBtn:SetText("Rescan Buffs")
+	rescanBuffsBtn:SetScript("OnClick", function()
+		GCDI.scan_buffs()
+		C_Timer.After(0.2, refresh_buffs_tab)
+	end)
+	rescanBuffsBtn:SetScript("OnEnter", function(self)
+		GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+		GameTooltip:SetText("Rescan Buffs")
+		GameTooltip:AddLine("Re-scan for tracked buffs from CDM.", 1, 1, 1, true)
+		GameTooltip:AddLine("Only affects buffs, not spells or items.", 0.7, 0.7, 0.7, true)
+		GameTooltip:Show()
+	end)
+	rescanBuffsBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
+	yOffset = yOffset - 30
 	
 	-- Add Buff section
 	local addBuffLabel = track(scrollChild:CreateFontString(nil, "OVERLAY", "GameFontNormal"))
@@ -731,7 +843,13 @@ local function refresh_buffs_tab()
 		checkbox:SetPoint("LEFT", 0, 0)
 		checkbox:SetChecked(buffSettings.enabled ~= false)
 		checkbox:SetScript("OnClick", function(self)
-			buffSettings.enabled = self:GetChecked()
+			if not GCDI.settings.buffSettings then
+				GCDI.settings.buffSettings = {}
+			end
+			if not GCDI.settings.buffSettings[spellID] then
+				GCDI.settings.buffSettings[spellID] = {}
+			end
+			GCDI.settings.buffSettings[spellID].enabled = self:GetChecked()
 			GCDI.auto_save_to_profile()
 			GCDI.rebuild_buff_bars()
 			GCDI.reposition_all()
@@ -744,7 +862,10 @@ local function refresh_buffs_tab()
 		stacksCheckbox:SetPoint("LEFT", 28, 0)
 		stacksCheckbox:SetChecked(buffSettings.showStacks ~= false)
 		stacksCheckbox:SetScript("OnClick", function(self)
-			buffSettings.showStacks = self:GetChecked()
+			if not GCDI.settings.buffSettings[spellID] then
+				GCDI.settings.buffSettings[spellID] = {}
+			end
+			GCDI.settings.buffSettings[spellID].showStacks = self:GetChecked()
 			GCDI.auto_save_to_profile()
 			GCDI.rebuild_buff_bars()
 			GCDI.reposition_all()
@@ -778,13 +899,17 @@ local function refresh_buffs_tab()
 		UIDropDownMenu_SetWidth(maxStacksDropdown, 60)
 		
 		local function initMaxStacksDropdown(self, level)
+			local currentBuffSettings = GCDI.settings.buffSettings and GCDI.settings.buffSettings[spellID] or {}
 			for stacks = 1, 10 do
 				local info = UIDropDownMenu_CreateInfo()
 				info.text = tostring(stacks)
 				info.value = stacks
-				info.checked = (buffSettings.maxStacksDisplay == stacks)
+				info.checked = (currentBuffSettings.maxStacksDisplay == stacks)
 				info.func = function()
-					buffSettings.maxStacksDisplay = stacks
+					if not GCDI.settings.buffSettings[spellID] then
+						GCDI.settings.buffSettings[spellID] = {}
+					end
+					GCDI.settings.buffSettings[spellID].maxStacksDisplay = stacks
 					UIDropDownMenu_SetSelectedID(maxStacksDropdown, stacks)
 					GCDI.auto_save_to_profile()
 					GCDI.rebuild_buff_bars()
@@ -890,7 +1015,16 @@ local function switch_tab(tabName)
 			optionsFrame.settingsTabBtn:GetFontString():SetTextColor(0.7, 0.7, 0.7)
 		end
 	end
-	
+	if optionsFrame.profilesTabBtn then
+		if tabName == "profiles" then
+			optionsFrame.profilesTabBtn:SetNormalFontObject("GameFontHighlight")
+			optionsFrame.profilesTabBtn:GetFontString():SetTextColor(1, 1, 1)
+		else
+			optionsFrame.profilesTabBtn:SetNormalFontObject("GameFontNormal")
+			optionsFrame.profilesTabBtn:GetFontString():SetTextColor(0.7, 0.7, 0.7)
+		end
+	end
+
 	if optionsFrame.spellsScrollFrame then
 		optionsFrame.spellsScrollFrame:SetShown(tabName == "spells")
 	end
@@ -903,6 +1037,9 @@ local function switch_tab(tabName)
 	if optionsFrame.settingsFrame then
 		optionsFrame.settingsFrame:SetShown(tabName == "settings")
 	end
+	if optionsFrame.profilesFrame then
+		optionsFrame.profilesFrame:SetShown(tabName == "profiles")
+	end
 	
 	if tabName == "spells" then
 		refresh_spells_tab()
@@ -910,6 +1047,8 @@ local function switch_tab(tabName)
 		refresh_items_tab()
 	elseif tabName == "buffs" then
 		refresh_buffs_tab()
+	elseif tabName == "profiles" then
+		refresh_profiles_tab()
 	end
 end
 
@@ -917,34 +1056,389 @@ end
 -- PROFILES SECTION
 -- ═══════════════════════════════════════════════════════════════════════════
 
-local function refresh_profiles_section()
-	if not optionsFrame or not optionsFrame.profilesContainer then return end
+-- Delete confirmation dialog
+StaticPopupDialogs["GCDI_DELETE_PROFILE_CONFIRM"] = {
+	text = "Delete profile '%s'?\n\nThis cannot be undone.",
+	button1 = "Delete",
+	button2 = "Cancel",
+	OnAccept = function(self, profileName)
+		local settings = GCDI.settings
+		if settings and settings.profiles and settings.profiles[profileName] then
+			settings.profiles[profileName] = nil
+			if settings.currentProfile == profileName then
+				settings.currentProfile = nil
+			end
+			print("|cff00ff00GCDIndicator:|r Profile '" .. profileName .. "' deleted!")
+			if GCDI.refresh_options_frame then
+				GCDI.refresh_options_frame()
+			end
+		end
+	end,
+	timeout = 0,
+	whileDead = true,
+	hideOnEscape = true,
+	preferredIndex = 3,
+}
+
+-- Import profile name dialog
+StaticPopupDialogs["GCDI_IMPORT_PROFILE_NAME"] = {
+	text = "Enter a name for the imported profile:",
+	button1 = "Save",
+	button2 = "Cancel",
+	hasEditBox = true,
+	editBoxWidth = 200,
+	OnShow = function(self)
+		local editBox = self.editBox or self.EditBox or _G[self:GetName().."EditBox"]
+		if editBox then
+			editBox:SetText("Imported Profile")
+			editBox:HighlightText()
+			editBox:SetFocus()
+		end
+	end,
+	OnAccept = function(self, data)
+		local editBox = self.editBox or self.EditBox or _G[self:GetName().."EditBox"]
+		local name = editBox and editBox:GetText() or ""
+		if name == "" then
+			print("|cffff0000GCDIndicator:|r Profile name required!")
+			return
+		end
+		
+		if not data then
+			print("|cffff0000GCDIndicator:|r No import data found!")
+			return
+		end
+		
+		-- Apply the imported settings
+		local s = GCDI.settings
+		if data.g ~= nil then s.globalRangeFallback = data.g end
+		if data.ss then s.spellSettings = data.ss end
+		if data.so then s.spellOrder = data.so end
+		if data.is then s.itemSettings = data.is end
+		if data.io then s.itemOrder = data.io end
+		if data.bs then s.buffSettings = data.bs end
+		if data.bo then s.buffOrder = data.bo end
+		
+		-- Save as new profile
+		s.profiles = s.profiles or {}
+		s.profiles[name] = {
+			globalRangeFallback = s.globalRangeFallback,
+			spellSettings = s.spellSettings,
+			spellOrder = s.spellOrder,
+			itemSettings = s.itemSettings or {},
+			itemOrder = s.itemOrder or {},
+			buffSettings = s.buffSettings or {},
+			buffOrder = s.buffOrder or {},
+		}
+		s.currentProfile = name
+		
+		GCDI.rebuild_spell_bars()
+		GCDI.rebuild_item_bars()
+		GCDI.rebuild_buff_bars()
+		GCDI.reposition_all()
+		
+		print("|cff00ff00GCDIndicator:|r Imported as profile '" .. name .. "'!")
+		if GCDI.refresh_options_frame then GCDI.refresh_options_frame() end
+	end,
+	EditBoxOnEnterPressed = function(self)
+		-- self here is the editbox, get the dialog parent
+		local parent = self:GetParent()
+		-- Find the actual dialog frame (may be nested)
+		while parent and not parent.data do
+			parent = parent:GetParent()
+		end
+		if parent then
+			local data = parent.data
+			StaticPopupDialogs["GCDI_IMPORT_PROFILE_NAME"].OnAccept(parent, data)
+			parent:Hide()
+		end
+	end,
+	timeout = 0,
+	whileDead = true,
+	hideOnEscape = true,
+	preferredIndex = 3,
+}
+
+-- Local function to save profile (calls into main addon)
+local function do_save_profile(name)
+	if not name or name == "" then return false end
 	
-	for _, element in pairs(optionsElements) do
+	-- Always use GCDI.settings directly to ensure we have the latest
+	local s = GCDI.settings
+	if not s then return false end
+	
+	s.profiles = s.profiles or {}
+	
+	-- Deep copy function (handles circular refs and skips frames)
+	local function deepcopy(orig, seen)
+		if type(orig) ~= 'table' then
+			return orig
+		end
+		seen = seen or {}
+		if seen[orig] then return seen[orig] end
+		local copy = {}
+		seen[orig] = copy
+		for k, v in pairs(orig) do
+			local vtype = type(v)
+			if vtype ~= 'function' and vtype ~= 'userdata' then
+				if vtype == 'table' and type(v.GetObjectType) == 'function' then
+					-- skip WoW frames
+				else
+					copy[k] = deepcopy(v, seen)
+				end
+			end
+		end
+		return copy
+	end
+	
+	s.profiles[name] = {
+		globalRangeFallback = s.globalRangeFallback,
+		spellSettings = deepcopy(s.spellSettings),
+		spellOrder = deepcopy(s.spellOrder),
+		itemSettings = deepcopy(s.itemSettings or {}),
+		itemOrder = deepcopy(s.itemOrder or {}),
+		buffSettings = deepcopy(s.buffSettings or {}),
+		buffOrder = deepcopy(s.buffOrder or {}),
+		spellCatalog = deepcopy(GCDI.spellCatalog),
+		itemCatalog = deepcopy(GCDI.itemCatalog),
+		buffCatalog = deepcopy(GCDI.buffCatalog),
+	}
+	s.currentProfile = name
+	
+	-- Update local settings reference
+	settings = s
+	
+	print("|cff00ff00GCDIndicator:|r Profile '" .. name .. "' saved!")
+	return true
+end
+
+-- Compact serialization for export (one line, minimal whitespace)
+local function serialize_compact(tbl)
+	local parts = {}
+	for k, v in pairs(tbl) do
+		local key = type(k) == "number" and "[" .. k .. "]" or k
+		local val
+		if type(v) == "table" then
+			val = serialize_compact(v)
+		elseif type(v) == "string" then
+			val = "\"" .. v:gsub("\\", "\\\\"):gsub("\"", "\\\"") .. "\""
+		elseif type(v) == "boolean" then
+			val = v and "t" or "f"  -- shorter than true/false
+		elseif type(v) == "number" then
+			val = tostring(v)
+		else
+			val = "nil"
+		end
+		table.insert(parts, key .. "=" .. val)
+	end
+	return "{" .. table.concat(parts, ",") .. "}"
+end
+
+-- Deserialize compact format back to a table
+local function deserialize_compact(str)
+	-- Convert our compact booleans back
+	str = str:gsub("=t,", "=true,"):gsub("=t}", "=true}")
+	str = str:gsub("=f,", "=false,"):gsub("=f}", "=false}")
+	
+	local func, err = loadstring("return " .. str)
+	if not func then
+		return nil, "Parse error: " .. tostring(err)
+	end
+	setfenv(func, {})
+	local ok, result = pcall(func)
+	if not ok then
+		return nil, "Execution error: " .. tostring(result)
+	end
+	if type(result) ~= "table" then
+		return nil, "Invalid data"
+	end
+	return result
+end
+
+-- Export/Import popup window
+local exportImportFrame = nil
+
+local function show_export_import_popup(mode, initialText)
+	if not exportImportFrame then
+		exportImportFrame = CreateFrame("Frame", "GCDIExportImport", UIParent, "BasicFrameTemplateWithInset")
+		exportImportFrame:SetSize(500, 350)
+		exportImportFrame:SetPoint("CENTER")
+		exportImportFrame:SetMovable(true)
+		exportImportFrame:EnableMouse(true)
+		exportImportFrame:RegisterForDrag("LeftButton")
+		exportImportFrame:SetScript("OnDragStart", exportImportFrame.StartMoving)
+		exportImportFrame:SetScript("OnDragStop", exportImportFrame.StopMovingOrSizing)
+		exportImportFrame:SetFrameStrata("DIALOG")
+		exportImportFrame:SetFrameLevel(100)
+		
+		-- Background for text area
+		local editBg = exportImportFrame:CreateTexture(nil, "BACKGROUND", nil, 1)
+		editBg:SetPoint("TOPLEFT", 12, -32)
+		editBg:SetPoint("BOTTOMRIGHT", -12, 70)
+		editBg:SetColorTexture(0, 0, 0, 0.8)
+		
+		-- Create scroll frame
+		local scrollFrame = CreateFrame("ScrollFrame", "GCDIExportImportScroll", exportImportFrame, "UIPanelScrollFrameTemplate")
+		scrollFrame:SetPoint("TOPLEFT", 14, -34)
+		scrollFrame:SetPoint("BOTTOMRIGHT", -32, 72)
+		exportImportFrame.scrollFrame = scrollFrame
+		
+		-- Create scroll child to hold the edit box
+		local scrollChild = CreateFrame("Frame", nil, scrollFrame)
+		scrollChild:SetSize(430, 220)
+		scrollFrame:SetScrollChild(scrollChild)
+		
+		-- Create edit box - use InputBoxTemplate's child approach for clipboard support
+		local editBox = CreateFrame("EditBox", "GCDIExportImportEditBox", scrollChild)
+		editBox:SetAllPoints(scrollChild)
+		editBox:SetMultiLine(true)
+		editBox:SetFontObject("GameFontHighlight")
+		editBox:SetAutoFocus(false)
+		editBox:SetTextInsets(5, 5, 5, 5)
+		editBox:SetMaxLetters(99999)
+		editBox:EnableMouse(true)
+		
+		-- Critical for copy/paste to work
+		editBox:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
+		editBox:SetScript("OnTextChanged", function(self)
+			local text = self:GetText() or ""
+			local numLines = select(2, text:gsub("\n", "\n")) + 1
+			local lineHeight = 14
+			local newHeight = math.max(220, numLines * lineHeight + 20)
+			scrollChild:SetHeight(newHeight)
+		end)
+		
+		-- Make the scroll child clickable to focus the edit box
+		scrollChild:EnableMouse(true)
+		scrollChild:SetScript("OnMouseDown", function()
+			editBox:SetFocus()
+		end)
+		
+		exportImportFrame.editBox = editBox
+		
+		local importBtn = CreateFrame("Button", nil, exportImportFrame, "UIPanelButtonTemplate")
+		importBtn:SetSize(100, 25)
+		importBtn:SetPoint("BOTTOMLEFT", 10, 15)
+		importBtn:SetText("Import")
+		importBtn:SetScript("OnClick", function()
+			local str = exportImportFrame.editBox:GetText()
+			if not str or str == "" then
+				print("|cffff0000GCDIndicator:|r Paste settings first!")
+				return
+			end
+			
+			local data, err = deserialize_compact(str)
+			if not data then
+				print("|cffff0000GCDIndicator:|r Import failed: " .. tostring(err))
+				return
+			end
+			
+			-- Hide export/import frame and show name dialog
+			-- Pass data as 4th parameter to StaticPopup_Show
+			exportImportFrame:Hide()
+			StaticPopup_Show("GCDI_IMPORT_PROFILE_NAME", nil, nil, data)
+		end)
+		exportImportFrame.importBtn = importBtn
+		
+		local closeBtn = CreateFrame("Button", nil, exportImportFrame, "UIPanelButtonTemplate")
+		closeBtn:SetSize(100, 25)
+		closeBtn:SetPoint("BOTTOMRIGHT", -10, 15)
+		closeBtn:SetText("Close")
+		closeBtn:SetScript("OnClick", function() exportImportFrame:Hide() end)
+		
+		-- Select All button for export mode
+		local selectAllBtn = CreateFrame("Button", nil, exportImportFrame, "UIPanelButtonTemplate")
+		selectAllBtn:SetSize(100, 25)
+		selectAllBtn:SetPoint("BOTTOM", 0, 15)
+		selectAllBtn:SetText("Select All")
+		selectAllBtn:SetScript("OnClick", function()
+			exportImportFrame.editBox:SetFocus()
+			exportImportFrame.editBox:HighlightText()
+		end)
+		exportImportFrame.selectAllBtn = selectAllBtn
+		
+		local helpText = exportImportFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+		helpText:SetPoint("BOTTOM", 0, 48)
+		exportImportFrame.helpText = helpText
+	end
+	
+	exportImportFrame.TitleText:SetText(mode == "export" and "Export Settings" or "Import Settings")
+	exportImportFrame.editBox:SetText(initialText or "")
+	
+	if mode == "export" then
+		exportImportFrame.importBtn:Hide()
+		exportImportFrame.selectAllBtn:Show()
+		exportImportFrame.helpText:SetText("Click 'Select All' then Ctrl+C to copy")
+		exportImportFrame.editBox:SetFocus()
+		exportImportFrame.editBox:HighlightText()
+	else
+		exportImportFrame.importBtn:Show()
+		exportImportFrame.selectAllBtn:Hide()
+		exportImportFrame.helpText:SetText("Click in box, Ctrl+V to paste, then Import")
+		exportImportFrame.editBox:SetFocus()
+	end
+	
+	exportImportFrame:Show()
+end
+
+local profilesTabElements = {}
+
+refresh_profiles_tab = function()
+	if not optionsFrame or not optionsFrame.profilesFrame then return end
+	
+	-- Always sync settings reference
+	settings = GCDI.settings
+	
+	-- Clear existing elements
+	for _, element in pairs(profilesTabElements) do
 		if element.Hide then element:Hide() end
 		if element.SetParent then element:SetParent(nil) end
 	end
-	wipe(optionsElements)
+	wipe(profilesTabElements)
 	
-	local container = optionsFrame.profilesContainer
+	local frame = optionsFrame.profilesFrame
 	
 	local function track(element)
-		table.insert(optionsElements, element)
+		table.insert(profilesTabElements, element)
 		return element
 	end
 	
+	local yOffset = -10
+	
+	-- ═══════════════════════════════════════════════════════════════════════════
+	-- PROFILE MANAGEMENT SECTION
+	-- ═══════════════════════════════════════════════════════════════════════════
+	
+	local sectionTitle = track(frame:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge"))
+	sectionTitle:SetPoint("TOPLEFT", 5, yOffset)
+	sectionTitle:SetText("Profile Management")
+	yOffset = yOffset - 25
+	
+	local sectionDesc = track(frame:CreateFontString(nil, "OVERLAY", "GameFontHighlight"))
+	sectionDesc:SetPoint("TOPLEFT", 5, yOffset)
+	sectionDesc:SetText("Load, save, or create profiles to manage different configurations.")
+	sectionDesc:SetTextColor(0.7, 0.7, 0.7)
+	yOffset = yOffset - 30
+	
+	-- Current Profile Dropdown
+	local profileLabel = track(frame:CreateFontString(nil, "OVERLAY", "GameFontNormal"))
+	profileLabel:SetPoint("TOPLEFT", 5, yOffset)
+	profileLabel:SetText("Current Profile:")
+	
 	local profileNames = GCDI.get_profile_names()
-	local profileDropdown = track(CreateFrame("Frame", nil, container, "UIDropDownMenuTemplate"))
-	profileDropdown:SetPoint("TOPLEFT", 0, 0)
+	local profileDropdown = track(CreateFrame("Frame", nil, frame, "UIDropDownMenuTemplate"))
+	profileDropdown:SetPoint("LEFT", profileLabel, "RIGHT", -5, -2)
 	UIDropDownMenu_SetWidth(profileDropdown, 150)
 	
 	local function initProfileDropdown(self, level)
 		local info = UIDropDownMenu_CreateInfo()
-		
-		info.text = "-- Select Profile --"
+		info.text = "-- None --"
 		info.value = nil
 		info.notCheckable = true
-		info.func = function() end
+		info.func = function()
+			GCDI.settings.currentProfile = nil
+			UIDropDownMenu_SetText(profileDropdown, "-- None --")
+			refresh_profiles_tab()
+		end
 		UIDropDownMenu_AddButton(info, level)
 		
 		for _, name in ipairs(profileNames) do
@@ -955,32 +1449,153 @@ local function refresh_profiles_section()
 			info.func = function()
 				GCDI.load_profile(name)
 				UIDropDownMenu_SetText(profileDropdown, name)
+				settings = GCDI.settings
+				refresh_profiles_tab()
 			end
 			UIDropDownMenu_AddButton(info, level)
 		end
 	end
 	UIDropDownMenu_Initialize(profileDropdown, initProfileDropdown)
-	local currentProfileText = settings.currentProfile or "-- Select Profile --"
-	UIDropDownMenu_SetText(profileDropdown, currentProfileText)
+	UIDropDownMenu_SetText(profileDropdown, settings.currentProfile or "-- None --")
+	yOffset = yOffset - 35
 	
-	local saveBtn = track(CreateFrame("Button", nil, container, "UIPanelButtonTemplate"))
-	saveBtn:SetSize(50, 22)
-	saveBtn:SetPoint("LEFT", profileDropdown, "RIGHT", 0, 2)
+	-- Buttons row
+	local hasCurrentProfile = settings.currentProfile and settings.currentProfile ~= ""
+	
+	local saveBtn = track(CreateFrame("Button", nil, frame, "UIPanelButtonTemplate"))
+	saveBtn:SetSize(80, 24)
+	saveBtn:SetPoint("TOPLEFT", 5, yOffset)
 	saveBtn:SetText("Save")
+	saveBtn:SetEnabled(hasCurrentProfile)
 	saveBtn:SetScript("OnClick", function()
-		StaticPopup_Show("GCDI_SAVE_PROFILE")
+		if GCDI.settings.currentProfile then
+			do_save_profile(GCDI.settings.currentProfile)
+			GCDI.rebuild_spell_bars()
+			GCDI.rebuild_item_bars()
+			GCDI.rebuild_buff_bars()
+			GCDI.reposition_all()
+			refresh_profiles_tab()
+		end
 	end)
+	saveBtn:SetScript("OnEnter", function(self)
+		GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+		GameTooltip:SetText("Save Profile")
+		if hasCurrentProfile then
+			GameTooltip:AddLine("Overwrite '" .. settings.currentProfile .. "' with current settings.", 1, 1, 1, true)
+		else
+			GameTooltip:AddLine("Select a profile first.", 1, 0.5, 0.5, true)
+		end
+		GameTooltip:Show()
+	end)
+	saveBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
 	
-	local deleteBtn = track(CreateFrame("Button", nil, container, "UIPanelButtonTemplate"))
-	deleteBtn:SetSize(50, 22)
+	local deleteBtn = track(CreateFrame("Button", nil, frame, "UIPanelButtonTemplate"))
+	deleteBtn:SetSize(80, 24)
 	deleteBtn:SetPoint("LEFT", saveBtn, "RIGHT", 5, 0)
-	deleteBtn:SetText("Del")
+	deleteBtn:SetText("Delete")
+	deleteBtn:SetEnabled(hasCurrentProfile)
 	deleteBtn:SetScript("OnClick", function()
 		if settings.currentProfile then
-			StaticPopup_Show("GCDI_DELETE_PROFILE", settings.currentProfile, nil, settings.currentProfile)
-		else
-			print("|cffff0000GCDIndicator:|r No profile selected to delete!")
+			local dialog = StaticPopup_Show("GCDI_DELETE_PROFILE_CONFIRM", settings.currentProfile)
+			if dialog then dialog.data = settings.currentProfile end
 		end
+	end)
+	deleteBtn:SetScript("OnEnter", function(self)
+		GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+		GameTooltip:SetText("Delete Profile")
+		if hasCurrentProfile then
+			GameTooltip:AddLine("Delete '" .. settings.currentProfile .. "'.", 1, 0.5, 0.5, true)
+		end
+		GameTooltip:Show()
+	end)
+	deleteBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
+	yOffset = yOffset - 35
+	
+	-- Create New Profile
+	local createLabel = track(frame:CreateFontString(nil, "OVERLAY", "GameFontNormal"))
+	createLabel:SetPoint("TOPLEFT", 5, yOffset)
+	createLabel:SetText("Create New:")
+	
+	local createEditBox = track(CreateFrame("EditBox", nil, frame, "InputBoxTemplate"))
+	createEditBox:SetSize(150, 22)
+	createEditBox:SetPoint("LEFT", createLabel, "RIGHT", 10, 0)
+	createEditBox:SetAutoFocus(false)
+	createEditBox:SetMaxLetters(30)
+	
+	local createBtn = track(CreateFrame("Button", nil, frame, "UIPanelButtonTemplate"))
+	createBtn:SetSize(80, 24)
+	createBtn:SetPoint("LEFT", createEditBox, "RIGHT", 5, 0)
+	createBtn:SetText("Create")
+	createBtn:SetScript("OnClick", function()
+		local name = createEditBox:GetText()
+		if name and name ~= "" then
+			do_save_profile(name)
+			createEditBox:SetText("")
+			createEditBox:ClearFocus()
+			settings = GCDI.settings
+			GCDI.rebuild_spell_bars()
+			GCDI.rebuild_item_bars()
+			GCDI.rebuild_buff_bars()
+			GCDI.reposition_all()
+			refresh_profiles_tab()
+		else
+			print("|cffff0000GCDIndicator:|r Enter a profile name!")
+		end
+	end)
+	createEditBox:SetScript("OnEnterPressed", function() createBtn:Click() end)
+	yOffset = yOffset - 45
+	
+	-- ═══════════════════════════════════════════════════════════════════════════
+	-- EXPORT SECTION
+	-- ═══════════════════════════════════════════════════════════════════════════
+	
+	local sep1 = track(frame:CreateTexture(nil, "ARTWORK"))
+	sep1:SetColorTexture(0.4, 0.4, 0.4, 1)
+	sep1:SetSize(480, 1)
+	sep1:SetPoint("TOPLEFT", 5, yOffset)
+	yOffset = yOffset - 20
+	
+	local exportImportTitle = track(frame:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge"))
+	exportImportTitle:SetPoint("TOPLEFT", 5, yOffset)
+	exportImportTitle:SetText("Export / Import")
+	yOffset = yOffset - 25
+	
+	local exportImportDesc = track(frame:CreateFontString(nil, "OVERLAY", "GameFontHighlight"))
+	exportImportDesc:SetPoint("TOPLEFT", 5, yOffset)
+	exportImportDesc:SetText("Share your settings with others or transfer between characters.")
+	exportImportDesc:SetTextColor(0.7, 0.7, 0.7)
+	yOffset = yOffset - 30
+	
+	local exportBtn = track(CreateFrame("Button", nil, frame, "UIPanelButtonTemplate"))
+	exportBtn:SetSize(120, 28)
+	exportBtn:SetPoint("TOPLEFT", 5, yOffset)
+	exportBtn:SetText("Export Settings")
+	exportBtn:SetScript("OnClick", function()
+		local exportData = {
+			v = 1,
+			g = settings.globalRangeFallback,
+			ss = settings.spellSettings or {},
+			so = settings.spellOrder or {},
+			is = settings.itemSettings or {},
+			io = settings.itemOrder or {},
+			bs = settings.buffSettings or {},
+			bo = settings.buffOrder or {},
+		}
+		
+		local ok, str = pcall(serialize_compact, exportData)
+		if ok and str then
+			show_export_import_popup("export", str)
+		else
+			print("|cffff0000GCDIndicator:|r Export failed: " .. tostring(str))
+		end
+	end)
+	
+	local importBtn = track(CreateFrame("Button", nil, frame, "UIPanelButtonTemplate"))
+	importBtn:SetSize(120, 28)
+	importBtn:SetPoint("LEFT", exportBtn, "RIGHT", 10, 0)
+	importBtn:SetText("Import Settings")
+	importBtn:SetScript("OnClick", function()
+		show_export_import_popup("import", "")
 	end)
 end
 
@@ -995,14 +1610,14 @@ local function refresh_options_frame()
 	-- Update settings reference
 	settings = GCDI.settings
 	
-	refresh_profiles_section()
-	
 	if currentTab == "spells" then
 		refresh_spells_tab()
 	elseif currentTab == "items" then
 		refresh_items_tab()
-	else
+	elseif currentTab == "buffs" then
 		refresh_buffs_tab()
+	elseif currentTab == "profiles" then
+		refresh_profiles_tab()
 	end
 end
 
@@ -1036,23 +1651,8 @@ local function create_options_frame()
 	
 	optionsFrame.TitleText:SetText("GCDIndicator Options")
 	
-	-- PROFILES SECTION
-	local profilesLabel = optionsFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
-	profilesLabel:SetPoint("TOPLEFT", 15, -30)
-	profilesLabel:SetText("Profiles:")
-	
-	local profilesContainer = CreateFrame("Frame", nil, optionsFrame)
-	profilesContainer:SetSize(400, 30)
-	profilesContainer:SetPoint("TOPLEFT", 10, -50)
-	optionsFrame.profilesContainer = profilesContainer
-	
-	local profileSep = optionsFrame:CreateTexture(nil, "ARTWORK")
-	profileSep:SetColorTexture(0.3, 0.3, 0.3, 1)
-	profileSep:SetSize(480, 1)
-	profileSep:SetPoint("TOPLEFT", 10, -85)
-	
-	-- TAB BUTTONS
-	local tabY = -95
+	-- TAB BUTTONS (moved up since profiles is now a tab)
+	local tabY = -30
 	
 	local spellsTabBtn = CreateFrame("Button", nil, optionsFrame)
 	spellsTabBtn:SetSize(80, 24)
@@ -1136,9 +1736,30 @@ local function create_options_frame()
 	settingsTabBtn:SetScript("OnLeave", function() settingsTabBg:SetColorTexture(0.15, 0.15, 0.15, 0.8) end)
 	optionsFrame.settingsTabBtn = settingsTabBtn
 	
+	-- PROFILES TAB
+	local profilesTabBtn = CreateFrame("Button", nil, optionsFrame)
+	profilesTabBtn:SetSize(70, 24)
+	profilesTabBtn:SetPoint("LEFT", settingsTabBtn, "RIGHT", 5, 0)
+	profilesTabBtn:SetNormalFontObject("GameFontNormal")
+	profilesTabBtn:SetHighlightFontObject("GameFontHighlight")
+	
+	local profilesTabText = profilesTabBtn:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+	profilesTabText:SetPoint("CENTER")
+	profilesTabText:SetText("Profiles")
+	profilesTabBtn:SetFontString(profilesTabText)
+	
+	local profilesTabBg = profilesTabBtn:CreateTexture(nil, "BACKGROUND")
+	profilesTabBg:SetAllPoints()
+	profilesTabBg:SetColorTexture(0.15, 0.15, 0.15, 0.8)
+	
+	profilesTabBtn:SetScript("OnClick", function() switch_tab("profiles") end)
+	profilesTabBtn:SetScript("OnEnter", function() profilesTabBg:SetColorTexture(0.3, 0.3, 0.3, 0.8) end)
+	profilesTabBtn:SetScript("OnLeave", function() profilesTabBg:SetColorTexture(0.15, 0.15, 0.15, 0.8) end)
+	optionsFrame.profilesTabBtn = profilesTabBtn
+	
 	-- SPELLS SCROLL FRAME
 	local spellsScrollFrame = CreateFrame("ScrollFrame", nil, optionsFrame, "UIPanelScrollFrameTemplate")
-	spellsScrollFrame:SetPoint("TOPLEFT", 10, -125)
+	spellsScrollFrame:SetPoint("TOPLEFT", 10, -60)
 	spellsScrollFrame:SetPoint("BOTTOMRIGHT", -30, 40)
 	optionsFrame.spellsScrollFrame = spellsScrollFrame
 	
@@ -1149,7 +1770,7 @@ local function create_options_frame()
 	
 	-- ITEMS SCROLL FRAME
 	local itemsScrollFrame = CreateFrame("ScrollFrame", nil, optionsFrame, "UIPanelScrollFrameTemplate")
-	itemsScrollFrame:SetPoint("TOPLEFT", 10, -125)
+	itemsScrollFrame:SetPoint("TOPLEFT", 10, -60)
 	itemsScrollFrame:SetPoint("BOTTOMRIGHT", -30, 40)
 	itemsScrollFrame:Hide()
 	optionsFrame.itemsScrollFrame = itemsScrollFrame
@@ -1161,7 +1782,7 @@ local function create_options_frame()
 	
 	-- BUFFS SCROLL FRAME
 	local buffsScrollFrame = CreateFrame("ScrollFrame", nil, optionsFrame, "UIPanelScrollFrameTemplate")
-	buffsScrollFrame:SetPoint("TOPLEFT", 10, -125)
+	buffsScrollFrame:SetPoint("TOPLEFT", 10, -60)
 	buffsScrollFrame:SetPoint("BOTTOMRIGHT", -30, 40)
 	buffsScrollFrame:Hide()
 	optionsFrame.buffsScrollFrame = buffsScrollFrame
@@ -1173,7 +1794,7 @@ local function create_options_frame()
 	
 	-- SETTINGS FRAME
 	local settingsFrame = CreateFrame("Frame", nil, optionsFrame)
-	settingsFrame:SetPoint("TOPLEFT", 10, -125)
+	settingsFrame:SetPoint("TOPLEFT", 10, -60)
 	settingsFrame:SetPoint("BOTTOMRIGHT", -30, 40)
 	settingsFrame:Hide()
 	optionsFrame.settingsFrame = settingsFrame
@@ -1279,16 +1900,14 @@ local function create_options_frame()
 	end)
 	previewBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
 	
-	-- BOTTOM BUTTONS
-	local rescanBtn = CreateFrame("Button", nil, optionsFrame, "UIPanelButtonTemplate")
-	rescanBtn:SetSize(100, 22)
-	rescanBtn:SetPoint("BOTTOMLEFT", 15, 10)
-	rescanBtn:SetText("Rescan Bars")
-	rescanBtn:SetScript("OnClick", function()
-		GCDI.scan_action_bars()
-		C_Timer.After(0.2, refresh_options_frame)
-	end)
+	-- PROFILES FRAME
+	local profilesFrame = CreateFrame("Frame", nil, optionsFrame)
+	profilesFrame:SetPoint("TOPLEFT", 10, -60)
+	profilesFrame:SetPoint("BOTTOMRIGHT", -30, 40)
+	profilesFrame:Hide()
+	optionsFrame.profilesFrame = profilesFrame
 	
+	-- BOTTOM BUTTONS
 	local closeBtn = CreateFrame("Button", nil, optionsFrame, "UIPanelButtonTemplate")
 	closeBtn:SetSize(80, 22)
 	closeBtn:SetPoint("BOTTOMRIGHT", -10, 10)
