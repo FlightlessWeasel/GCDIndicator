@@ -203,8 +203,16 @@ local function applyTimerToBar(bar, durObj)
 		bar:SetTimerDuration(durObj, INTERPOLATION, DIRECTION)
 		bar:SetToTargetValue()
 	else
+		-- Stop any running timer animation and reset bar
+		bar:SetMinMaxValues(0, 1)
 		bar:SetValue(0)
 	end
+end
+
+-- Force stop a timer bar animation
+local function stopTimerBar(bar)
+	bar:SetMinMaxValues(0, 1)
+	bar:SetValue(0)
 end
 
 local function deepcopy(orig)
@@ -519,27 +527,22 @@ local function update_spell_bar(spellID)
 	local data = trackedSpells[spellID]
 	if not data then return end
 	
-	local cdInfo = C_Spell.GetSpellCooldown(spellID)
-	if not cdInfo then
-		data.bar:SetValue(0)
-		return
-	end
-	
-	local isOnGCD = cdInfo.isOnGCD == true
-	local chargeInfo = C_Spell.GetSpellCharges(spellID)
 	local durObj
 	
-	if chargeInfo then
-		durObj = isOnGCD and C_Spell.GetSpellCooldownDuration(GCD_SPELL_ID) 
-		                  or C_Spell.GetSpellChargeDuration(spellID)
-	else
+	if data.isChargeSpell then
+		-- For charge spells, use the spell's own cooldown duration
+		-- This should show GCD when on GCD, and nothing when charges are available
 		durObj = C_Spell.GetSpellCooldownDuration(spellID)
+		applyTimerToBar(data.bar, durObj)
+	else
+		-- Non-charge spell - show normal cooldown
+		durObj = C_Spell.GetSpellCooldownDuration(spellID)
+		applyTimerToBar(data.bar, durObj)
 	end
-	
-	applyTimerToBar(data.bar, durObj)
 end
 
 local function update_all_spell_bars()
+	if previewMode then return end  -- Skip updates in preview mode
 	for spellID in pairs(trackedSpells) do
 		update_spell_bar(spellID)
 	end
@@ -556,6 +559,16 @@ local function should_track_spell_icon(spellID)
 end
 
 GCDI.should_track_spell_icon = should_track_spell_icon
+
+-- Check if spell is configured as self-cast (no range indicator needed)
+local function is_spell_self_cast(spellID)
+	if not settings then return false end
+	local spellSettings = settings.spellSettings[spellID]
+	if spellSettings and spellSettings.selfCast == true then
+		return true
+	end
+	return false
+end
 
 -- Update spell icons when they change (for proc abilities that transform)
 local function update_spell_icons()
@@ -616,10 +629,10 @@ local function create_spell_bar(spellID, spellName, texture, actionSlot)
 	-- Check if spell has charges
 	-- chargeInfo being non-nil means it's a charge spell (safe check, no secret reading)
 	local chargeInfo = C_Spell.GetSpellCharges(spellID)
-	local hasCharges = (chargeInfo ~= nil)
+	local isChargeSpell = (chargeInfo ~= nil)  -- Does this spell use charges at all?
 	local maxCharges = 0
 	
-	if hasCharges and chargeInfo.maxCharges then
+	if isChargeSpell and chargeInfo.maxCharges then
 		-- Only read maxCharges if NOT a secret value
 		if not issecretvalue or not issecretvalue(chargeInfo.maxCharges) then
 			maxCharges = chargeInfo.maxCharges
@@ -629,18 +642,22 @@ local function create_spell_bar(spellID, spellName, texture, actionSlot)
 		end
 	end
 	
-	-- Only show charge indicators if > 1 charge
-	hasCharges = maxCharges > 1
+	-- Only show charge INDICATORS if > 1 charge (visual boxes)
+	local showChargeIndicators = maxCharges > 1
 	
 	-- Check if icon tracking is enabled
 	local trackIcon = should_track_spell_icon(spellID)
 	
-	-- Calculate container width based on whether spell has charges and icon tracking
-	-- Layout: [pad][icon][2][cooldown][2][range][2][charges?][2][iconChange?][pad]
-	local chargeWidth = hasCharges and (maxCharges * barSize + (maxCharges - 1) * 2) or 0  -- squares + gaps
-	local extraGap = hasCharges and 2 or 0  -- gap before charges section
+	-- Check if spell is self-cast (no range indicator needed)
+	local isSelfCast = is_spell_self_cast(spellID)
+	
+	-- Calculate container width based on spell settings
+	-- Layout: [pad][icon][2][cooldown][2][range?][2][charges?][2][iconChange?][pad]
+	local chargeWidth = showChargeIndicators and (maxCharges * barSize + (maxCharges - 1) * 2) or 0  -- squares + gaps
+	local extraGap = showChargeIndicators and 2 or 0  -- gap before charges section
 	local iconChangeWidth = trackIcon and (barSize + 2) or 0  -- icon change indicator + gap
-	local containerWidth = (barSize * 3 + 4) + chargeWidth + extraGap + iconChangeWidth + pad * 2
+	local rangeWidth = isSelfCast and 0 or (barSize + 2)  -- range indicator + gap (or 0 for self-cast)
+	local containerWidth = (barSize * 2 + 2) + rangeWidth + chargeWidth + extraGap + iconChangeWidth + pad * 2
 	
 	local container = CreateFrame("Frame", nil, main_frame)
 	container:SetSize(containerWidth, barSize + pad * 2)
@@ -673,25 +690,33 @@ local function create_spell_bar(spellID, spellName, texture, actionSlot)
 	bar:SetStatusBarColor(0, 0, 0)
 	bar:SetPoint("LEFT")
 	
-	-- Range indicator (after cooldown bar)
-	local rangeBase = container:CreateTexture(nil, "ARTWORK")
-	rangeBase:SetSize(barSize, barSize)
-	rangeBase:SetPoint("LEFT", clipContainer, "RIGHT", 2, 0)
-	rangeBase:SetColorTexture(1, 1, 1, 1)
+	-- Range indicator (after cooldown bar) - only for non-self-cast spells
+	local rangeBase = nil
+	local rangeOverlay = nil
+	local lastElement = clipContainer  -- Track what to anchor next element to
 	
-	local rangeOverlay = container:CreateTexture(nil, "OVERLAY")
-	rangeOverlay:SetSize(barSize, barSize)
-	rangeOverlay:SetPoint("CENTER", rangeBase, "CENTER", 0, 0)
-	rangeOverlay:SetColorTexture(RANGE_COLORS.noTarget[1], RANGE_COLORS.noTarget[2], RANGE_COLORS.noTarget[3], 1)
+	if not isSelfCast then
+		rangeBase = container:CreateTexture(nil, "ARTWORK")
+		rangeBase:SetSize(barSize, barSize)
+		rangeBase:SetPoint("LEFT", clipContainer, "RIGHT", 2, 0)
+		rangeBase:SetColorTexture(1, 1, 1, 1)
+		
+		rangeOverlay = container:CreateTexture(nil, "OVERLAY")
+		rangeOverlay:SetSize(barSize, barSize)
+		rangeOverlay:SetPoint("CENTER", rangeBase, "CENTER", 0, 0)
+		rangeOverlay:SetColorTexture(RANGE_COLORS.noTarget[1], RANGE_COLORS.noTarget[2], RANGE_COLORS.noTarget[3], 1)
+		
+		lastElement = rangeBase
+	end
 	
-	-- Create charge indicators if spell has charges (to the right of range)
+	-- Create charge indicators if spell has charges (to the right of range, or cooldown if self-cast)
 	local chargeIndicators = nil
 	local chargeDetectors = nil
 	
-	if hasCharges then
+	if showChargeIndicators then
 		chargeIndicators = {}
 		chargeDetectors = LibDetector:CreateDetectorArray(maxCharges)
-		local prevElement = rangeBase
+		local prevElement = lastElement
 		
 		for i = 1, maxCharges do
 			-- Blue background (charge available)
@@ -716,11 +741,11 @@ local function create_spell_bar(spellID, spellName, texture, actionSlot)
 		end
 	end
 	
-	-- Icon change indicator (after charges, or after range if no charges)
+	-- Icon change indicator (after charges, or after range/cooldown if no charges)
 	local iconChangeIndicator = nil
 	if trackIcon then
-		local anchorElement = rangeBase
-		if hasCharges and chargeIndicators then
+		local anchorElement = lastElement  -- Default to last element (range or cooldown)
+		if showChargeIndicators and chargeIndicators then
 			anchorElement = chargeIndicators[maxCharges].bg
 		end
 		
@@ -743,14 +768,25 @@ local function create_spell_bar(spellID, spellName, texture, actionSlot)
 		}
 	end
 	
+	-- Create a single detector for checking if ANY charges are available (for cooldown bar logic)
+	local chargeCheckDetector = nil
+	if isChargeSpell then
+		-- Creates a detector that returns true when currentCharges >= 1
+		local detectorArray = LibDetector:CreateDetectorArray(1)
+		chargeCheckDetector = detectorArray[1]
+	end
+	
 	trackedSpells[spellID] = { 
 		bar = bar, 
 		container = container, 
 		actionSlot = actionSlot,
-		rangeOverlay = rangeOverlay,
+		rangeBase = rangeBase,  -- White background for range
+		rangeOverlay = rangeOverlay,  -- Colored overlay for range
 		chargeIndicators = chargeIndicators,
-		chargeDetectors = chargeDetectors,  -- LibDetector array for secret value reading
-		maxCharges = hasCharges and maxCharges or nil,
+		chargeDetectors = chargeDetectors,  -- LibDetector array for charge indicator display
+		chargeCheckDetector = chargeCheckDetector,  -- Single detector to check if charges available
+		maxCharges = showChargeIndicators and maxCharges or nil,
+		isChargeSpell = isChargeSpell,  -- Whether this spell uses charges (for cooldown logic)
 		icon = icon,  -- Store icon reference for icon change detection
 		originalTexture = texture,  -- Store original texture for comparison
 		currentTexture = texture,  -- Track current texture for change detection
@@ -775,6 +811,7 @@ end
 -- ═══════════════════════════════════════════════════════════════════════════
 
 local function update_item_bar(itemKey)
+	if previewMode then return end  -- Skip updates in preview mode
 	local data = trackedItems[itemKey]
 	if not data then return end
 	
@@ -799,6 +836,7 @@ local function update_item_bar(itemKey)
 end
 
 local function update_all_item_bars()
+	if previewMode then return end  -- Skip updates in preview mode
 	for itemKey in pairs(trackedItems) do
 		update_item_bar(itemKey)
 	end
@@ -1172,15 +1210,6 @@ local function is_in_fallback_range(spellID)
 	return result == true
 end
 
-local function is_spell_self_cast(spellID)
-	if not settings then return false end
-	local spellSettings = settings.spellSettings[spellID]
-	if spellSettings and spellSettings.selfCast == true then
-		return true
-	end
-	return false
-end
-
 local function auto_detect_self_cast(spellID, actionSlot)
 	if not settings or not actionSlot then return false end
 	
@@ -1254,9 +1283,13 @@ local function update_range_indicators()
 			local actionSlot = spellData.actionSlot
 			
 			if is_spell_self_cast(spellID) then
-				overlay:Hide()  -- Hide range indicator for self-cast spells
+				-- Hide both base and overlay for self-cast spells
+				if spellData.rangeBase then spellData.rangeBase:Hide() end
+				overlay:Hide()
 			else
-				overlay:Show()  -- Make sure it's visible for non-self-cast spells
+				-- Show both for non-self-cast spells
+				if spellData.rangeBase then spellData.rangeBase:Show() end
+				overlay:Show()
 				
 				if not UnitExists("target") then
 					overlay:SetColorTexture(RANGE_COLORS.noTarget[1], RANGE_COLORS.noTarget[2], RANGE_COLORS.noTarget[3], 1)
@@ -1287,7 +1320,9 @@ local function update_range_indicators()
 						end
 					else
 						if auto_detect_self_cast(spellID, actionSlot) then
-							overlay:Hide()  -- Auto-detected self-cast, hide it
+							-- Hide both for auto-detected self-cast
+							if spellData.rangeBase then spellData.rangeBase:Hide() end
+							overlay:Hide()
 						else
 							local fallbackResult = is_in_fallback_range(spellID)
 							if fallbackResult == nil then
@@ -1428,6 +1463,7 @@ local function update_all_resources()
 end
 
 local function update_stance_indicator()
+	if previewMode then return end  -- Skip updates in preview mode
 	if not main_frame.stanceIndicator then return end
 	
 	local formIndex = GetShapeshiftForm() or 0
@@ -1939,6 +1975,7 @@ end
 GCDI.scan_action_bars = scan_action_bars
 
 local function schedule_scan(delay)
+	if previewMode then return end  -- Don't scan/rebuild in preview mode
 	if pendingScanTimer then
 		pendingScanTimer:Cancel()
 	end
@@ -1960,8 +1997,9 @@ local function on_event(self, event, arg1, arg2, ...)
 		update_all_item_bars()
 		
 	elseif event == "SPELL_UPDATE_CHARGES" then
-		-- Fires immediately when charges change - update charge indicators right away
+		-- Fires immediately when charges change - update both charge indicators AND cooldown bars
 		update_all_charge_indicators()
+		update_all_spell_bars()  -- Update cooldown bars (charge spells show no cooldown when charges available)
 		
 	elseif event == "BAG_UPDATE" or event == "PLAYER_EQUIPMENT_CHANGED" then
 		schedule_scan(0.5)
