@@ -8,8 +8,8 @@ GCDI = {}
 -- Configuration
 GCDI.configs = {
 	size = 10,
-	xpoint = 0,
-	ypoint = -219,
+	xpoint = 20,  -- Default X offset from left edge
+	ypoint = -5,  -- Default Y offset from top edge
 	barSpacing = 0,
 	barHeight = 8,
 	bgPadding = 2,
@@ -105,12 +105,21 @@ local trackedItems = {}
 local itemBars = {}
 local pendingScanTimer = nil
 local resourceBars = {}
+local previewMode = false  -- Preview mode state for positioning
 
 -- Known item types
 local TRACKED_ITEM_TYPES = {
 	trinket1 = { slot = 13, name = "Trinket 1" },
 	trinket2 = { slot = 14, name = "Trinket 2" },
 }
+
+-- Buff tracking via Cooldown Manager integration
+-- Blizzard's CDM frames have non-secret properties we can read:
+-- frame.cooldownID, frame.auraInstanceID (isActive is SECRET - don't use!)
+GCDI.buffCatalog = {}
+local trackedBuffs = {}
+local buffBars = {}
+local cdmBuffFrames = {}  -- cooldownID -> CDM frame reference
 
 local CONSUMABLE_ITEM_IDS = {
 	[5512] = "Healthstone",
@@ -156,6 +165,8 @@ local DEFAULT_SETTINGS = {
 	spellOrder = {},
 	itemSettings = {},
 	itemOrder = {},
+	buffSettings = {},
+	buffOrder = {},
 	profiles = {},
 	currentProfile = nil,
 }
@@ -175,7 +186,7 @@ local FORM_COLORS = {
 }
 
 -- Forward declarations
-local reposition_all, rebuild_spell_bars, rebuild_item_bars
+local reposition_all, rebuild_spell_bars, rebuild_item_bars, rebuild_buff_bars
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- UTILITY FUNCTIONS
@@ -231,19 +242,58 @@ function GCDI.is_item_enabled(itemKey)
 	return true
 end
 
+function GCDI.is_buff_enabled(spellID)
+	if not settings then return true end
+	local buffSettings = settings.buffSettings and settings.buffSettings[spellID]
+	if buffSettings and buffSettings.enabled == false then
+		return false
+	end
+	return true
+end
+
+function GCDI.get_buff_settings(spellID)
+	if not settings or not settings.buffSettings then return {} end
+	return settings.buffSettings[spellID] or {}
+end
+
+function GCDI.should_show_buff_stacks(spellID)
+	local buffSettings = GCDI.get_buff_settings(spellID)
+	return buffSettings.showStacks ~= false  -- Default to showing stacks
+end
+
+function GCDI.get_buff_max_stacks_display(spellID)
+	local buffSettings = GCDI.get_buff_settings(spellID)
+	return buffSettings.maxStacksDisplay or 5  -- Default to 5 stacks
+end
+
 function GCDI.get_action_slot_for_spell(spellID)
-	for i = 1, 12 do
-		local button = _G["ActionButton" .. i]
-		if button and button.action then
-			local actionType, id = GetActionInfo(button.action)
-			local slotSpellID
-			if actionType == "spell" then
-				slotSpellID = id
-			elseif actionType == "macro" and id then
-				slotSpellID = GetMacroSpell(id)
-			end
-			if slotSpellID == spellID then
-				return button.action
+	-- Search all action bar button types
+	local barPrefixes = {
+		"ActionButton",           -- Main action bar (1-12)
+		"MultiBarBottomLeftButton",  -- Bottom left bar
+		"MultiBarBottomRightButton", -- Bottom right bar
+		"MultiBarRightButton",       -- Right bar 1
+		"MultiBarLeftButton",        -- Right bar 2 (left of right bar 1)
+		"MultiBar5Button",           -- Additional bars (retail)
+		"MultiBar6Button",
+		"MultiBar7Button",
+		"MultiBar8Button",
+	}
+	
+	for _, prefix in ipairs(barPrefixes) do
+		for i = 1, 12 do
+			local button = _G[prefix .. i]
+			if button and button.action then
+				local actionType, id = GetActionInfo(button.action)
+				local slotSpellID
+				if actionType == "spell" then
+					slotSpellID = id
+				elseif actionType == "macro" and id then
+					slotSpellID = GetMacroSpell(id)
+				end
+				if slotSpellID == spellID then
+					return button.action
+				end
 			end
 		end
 	end
@@ -264,6 +314,8 @@ save_profile = function(name)
 		spellOrder = deepcopy(settings.spellOrder),
 		itemSettings = deepcopy(settings.itemSettings or {}),
 		itemOrder = deepcopy(settings.itemOrder or {}),
+		buffSettings = deepcopy(settings.buffSettings or {}),
+		buffOrder = deepcopy(settings.buffOrder or {}),
 	}
 	settings.currentProfile = name
 	
@@ -284,6 +336,8 @@ function GCDI.load_profile(name)
 	settings.spellOrder = deepcopy(profile.spellOrder or {})
 	settings.itemSettings = deepcopy(profile.itemSettings or {})
 	settings.itemOrder = deepcopy(profile.itemOrder or {})
+	settings.buffSettings = deepcopy(profile.buffSettings or {})
+	settings.buffOrder = deepcopy(profile.buffOrder or {})
 	settings.currentProfile = name
 	
 	rebuild_spell_bars()
@@ -315,6 +369,8 @@ function GCDI.auto_save_to_profile()
 		spellOrder = deepcopy(settings.spellOrder),
 		itemSettings = deepcopy(settings.itemSettings or {}),
 		itemOrder = deepcopy(settings.itemOrder or {}),
+		buffSettings = deepcopy(settings.buffSettings or {}),
+		buffOrder = deepcopy(settings.buffOrder or {}),
 	}
 end
 
@@ -580,12 +636,163 @@ function GCDI.move_item_to_bottom(itemKey)
 end
 
 -- ═══════════════════════════════════════════════════════════════════════════
+-- BUFF ORDERING
+-- ═══════════════════════════════════════════════════════════════════════════
+
+local function get_ordered_buffs()
+	if not settings then return buffBars end
+	
+	local ordered = {}
+	local inOrder = {}
+	
+	for _, spellID in ipairs(settings.buffOrder or {}) do
+		if trackedBuffs[spellID] then
+			table.insert(ordered, spellID)
+			inOrder[spellID] = true
+		end
+	end
+	
+	for _, spellID in ipairs(buffBars) do
+		if not inOrder[spellID] then
+			table.insert(ordered, spellID)
+		end
+	end
+	
+	return ordered
+end
+
+function GCDI.get_ordered_buffs()
+	if not settings then return {} end
+	
+	local ordered = {}
+	local inOrder = {}
+	
+	for _, spellID in ipairs(settings.buffOrder or {}) do
+		if GCDI.buffCatalog[spellID] and GCDI.is_buff_enabled(spellID) then
+			table.insert(ordered, spellID)
+			inOrder[spellID] = true
+		end
+	end
+	
+	for spellID in pairs(GCDI.buffCatalog) do
+		if not inOrder[spellID] and GCDI.is_buff_enabled(spellID) then
+			table.insert(ordered, spellID)
+		end
+	end
+	
+	return ordered
+end
+
+function GCDI.get_all_catalog_buffs_ordered()
+	if not settings then return {} end
+	
+	local enabledOrdered = {}
+	local disabledOrdered = {}
+	local inOrder = {}
+	
+	for _, spellID in ipairs(settings.buffOrder or {}) do
+		if GCDI.buffCatalog[spellID] then
+			inOrder[spellID] = true
+			if GCDI.is_buff_enabled(spellID) then
+				table.insert(enabledOrdered, spellID)
+			else
+				table.insert(disabledOrdered, spellID)
+			end
+		end
+	end
+	
+	local unsortedEnabled = {}
+	local unsortedDisabled = {}
+	for spellID, data in pairs(GCDI.buffCatalog) do
+		if not inOrder[spellID] then
+			if GCDI.is_buff_enabled(spellID) then
+				table.insert(unsortedEnabled, { spellID = spellID, name = data.name })
+			else
+				table.insert(unsortedDisabled, { spellID = spellID, name = data.name })
+			end
+		end
+	end
+	table.sort(unsortedEnabled, function(a, b) return a.name < b.name end)
+	table.sort(unsortedDisabled, function(a, b) return a.name < b.name end)
+	
+	for _, entry in ipairs(unsortedEnabled) do
+		table.insert(enabledOrdered, entry.spellID)
+	end
+	for _, entry in ipairs(unsortedDisabled) do
+		table.insert(disabledOrdered, entry.spellID)
+	end
+	
+	local result = {}
+	for _, spellID in ipairs(enabledOrdered) do
+		table.insert(result, spellID)
+	end
+	for _, spellID in ipairs(disabledOrdered) do
+		table.insert(result, spellID)
+	end
+	
+	return result
+end
+
+local function save_buff_order(orderedList)
+	if not settings then return end
+	settings.buffOrder = {}
+	for i, spellID in ipairs(orderedList) do
+		settings.buffOrder[i] = spellID
+	end
+end
+
+function GCDI.move_buff_in_order(spellID, direction)
+	local ordered = GCDI.get_all_catalog_buffs_ordered()
+	local currentIndex = nil
+	
+	for i, id in ipairs(ordered) do
+		if id == spellID then
+			currentIndex = i
+			break
+		end
+	end
+	
+	if not currentIndex then return end
+	
+	local newIndex = currentIndex + direction
+	if newIndex < 1 or newIndex > #ordered then return end
+	
+	ordered[currentIndex], ordered[newIndex] = ordered[newIndex], ordered[currentIndex]
+	save_buff_order(ordered)
+	GCDI.auto_save_to_profile()
+	rebuild_buff_bars()
+	reposition_all()
+end
+
+function GCDI.move_buff_to_bottom(spellID)
+	local ordered = GCDI.get_all_catalog_buffs_ordered()
+	local currentIndex = nil
+	
+	for i, id in ipairs(ordered) do
+		if id == spellID then
+			currentIndex = i
+			break
+		end
+	end
+	
+	if not currentIndex or currentIndex == #ordered then return end
+	
+	table.remove(ordered, currentIndex)
+	table.insert(ordered, spellID)
+	save_buff_order(ordered)
+	GCDI.auto_save_to_profile()
+	rebuild_buff_bars()
+	reposition_all()
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
 -- GCD BAR UPDATE
 -- ═══════════════════════════════════════════════════════════════════════════
 
 local gcdInitialized = false
 
 local function update_gcd()
+	if previewMode then return end  -- Skip updates in preview mode
 	if not gcdInitialized then
 		if UnitAffectingCombat("player") then
 			gcdInitialized = true
@@ -604,6 +811,8 @@ end
 -- ═══════════════════════════════════════════════════════════════════════════
 
 local function update_spell_bar(spellID)
+	if previewMode then return end  -- Skip updates in preview mode
+	if not GCDI.is_spell_enabled(spellID) then return end  -- Skip disabled spells
 	local data = trackedSpells[spellID]
 	if not data then return end
 	
@@ -633,13 +842,117 @@ local function update_all_spell_bars()
 	end
 end
 
+-- Check if spell should track icon changes
+local function should_track_spell_icon(spellID)
+	if not settings then return false end
+	local spellSettings = settings.spellSettings[spellID]
+	if spellSettings and spellSettings.trackIcon == true then
+		return true
+	end
+	return false
+end
+
+GCDI.should_track_spell_icon = should_track_spell_icon
+
+-- Update spell icons when they change (for proc abilities that transform)
+local function update_spell_icons()
+	if previewMode then return end  -- Skip updates in preview mode
+	for spellID, data in pairs(trackedSpells) do
+		if data.icon and GCDI.is_spell_enabled(spellID) and should_track_spell_icon(spellID) then
+			local newTexture = C_Spell.GetSpellTexture(spellID)
+			if newTexture then
+				-- Update icon texture
+				if newTexture ~= data.currentTexture then
+					data.icon:SetTexture(newTexture)
+					data.currentTexture = newTexture
+					
+					-- Also update catalog entry
+					if GCDI.spellCatalog[spellID] then
+						GCDI.spellCatalog[spellID].texture = newTexture
+					end
+				end
+				
+				-- Update icon change indicator (red if changed, grey if normal)
+				if data.iconChangeIndicator then
+					local isChanged = (newTexture ~= data.originalTexture)
+					if isChanged then
+						data.iconChangeIndicator.overlay:Show()  -- Show red
+					else
+						data.iconChangeIndicator.overlay:Hide()  -- Show grey (base)
+					end
+				end
+			end
+		end
+	end
+end
+
+-- Update charge indicators using detector bars (ArcUI pattern)
+-- Both feed and check happen in same call, run via OnUpdate/ticker
+local function update_charge_indicators_tick()
+	if previewMode then return end  -- Skip updates in preview mode
+	for spellID, data in pairs(trackedSpells) do
+		if data.chargeIndicators and GCDI.is_spell_enabled(spellID) then
+			local chargeInfo = C_Spell.GetSpellCharges(spellID)
+			if chargeInfo then
+				local secretCurrentCharges = chargeInfo.currentCharges
+				
+				-- Feed secret value to all detectors, then immediately check results
+				for i, indicator in ipairs(data.chargeIndicators) do
+					-- Feed
+					indicator.detector:SetValue(secretCurrentCharges)
+					-- Check (ArcUI does this in same call)
+					if indicator.detector:GetStatusBarTexture():IsShown() then
+						indicator.overlay:Hide()  -- Charge available - show blue
+					else
+						indicator.overlay:Show()  -- On cooldown - show black
+					end
+				end
+			end
+		end
+	end
+end
+
+-- Alias for event-based calls (maintains compatibility)
+local function update_all_charge_indicators()
+	update_charge_indicators_tick()
+end
+
 local function create_spell_bar(spellID, spellName, texture, actionSlot)
 	local barIndex = #spellBars + 1
 	local barSize = configs.barHeight
 	local pad = configs.bgPadding
 	
+	-- Check if spell has charges
+	-- chargeInfo being non-nil means it's a charge spell (safe check, no secret reading)
+	local chargeInfo = C_Spell.GetSpellCharges(spellID)
+	local hasCharges = (chargeInfo ~= nil)
+	local maxCharges = 0
+	
+	if hasCharges and chargeInfo.maxCharges then
+		-- Only read maxCharges if NOT a secret value
+		if not issecretvalue or not issecretvalue(chargeInfo.maxCharges) then
+			maxCharges = chargeInfo.maxCharges
+		else
+			-- Secret value - default to 2 (most charge spells have 2)
+			maxCharges = 2
+		end
+	end
+	
+	-- Only show charge indicators if > 1 charge
+	hasCharges = maxCharges > 1
+	
+	-- Check if icon tracking is enabled
+	local trackIcon = should_track_spell_icon(spellID)
+	
+	-- Calculate container width based on whether spell has charges and icon tracking
+	-- Layout: [pad][icon][2][cooldown][2][range][2][charges?][2][iconChange?][pad]
+	local chargeWidth = hasCharges and (maxCharges * barSize + (maxCharges - 1) * 2) or 0  -- squares + gaps
+	local extraGap = hasCharges and 2 or 0  -- gap before charges section
+	local iconChangeWidth = trackIcon and (barSize + 2) or 0  -- icon change indicator + gap
+	local containerWidth = (barSize * 3 + 4) + chargeWidth + extraGap + iconChangeWidth + pad * 2
+	
 	local container = CreateFrame("Frame", nil, main_frame)
-	container:SetSize((barSize * 3 + 4) + pad * 2, barSize + pad * 2)
+	container:SetSize(containerWidth, barSize + pad * 2)
 	
 	local bg = container:CreateTexture(nil, "BACKGROUND")
 	bg:SetAllPoints()
@@ -669,6 +982,7 @@ local function create_spell_bar(spellID, spellName, texture, actionSlot)
 	bar:SetStatusBarColor(0, 0, 0)
 	bar:SetPoint("LEFT")
 	
+	-- Range indicator (after cooldown bar)
 	local rangeBase = container:CreateTexture(nil, "ARTWORK")
 	rangeBase:SetSize(barSize, barSize)
 	rangeBase:SetPoint("LEFT", clipContainer, "RIGHT", 2, 0)
@@ -679,11 +993,89 @@ local function create_spell_bar(spellID, spellName, texture, actionSlot)
 	rangeOverlay:SetPoint("CENTER", rangeBase, "CENTER", 0, 0)
 	rangeOverlay:SetColorTexture(RANGE_COLORS.noTarget[1], RANGE_COLORS.noTarget[2], RANGE_COLORS.noTarget[3], 1)
 	
+	-- Create charge indicators if spell has charges (to the right of range)
+	local chargeIndicators = nil
+	
+	if hasCharges then
+		chargeIndicators = {}
+		local prevElement = rangeBase
+		
+		for i = 1, maxCharges do
+			-- Blue background (charge available)
+			local chargeBg = container:CreateTexture(nil, "ARTWORK")
+			chargeBg:SetSize(barSize, barSize)
+			chargeBg:SetPoint("LEFT", prevElement, "RIGHT", 2, 0)
+			chargeBg:SetColorTexture(0, 0.5, 1, 1)  -- Blue = available
+			
+			-- Black overlay (charge on cooldown) - shown when charge is NOT available
+			local chargeOverlay = container:CreateTexture(nil, "OVERLAY")
+			chargeOverlay:SetSize(barSize, barSize)
+			chargeOverlay:SetPoint("CENTER", chargeBg, "CENTER", 0, 0)
+			chargeOverlay:SetColorTexture(0, 0, 0, 1)  -- Black = on cooldown
+			chargeOverlay:Hide()  -- Start hidden (charge available)
+			
+			-- Hidden detector bar to safely read secret charge values
+			-- StatusBar shows texture when value > min
+			-- So min=i-1, max=i means: shows when currentCharges >= i
+			-- Must parent to UIParent and use proper size for texture detection to work
+			local detector = CreateFrame("StatusBar", nil, UIParent)
+			detector:SetSize(100, 10)
+			detector:SetPoint("TOPLEFT", UIParent, "TOPLEFT", -500, 500)  -- Off-screen
+			detector:SetStatusBarTexture("Interface\\TargetingFrame\\UI-StatusBar")
+			detector:SetStatusBarColor(1, 1, 1, 1)
+			detector:SetMinMaxValues(i - 1, i)  -- Shows when charges >= i (value > min)
+			detector:SetValue(0)
+			detector:SetAlpha(0)  -- Invisible but functional
+			detector:Show()
+			
+			chargeIndicators[i] = {
+				bg = chargeBg,
+				overlay = chargeOverlay,
+				detector = detector,
+			}
+			
+			prevElement = chargeBg
+		end
+	end
+	
+	-- Icon change indicator (after charges, or after range if no charges)
+	local iconChangeIndicator = nil
+	if trackIcon then
+		local anchorElement = rangeBase
+		if hasCharges and chargeIndicators then
+			anchorElement = chargeIndicators[maxCharges].bg
+		end
+		
+		-- Grey background (normal state)
+		local iconChangeBg = container:CreateTexture(nil, "ARTWORK")
+		iconChangeBg:SetSize(barSize, barSize)
+		iconChangeBg:SetPoint("LEFT", anchorElement, "RIGHT", 2, 0)
+		iconChangeBg:SetColorTexture(0.3, 0.3, 0.3, 1)  -- Grey = normal
+		
+		-- Red overlay (changed state) - shown when icon has changed
+		local iconChangeOverlay = container:CreateTexture(nil, "OVERLAY")
+		iconChangeOverlay:SetSize(barSize, barSize)
+		iconChangeOverlay:SetPoint("CENTER", iconChangeBg, "CENTER", 0, 0)
+		iconChangeOverlay:SetColorTexture(0.8, 0.2, 0.2, 1)  -- Red = changed
+		iconChangeOverlay:Hide()  -- Start hidden (normal state)
+		
+		iconChangeIndicator = {
+			bg = iconChangeBg,
+			overlay = iconChangeOverlay,
+		}
+	end
+	
 	trackedSpells[spellID] = { 
 		bar = bar, 
 		container = container, 
 		actionSlot = actionSlot,
-		rangeOverlay = rangeOverlay
+		rangeOverlay = rangeOverlay,
+		chargeIndicators = chargeIndicators,
+		maxCharges = hasCharges and maxCharges or nil,
+		icon = icon,  -- Store icon reference for icon change detection
+		originalTexture = texture,  -- Store original texture for comparison
+		currentTexture = texture,  -- Track current texture for change detection
+		iconChangeIndicator = iconChangeIndicator,  -- Icon change state indicator
 	}
 	spellBars[barIndex] = spellID
 end
@@ -734,9 +1126,10 @@ local function update_all_item_bars()
 end
 
 local function animate_item_bars()
+	if previewMode then return end  -- Skip updates in preview mode
 	local currentTime = GetTime()
 	for itemKey, data in pairs(trackedItems) do
-		if data.cdStartTime and data.cdDuration then
+		if GCDI.is_item_enabled(itemKey) and data.cdStartTime and data.cdDuration then
 			local remaining = (data.cdStartTime + data.cdDuration) - currentTime
 			if remaining > 0 then
 				data.bar:SetValue(remaining)
@@ -750,13 +1143,57 @@ local function animate_item_bars()
 	end
 end
 
+-- Update item charge indicators (blue if has item, black if not)
+local function update_item_charge_indicators()
+	if previewMode then return end  -- Skip updates in preview mode
+	for itemKey, data in pairs(trackedItems) do
+		if GCDI.is_item_enabled(itemKey) and data.chargeOverlay then
+			local hasCharge = false
+			
+			if data.slot then
+				-- Equipped item (trinket) - always has charge if equipped
+				hasCharge = (GetInventoryItemID("player", data.slot) ~= nil)
+			else
+				-- Consumable - check bag count
+				local count = C_Item.GetItemCount(data.itemID, false, false)
+				hasCharge = (count and count > 0)
+			end
+			
+			if hasCharge then
+				data.chargeOverlay:Hide()  -- Show blue
+			else
+				data.chargeOverlay:Show()  -- Show black
+			end
+		end
+	end
+end
+
+-- Check if item should show charges
+local function should_show_item_charges(itemKey)
+	if not settings or not settings.itemSettings then return false end
+	local itemSettings = settings.itemSettings[itemKey]
+	if itemSettings and itemSettings.showCharges == true then
+		return true
+	end
+	return false  -- Default to not showing charges
+end
+
+-- Export for options UI
+GCDI.should_show_item_charges = should_show_item_charges
+
 local function create_item_bar(itemKey, itemName, texture, itemID, slot)
 	local barIndex = #itemBars + 1
 	local barSize = configs.barHeight
 	local pad = configs.bgPadding
 	
+	-- Check if we should show charges for this item
+	local showCharges = should_show_item_charges(itemKey)
+	
+	-- Layout: [Icon][Cooldown] or [Icon][Cooldown][Charge]
+	local numSquares = showCharges and 3 or 2
+	local numGaps = showCharges and 4 or 2
 	local container = CreateFrame("Frame", nil, main_frame)
-	container:SetSize((barSize * 2 + 2) + pad * 2, barSize + pad * 2)
+	container:SetSize((barSize * numSquares + numGaps) + pad * 2, barSize + pad * 2)
 	
 	local bg = container:CreateTexture(nil, "BACKGROUND")
 	bg:SetAllPoints()
@@ -787,12 +1224,28 @@ local function create_item_bar(itemKey, itemName, texture, itemID, slot)
 	bar:SetStatusBarColor(0, 0, 0)
 	bar:SetPoint("LEFT")
 	
+	-- Charge indicator (only if enabled)
+	local chargeOverlay = nil
+	if showCharges then
+		local chargeBg = container:CreateTexture(nil, "ARTWORK")
+		chargeBg:SetSize(barSize, barSize)
+		chargeBg:SetPoint("LEFT", clipContainer, "RIGHT", 2, 0)
+		chargeBg:SetColorTexture(0, 0.5, 1, 1)  -- Blue = has charges
+		
+		chargeOverlay = container:CreateTexture(nil, "OVERLAY")
+		chargeOverlay:SetSize(barSize, barSize)
+		chargeOverlay:SetPoint("CENTER", chargeBg, "CENTER", 0, 0)
+		chargeOverlay:SetColorTexture(0, 0, 0, 1)  -- Black = no charges
+		chargeOverlay:Hide()  -- Start with charge available
+	end
+	
 	trackedItems[itemKey] = { 
 		bar = bar, 
 		container = container, 
 		itemID = itemID,
 		slot = slot,
-		name = itemName
+		name = itemName,
+		chargeOverlay = chargeOverlay,
 	}
 	itemBars[barIndex] = itemKey
 	container:Show()
@@ -807,6 +1260,240 @@ local function clear_item_bars()
 	end
 	wipe(trackedItems)
 	wipe(itemBars)
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- BUFF TRACKING BAR
+-- ═══════════════════════════════════════════════════════════════════════════
+
+-- Colors for buff bars
+local BUFF_COLORS = {
+	active = { 0.2, 0.8, 0.2 },     -- Green when buff is active
+	inactive = { 0.3, 0.3, 0.3 },   -- Grey when buff is not active
+	stackActive = { 0.4, 0.7, 1.0 }, -- Blue for active stack
+	stackEmpty = { 0, 0, 0 },        -- Black for empty stack
+}
+
+local function update_buff_bar(buffID)
+	if previewMode then return end  -- Skip updates in preview mode
+	if not GCDI.is_buff_enabled(buffID) then return end  -- Skip disabled buffs
+	-- buffID can be spellID or cooldownID depending on source
+	local data = trackedBuffs[buffID]
+	if not data then return end
+	
+	-- Use Cooldown Manager integration (like ArcUI)
+	-- CDM frames: cooldownID and auraInstanceID are readable, isActive is SECRET
+	local isActive = false
+	local stacks = 0
+	
+	-- Get fresh CDM frame reference from latest scan
+	local cdmFrame = cdmBuffFrames[buffID]
+	
+	-- Also check catalog for stored frame reference
+	local catalogEntry = GCDI.buffCatalog[buffID]
+	if not cdmFrame and catalogEntry and catalogEntry.cdmFrame then
+		cdmFrame = catalogEntry.cdmFrame
+	end
+	
+	if cdmFrame then
+		-- Check auraInstanceID - non-zero means buff is active
+		local auraID = cdmFrame.auraInstanceID
+		if auraID and type(auraID) == "number" and auraID > 0 then
+			isActive = true
+			
+			-- Get stacks using ArcUI's approach:
+			-- Use GetAuraDataByAuraInstanceID to get the aura data, then read applications
+			local auraData = C_UnitAuras.GetAuraDataByAuraInstanceID("player", auraID)
+			if auraData then
+				local secretApps = auraData.applications
+				
+				-- Use detector pattern to extract the secret value
+				-- Feed to detectors, then check which ones show their texture
+				if data.stackDetectors and secretApps then
+					for i, detector in ipairs(data.stackDetectors) do
+						detector:SetValue(secretApps)
+					end
+					-- Check which detectors show their texture (threshold met)
+					for i, detector in ipairs(data.stackDetectors) do
+						if detector:GetStatusBarTexture():IsShown() then
+							stacks = i
+						else
+							break
+						end
+					end
+				end
+			end
+		end
+	end
+	
+	-- Manual tracking fallback (for buffs not in CDM)
+	if not isActive and data.manualTracking then
+		local now = GetTime()
+		if data.expirationTime and data.expirationTime > now then
+			isActive = true
+			stacks = data.stacks or 0
+		else
+			data.expirationTime = nil
+			data.stacks = 0
+		end
+	end
+	
+	-- Debug output
+	if configs.debugMode then
+		local buffName = data.name or "Unknown"
+		local frameInfo = cdmFrame and ("auraID:" .. tostring(cdmFrame.auraInstanceID)) or "no frame"
+		local stackInfo = stacks > 0 and (" stacks:" .. stacks) or ""
+		debug("Buff " .. buffName .. " (ID:" .. buffID .. ") " .. (isActive and "ACTIVE" or "INACTIVE") .. " " .. frameInfo .. stackInfo)
+	end
+	
+	if isActive then
+		-- Buff is active
+		data.active = true
+		data.activeIndicator:SetColorTexture(BUFF_COLORS.active[1], BUFF_COLORS.active[2], BUFF_COLORS.active[3], 1)
+		
+		-- Update stack indicators if present
+		if data.stackIndicators and GCDI.should_show_buff_stacks(buffID) then
+			local maxDisplay = GCDI.get_buff_max_stacks_display(buffID)
+			
+			for i, indicator in ipairs(data.stackIndicators) do
+				if i <= maxDisplay then
+					if i <= stacks then
+						indicator.overlay:Hide()  -- Show blue (stack active)
+					else
+						indicator.overlay:Show()  -- Show black (stack empty)
+					end
+					indicator.bg:Show()
+				else
+					indicator.bg:Hide()
+					indicator.overlay:Hide()
+				end
+			end
+			
+			-- Stack text removed - only show colored boxes
+		end
+	else
+		-- Buff is not active
+		data.active = false
+		data.activeIndicator:SetColorTexture(BUFF_COLORS.inactive[1], BUFF_COLORS.inactive[2], BUFF_COLORS.inactive[3], 1)
+		
+		-- Show all stack indicators as black (empty)
+		if data.stackIndicators then
+			for _, indicator in ipairs(data.stackIndicators) do
+				indicator.overlay:Show()  -- Show black
+			end
+		end
+	end
+end
+
+local function update_all_buff_bars()
+	if previewMode then return end  -- Skip updates in preview mode
+	for spellID in pairs(trackedBuffs) do
+		update_buff_bar(spellID)
+	end
+end
+
+local function create_buff_bar(spellID, spellName, texture)
+	local barIndex = #buffBars + 1
+	local barSize = configs.barHeight
+	local pad = configs.bgPadding
+	
+	-- Check if we should show stacks for this buff
+	local showStacks = GCDI.should_show_buff_stacks(spellID)
+	local maxStacksDisplay = GCDI.get_buff_max_stacks_display(spellID)
+	
+	-- Layout: [Icon][Active Indicator][Stacks?]
+	-- Active indicator is a single square that shows green when buff is active
+	local stackWidth = showStacks and (maxStacksDisplay * barSize + (maxStacksDisplay - 1) * 2) or 0
+	local extraGap = showStacks and 2 or 0
+	local containerWidth = (barSize * 2 + 2) + stackWidth + extraGap + pad * 2
+	
+	local container = CreateFrame("Frame", nil, main_frame)
+	container:SetSize(containerWidth, barSize + pad * 2)
+	
+	local bg = container:CreateTexture(nil, "BACKGROUND")
+	bg:SetAllPoints()
+	bg:SetColorTexture(0, 0, 0, 1)
+	
+	-- Icon
+	local icon = container:CreateTexture(nil, "ARTWORK")
+	icon:SetSize(barSize, barSize)
+	icon:SetPoint("LEFT", pad, 0)
+	icon:SetTexture(texture)
+	icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+	
+	-- Active indicator (shows if buff is active)
+	local activeIndicator = container:CreateTexture(nil, "ARTWORK")
+	activeIndicator:SetSize(barSize, barSize)
+	activeIndicator:SetPoint("LEFT", icon, "RIGHT", 2, 0)
+	activeIndicator:SetColorTexture(BUFF_COLORS.inactive[1], BUFF_COLORS.inactive[2], BUFF_COLORS.inactive[3], 1)
+	
+	-- Stack indicators (optional) - colored boxes only, no text
+	local stackIndicators = nil
+	local stackDetectors = nil  -- Hidden StatusBars for detecting secret stack values
+	
+	if showStacks and maxStacksDisplay > 0 then
+		stackIndicators = {}
+		stackDetectors = {}  -- Create detectors for ArcUI-style stack detection
+		local prevElement = activeIndicator
+		
+		for i = 1, maxStacksDisplay do
+			-- Blue background (stack active)
+			local stackBg = container:CreateTexture(nil, "ARTWORK")
+			stackBg:SetSize(barSize, barSize)
+			stackBg:SetPoint("LEFT", prevElement, "RIGHT", 2, 0)
+			stackBg:SetColorTexture(BUFF_COLORS.stackActive[1], BUFF_COLORS.stackActive[2], BUFF_COLORS.stackActive[3], 1)
+			
+			-- Black overlay (stack empty) - shown when stack is NOT present
+			local stackOverlay = container:CreateTexture(nil, "OVERLAY")
+			stackOverlay:SetSize(barSize, barSize)
+			stackOverlay:SetPoint("CENTER", stackBg, "CENTER", 0, 0)
+			stackOverlay:SetColorTexture(BUFF_COLORS.stackEmpty[1], BUFF_COLORS.stackEmpty[2], BUFF_COLORS.stackEmpty[3], 1)
+			stackOverlay:Show()  -- Start shown (no stacks)
+			
+			-- Hidden detector StatusBar for this stack level (ArcUI pattern)
+			-- When value >= threshold, the statusbar texture becomes visible
+			local detector = CreateFrame("StatusBar", nil, UIParent)
+			detector:SetSize(100, 10)
+			detector:SetPoint("TOPLEFT", UIParent, "TOPLEFT", -500, 500 - (i * 15))
+			detector:SetStatusBarTexture("Interface\\TargetingFrame\\UI-StatusBar")
+			detector:SetStatusBarColor(1, 1, 1, 1)
+			detector:SetMinMaxValues(i - 1, i)  -- Shows texture when value >= i
+			detector:SetValue(0)
+			detector:SetAlpha(0)  -- Invisible
+			detector:Show()
+			
+			stackIndicators[i] = {
+				bg = stackBg,
+				overlay = stackOverlay,
+			}
+			stackDetectors[i] = detector
+			
+			prevElement = stackBg
+		end
+	end
+	
+	trackedBuffs[spellID] = {
+		container = container,
+		activeIndicator = activeIndicator,
+		stackIndicators = stackIndicators,
+		stackDetectors = stackDetectors,  -- For ArcUI-style stack detection
+		active = false,
+		name = spellName,
+		icon = texture,
+	}
+	buffBars[barIndex] = spellID
+	container:Show()
+end
+
+local function clear_buff_bars()
+	for _, data in pairs(trackedBuffs) do
+		if data.container then
+			data.container:Hide()
+			data.container:SetParent(nil)
+		end
+	end
+	wipe(trackedBuffs)
+	wipe(buffBars)
 end
 
 -- ═══════════════════════════════════════════════════════════════════════════
@@ -880,46 +1567,54 @@ local function has_native_range_setting(spellID)
 	return spellSettings and spellSettings.hasNativeRange == true
 end
 
+-- Auto-detect native range for all tracked spells
+local function detect_native_range_for_spells()
+	if not UnitExists("target") then return end
+	
+	for spellID, data in pairs(trackedSpells) do
+		if GCDI.is_spell_enabled(spellID) then
+			local actionSlot = data.actionSlot
+			if actionSlot then
+				local rangeResult = IsActionInRange(actionSlot)
+				if rangeResult ~= nil then
+					-- This spell has native range detection
+					if not settings.spellSettings[spellID] then
+						settings.spellSettings[spellID] = {}
+					end
+					if settings.spellSettings[spellID].hasNativeRange ~= true then
+						settings.spellSettings[spellID].hasNativeRange = true
+						if configs.debugMode then
+							local name = GCDI.spellCatalog[spellID] and GCDI.spellCatalog[spellID].name or spellID
+							print("|cff00ff00GCDIndicator:|r Native range detected for: " .. name)
+						end
+					end
+				end
+			end
+		end
+	end
+end
+
+GCDI.detect_native_range_for_spells = detect_native_range_for_spells
+
 local function update_range_indicators()
+	if previewMode then return end  -- Skip updates in preview mode
 	for i, spellID in ipairs(spellBars) do
 		local spellData = trackedSpells[spellID]
-		if spellData and spellData.rangeOverlay then
+		if spellData and spellData.rangeOverlay and GCDI.is_spell_enabled(spellID) then
 			local overlay = spellData.rangeOverlay
 			local actionSlot = spellData.actionSlot
 			
 			if is_spell_self_cast(spellID) then
-				overlay:SetColorTexture(RANGE_COLORS.noTarget[1], RANGE_COLORS.noTarget[2], RANGE_COLORS.noTarget[3], 1)
-			elseif not UnitExists("target") then
-				overlay:SetColorTexture(RANGE_COLORS.noTarget[1], RANGE_COLORS.noTarget[2], RANGE_COLORS.noTarget[3], 1)
+				overlay:Hide()  -- Hide range indicator for self-cast spells
 			else
-				local useOverride = has_range_override(spellID)
+				overlay:Show()  -- Make sure it's visible for non-self-cast spells
 				
-				if useOverride then
-					local fallbackResult = is_in_fallback_range(spellID)
-					if fallbackResult == nil then
-						overlay:SetColorTexture(RANGE_COLORS.noTarget[1], RANGE_COLORS.noTarget[2], RANGE_COLORS.noTarget[3], 1)
-					elseif fallbackResult then
-						overlay:SetColorTexture(RANGE_COLORS.inRange[1], RANGE_COLORS.inRange[2], RANGE_COLORS.inRange[3], 1)
-					else
-						overlay:SetColorTexture(RANGE_COLORS.outOfRange[1], RANGE_COLORS.outOfRange[2], RANGE_COLORS.outOfRange[3], 1)
-					end
-				elseif has_native_range_setting(spellID) then
-					local inRange
-					if actionSlot then
-						inRange = IsActionInRange(actionSlot)
-					end
-					
-					if inRange == true then
-						overlay:SetColorTexture(RANGE_COLORS.inRange[1], RANGE_COLORS.inRange[2], RANGE_COLORS.inRange[3], 1)
-					elseif inRange == false then
-						overlay:SetColorTexture(RANGE_COLORS.outOfRange[1], RANGE_COLORS.outOfRange[2], RANGE_COLORS.outOfRange[3], 1)
-					else
-						overlay:SetColorTexture(RANGE_COLORS.noTarget[1], RANGE_COLORS.noTarget[2], RANGE_COLORS.noTarget[3], 1)
-					end
+				if not UnitExists("target") then
+					overlay:SetColorTexture(RANGE_COLORS.noTarget[1], RANGE_COLORS.noTarget[2], RANGE_COLORS.noTarget[3], 1)
 				else
-					if auto_detect_self_cast(spellID, actionSlot) then
-						overlay:SetColorTexture(RANGE_COLORS.noTarget[1], RANGE_COLORS.noTarget[2], RANGE_COLORS.noTarget[3], 1)
-					else
+					local useOverride = has_range_override(spellID)
+					
+					if useOverride then
 						local fallbackResult = is_in_fallback_range(spellID)
 						if fallbackResult == nil then
 							overlay:SetColorTexture(RANGE_COLORS.noTarget[1], RANGE_COLORS.noTarget[2], RANGE_COLORS.noTarget[3], 1)
@@ -927,6 +1622,32 @@ local function update_range_indicators()
 							overlay:SetColorTexture(RANGE_COLORS.inRange[1], RANGE_COLORS.inRange[2], RANGE_COLORS.inRange[3], 1)
 						else
 							overlay:SetColorTexture(RANGE_COLORS.outOfRange[1], RANGE_COLORS.outOfRange[2], RANGE_COLORS.outOfRange[3], 1)
+						end
+					elseif has_native_range_setting(spellID) then
+						local inRange
+						if actionSlot then
+							inRange = IsActionInRange(actionSlot)
+						end
+						
+						if inRange == true then
+							overlay:SetColorTexture(RANGE_COLORS.inRange[1], RANGE_COLORS.inRange[2], RANGE_COLORS.inRange[3], 1)
+						elseif inRange == false then
+							overlay:SetColorTexture(RANGE_COLORS.outOfRange[1], RANGE_COLORS.outOfRange[2], RANGE_COLORS.outOfRange[3], 1)
+						else
+							overlay:SetColorTexture(RANGE_COLORS.noTarget[1], RANGE_COLORS.noTarget[2], RANGE_COLORS.noTarget[3], 1)
+						end
+					else
+						if auto_detect_self_cast(spellID, actionSlot) then
+							overlay:Hide()  -- Auto-detected self-cast, hide it
+						else
+							local fallbackResult = is_in_fallback_range(spellID)
+							if fallbackResult == nil then
+								overlay:SetColorTexture(RANGE_COLORS.noTarget[1], RANGE_COLORS.noTarget[2], RANGE_COLORS.noTarget[3], 1)
+							elseif fallbackResult then
+								overlay:SetColorTexture(RANGE_COLORS.inRange[1], RANGE_COLORS.inRange[2], RANGE_COLORS.inRange[3], 1)
+							else
+								overlay:SetColorTexture(RANGE_COLORS.outOfRange[1], RANGE_COLORS.outOfRange[2], RANGE_COLORS.outOfRange[3], 1)
+							end
 						end
 					end
 				end
@@ -972,6 +1693,7 @@ local function create_resource_bar(name, color)
 end
 
 local function update_health_bar()
+	if previewMode then return end  -- Skip updates in preview mode
 	if not resourceBars.health then return end
 	local bar = resourceBars.health.bar
 	local rawMax = UnitHealthMax("player")
@@ -983,6 +1705,7 @@ local function update_health_bar()
 end
 
 local function update_rage_bar()
+	if previewMode then return end  -- Skip updates in preview mode
 	if not resourceBars.rage then return end
 	local bar = resourceBars.rage.bar
 	local rawMax = UnitPowerMax("player", Enum.PowerType.Rage)
@@ -997,6 +1720,7 @@ local function update_rage_bar()
 end
 
 local function update_energy_bar()
+	if previewMode then return end  -- Skip updates in preview mode
 	if not resourceBars.energy then return end
 	local bar = resourceBars.energy.bar
 	local rawMax = UnitPowerMax("player", Enum.PowerType.Energy)
@@ -1011,6 +1735,7 @@ local function update_energy_bar()
 end
 
 local function update_combo_points_bar()
+	if previewMode then return end  -- Skip updates in preview mode
 	if not resourceBars.comboPoints then return end
 	local data = resourceBars.comboPoints
 	local bar = data.bar
@@ -1070,6 +1795,10 @@ reposition_all = function()
 	local gcdContainerHeight = configs.size + pad * 2
 	local spellBarHeight = barSize + pad * 2
 	
+	-- Resource bar width (200 + padding)
+	local resourceBarWidth = 200 + pad * 2
+	local buffXOffset = resourceBarWidth + 5  -- 5 pixel gap to the right of resource bars
+	
 	local yOffset = 0
 	local resources = { "health", "rage", "energy", "comboPoints" }
 	for _, name in ipairs(resources) do
@@ -1103,6 +1832,19 @@ reposition_all = function()
 			data.container:SetPoint("TOPLEFT", main_frame.anchor, "TOPLEFT", 0, yOffset)
 			data.container:Show()
 			yOffset = yOffset - spellBarHeight - spacing
+		end
+	end
+	
+	-- Position buff bars to the RIGHT of resource bars, starting from top
+	local buffYOffset = 0  -- Start at top
+	local orderedBuffs = get_ordered_buffs()
+	for i, spellID in ipairs(orderedBuffs) do
+		local data = trackedBuffs[spellID]
+		if data and data.container then
+			data.container:ClearAllPoints()
+			data.container:SetPoint("TOPLEFT", main_frame.anchor, "TOPLEFT", buffXOffset, buffYOffset)
+			data.container:Show()
+			buffYOffset = buffYOffset - spellBarHeight - spacing
 		end
 	end
 	
@@ -1195,6 +1937,230 @@ local function scan_action_bars_for_items()
 			actionBarItems[id] = true
 		end
 	end
+end
+
+-- Scan Blizzard's Cooldown Manager for buff frames
+local function scan_cdm_buff_frames()
+	-- Don't wipe - update in place to preserve references
+	-- Mark all existing as not found, then update those we find
+	local foundThisScan = {}
+	
+	local viewer = _G["BuffIconCooldownViewer"]
+	if not viewer then
+		if configs.debugMode then
+			debug("CDM BuffIconCooldownViewer not found")
+		end
+		return 0
+	end
+	
+	local foundCount = 0
+	local newCount = 0
+	
+	-- Method 1: Use itemFramePool if available (proper CDM way)
+	if viewer.itemFramePool then
+		for frame in viewer.itemFramePool:EnumerateActive() do
+			local cooldownID = frame.cooldownID
+			if cooldownID then
+				foundCount = foundCount + 1
+				cdmBuffFrames[cooldownID] = frame
+				foundThisScan[cooldownID] = true
+				
+				-- Try to get spell info from the frame
+				local spellName = nil
+				local texture = nil
+				
+				-- CDM frames often have Icon child
+				if frame.Icon then
+					texture = frame.Icon:GetTexture()
+				end
+				
+				-- Get name from tooltip or spell lookup
+				if frame.GetTooltipText then
+					spellName = frame:GetTooltipText()
+				end
+				
+				-- Store by cooldownID
+				if not GCDI.buffCatalog[cooldownID] then
+					GCDI.buffCatalog[cooldownID] = {
+						name = spellName or ("Buff " .. cooldownID),
+						texture = texture or 134400,  -- Default question mark
+						cooldownID = cooldownID,
+						cdmFrame = frame,
+						hasStacks = false,
+					}
+					
+					-- Save to settings
+					if settings then
+						if not settings.buffSettings then
+							settings.buffSettings = {}
+						end
+						if not settings.buffSettings[cooldownID] then
+							settings.buffSettings[cooldownID] = {
+								enabled = true,
+								showStacks = true,
+								maxStacksDisplay = 5,
+							}
+							newCount = newCount + 1
+						end
+					end
+					
+					if configs.debugMode then
+						debug("CDM auto-added: " .. (spellName or cooldownID) .. " (cdID:" .. cooldownID .. ")")
+					end
+				else
+					-- Update frame reference
+					GCDI.buffCatalog[cooldownID].cdmFrame = frame
+				end
+			end
+		end
+	end
+	
+	-- Method 2: Fallback to GetChildren if itemFramePool not available or empty
+	if foundCount == 0 then
+		local children = {viewer:GetChildren()}
+		for _, frame in ipairs(children) do
+			local cooldownID = frame.cooldownID
+			if cooldownID then
+				foundCount = foundCount + 1
+				cdmBuffFrames[cooldownID] = frame
+				foundThisScan[cooldownID] = true
+				
+				if not GCDI.buffCatalog[cooldownID] then
+					local texture = frame.Icon and frame.Icon:GetTexture() or 134400
+					GCDI.buffCatalog[cooldownID] = {
+						name = "Buff " .. cooldownID,
+						texture = texture,
+						cooldownID = cooldownID,
+						cdmFrame = frame,
+						hasStacks = false,
+					}
+					
+					if settings then
+						if not settings.buffSettings then settings.buffSettings = {} end
+						if not settings.buffSettings[cooldownID] then
+							settings.buffSettings[cooldownID] = {
+								enabled = true,
+								showStacks = true,
+								maxStacksDisplay = 5,
+							}
+							newCount = newCount + 1
+						end
+					end
+				else
+					GCDI.buffCatalog[cooldownID].cdmFrame = frame
+				end
+			end
+		end
+	end
+	
+	-- Clean up stale frame references (but keep catalog entries)
+	for buffID, frame in pairs(cdmBuffFrames) do
+		if not foundThisScan[buffID] then
+			cdmBuffFrames[buffID] = nil  -- Remove stale frame reference
+			-- Keep catalog entry so bar stays visible
+		end
+	end
+	
+	if configs.debugMode and (foundCount > 0 or newCount > 0) then
+		debug("CDM scan: " .. foundCount .. " frames, " .. newCount .. " new")
+	end
+	
+	return newCount
+end
+
+local function scan_buffs()
+	-- Rebuild buffCatalog from saved settings
+	if settings and settings.buffSettings then
+		for key, _ in pairs(settings.buffSettings) do
+			-- Handle both number and string keys (SavedVariables can store either)
+			local spellID = tonumber(key)
+			if spellID and spellID > 0 then
+				-- Add to catalog if not already there
+				if not GCDI.buffCatalog[spellID] then
+					local spellName = C_Spell.GetSpellName(spellID)
+					local texture = C_Spell.GetSpellTexture(spellID)
+					if spellName and texture then
+						GCDI.buffCatalog[spellID] = {
+							name = spellName,
+							texture = texture,
+							spellID = spellID,
+							hasStacks = false,
+						}
+					end
+				end
+			end
+		end
+	end
+	
+	-- Also scan CDM viewer for buff frames
+	scan_cdm_buff_frames()
+end
+
+-- Export for manual triggering
+GCDI.scan_cdm_buff_frames = scan_cdm_buff_frames
+
+rebuild_buff_bars = function()
+	clear_buff_bars()
+	
+	local orderedBuffs = GCDI.get_ordered_buffs()
+	
+	for _, spellID in ipairs(orderedBuffs) do
+		local catalogEntry = GCDI.buffCatalog[spellID]
+		if catalogEntry then
+			create_buff_bar(spellID, catalogEntry.name, catalogEntry.texture)
+		end
+	end
+	
+	update_all_buff_bars()
+	reposition_all()
+end
+
+GCDI.rebuild_buff_bars = rebuild_buff_bars
+
+-- Add a buff to the catalog manually (for buffs not currently active)
+function GCDI.add_buff_to_catalog(spellID)
+	if not spellID or spellID <= 0 then return false end
+	if GCDI.buffCatalog[spellID] then return true end  -- Already exists
+	
+	local spellName = C_Spell.GetSpellName(spellID)
+	local texture = C_Spell.GetSpellTexture(spellID)
+	
+	if spellName and texture then
+		GCDI.buffCatalog[spellID] = {
+			name = spellName,
+			texture = texture,
+			spellID = spellID,
+			hasStacks = false,  -- Will be detected when buff is active
+		}
+		-- Save to settings for persistence
+		if settings then
+			if not settings.buffSettings then
+				settings.buffSettings = {}
+			end
+			if not settings.buffSettings[spellID] then
+				settings.buffSettings[spellID] = {
+					enabled = true,
+					showStacks = true,
+					maxStacksDisplay = 5,
+				}
+			end
+		end
+		return true
+	end
+	return false
+end
+
+-- Remove a buff from the catalog
+function GCDI.remove_buff_from_catalog(spellID)
+	if GCDI.buffCatalog[spellID] then
+		GCDI.buffCatalog[spellID] = nil
+		if settings and settings.buffSettings then
+			settings.buffSettings[spellID] = nil
+		end
+		rebuild_buff_bars()
+		return true
+	end
+	return false
 end
 
 local function scan_items()
@@ -1306,6 +2272,7 @@ rebuild_spell_bars = function()
 	
 	rebuild_item_bars()
 	update_all_spell_bars()
+	update_all_charge_indicators()
 	update_range_indicators()
 	reposition_all()
 end
@@ -1315,7 +2282,9 @@ GCDI.rebuild_spell_bars = rebuild_spell_bars
 local function scan_action_bars()
 	scan_spellbook()
 	scan_items()
+	scan_buffs()
 	rebuild_spell_bars()
+	rebuild_buff_bars()
 end
 
 GCDI.scan_action_bars = scan_action_bars
@@ -1338,10 +2307,16 @@ local function on_event(self, event, arg1, arg2, ...)
 	if event == "SPELL_UPDATE_COOLDOWN" then
 		update_gcd()
 		update_all_spell_bars()
+		update_all_charge_indicators()
 		update_all_item_bars()
+		
+	elseif event == "SPELL_UPDATE_CHARGES" then
+		-- Fires immediately when charges change - update charge indicators right away
+		update_all_charge_indicators()
 		
 	elseif event == "BAG_UPDATE" or event == "PLAYER_EQUIPMENT_CHANGED" then
 		schedule_scan(0.5)
+		update_item_charge_indicators()  -- Update charge indicators immediately
 		
 	elseif event == "UNIT_HEALTH" then
 		if arg1 == "player" then
@@ -1374,6 +2349,8 @@ local function on_event(self, event, arg1, arg2, ...)
 		main_frame.combatbar:SetStatusBarColor(UnitAffectingCombat("player") and 1 or 0, 0, 0)
 		schedule_scan(0.5)
 		update_all_resources()
+		-- Try to detect native range after a delay (in case player has a target)
+		C_Timer.After(3, detect_native_range_for_spells)
 		
 	elseif event == "UPDATE_SHAPESHIFT_FORM" or event == "UPDATE_BONUS_ACTIONBAR" then
 		schedule_scan(0.1)
@@ -1384,11 +2361,49 @@ local function on_event(self, event, arg1, arg2, ...)
 		
 	elseif event == "PLAYER_TARGET_CHANGED" then
 		update_range_indicators()
+		detect_native_range_for_spells()  -- Auto-detect native range when targeting
+		
+	elseif event == "UNIT_AURA" then
+		if arg1 == "player" then
+			-- Rescan CDM frames (they update on aura changes)
+			local newBuffs = scan_cdm_buff_frames()
+			if newBuffs > 0 then
+				-- New buffs found, rebuild bars
+				rebuild_buff_bars()
+			else
+				update_all_buff_bars()
+			end
+		end
+		
+	elseif event == "UNIT_SPELLCAST_SUCCEEDED" then
+		-- Manual buff tracking for buffs not in CDM
+		if arg1 == "player" then
+			local spellID = arg2
+			-- Check if this spell triggers a manual buff
+			if settings and settings.buffSettings then
+				local buffSetting = settings.buffSettings[spellID]
+				if buffSetting and buffSetting.manualTracking and buffSetting.triggerSpellID then
+					-- This spell triggers a buff
+					local buffData = trackedBuffs[buffSetting.triggerSpellID]
+					if buffData then
+						buffData.expirationTime = GetTime() + (buffSetting.duration or 10)
+						buffData.stacks = (buffData.stacks or 0) + (buffSetting.stacksPerCast or 1)
+						if buffSetting.maxStacks then
+							buffData.stacks = math.min(buffData.stacks, buffSetting.maxStacks)
+						end
+						update_buff_bar(buffSetting.triggerSpellID)
+					end
+				end
+			end
+		end
 		
 	elseif not InCombatLockdown() then
 		schedule_scan(0.3)
 	end
 end
+
+-- Forward declaration for minimap button (defined below)
+local create_minimap_button
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- INITIALIZATION
@@ -1416,6 +2431,12 @@ local function init()
 	if not settings.itemOrder then
 		settings.itemOrder = {}
 	end
+	if not settings.buffSettings then
+		settings.buffSettings = {}
+	end
+	if not settings.buffOrder then
+		settings.buffOrder = {}
+	end
 	if not settings.profiles then
 		settings.profiles = {}
 	end
@@ -1427,7 +2448,7 @@ local function init()
 	
 	local anchor = CreateFrame("Frame", nil, main_frame)
 	anchor:SetSize(1, 1)
-	anchor:SetPoint("CENTER", UIParent, "CENTER", configs.xpoint, configs.ypoint)
+	anchor:SetPoint("TOPLEFT", UIParent, "TOPLEFT", 20, -5)  -- Default: top-left, 20px from edge
 	main_frame.anchor = anchor
 	
 	local sepSize = 2
@@ -1523,6 +2544,7 @@ local function init()
 	
 	local events = {
 		"SPELL_UPDATE_COOLDOWN",
+		"SPELL_UPDATE_CHARGES",
 		"PLAYER_REGEN_DISABLED",
 		"PLAYER_REGEN_ENABLED", 
 		"PLAYER_ENTERING_WORLD",
@@ -1543,6 +2565,8 @@ local function init()
 	main_frame:RegisterUnitEvent("UNIT_POWER_UPDATE", "player")
 	main_frame:RegisterUnitEvent("UNIT_POWER_FREQUENT", "player")
 	main_frame:RegisterUnitEvent("UNIT_MAXPOWER", "player")
+	main_frame:RegisterUnitEvent("UNIT_AURA", "player")
+	main_frame:RegisterUnitEvent("UNIT_SPELLCAST_SUCCEEDED", "player")  -- For manual buff tracking
 	main_frame:SetScript("OnEvent", on_event)
 
 	if UnitAffectingCombat("player") then
@@ -1556,6 +2580,31 @@ local function init()
 		end
 	end)
 	
+	-- Auto-ingest buffs from CDM after it loads
+	C_Timer.After(1.5, function()
+		local viewer = _G["BuffIconCooldownViewer"]
+		if not viewer then
+			print("|cff00ff00GCDIndicator:|r CDM BuffIconCooldownViewer not found - enable in Edit Mode")
+			return
+		end
+		local children = {viewer:GetChildren()}
+		local newBuffs = scan_cdm_buff_frames()
+		rebuild_buff_bars()
+		local totalBuffs = 0
+		for _ in pairs(GCDI.buffCatalog) do totalBuffs = totalBuffs + 1 end
+		if newBuffs > 0 or totalBuffs > 0 then
+			print("|cff00ff00GCDIndicator:|r CDM scan: " .. #children .. " frames, " .. newBuffs .. " new, " .. totalBuffs .. " total buffs")
+		end
+	end)
+	-- Second pass in case CDM loads slowly
+	C_Timer.After(4.0, function()
+		local newBuffs = scan_cdm_buff_frames()
+		if newBuffs > 0 then
+			rebuild_buff_bars()
+			print("|cff00ff00GCDIndicator:|r CDM late scan: found " .. newBuffs .. " additional buffs")
+		end
+	end)
+	
 	if settings.currentProfile and settings.profiles and settings.profiles[settings.currentProfile] then
 		C_Timer.After(0.5, function()
 			local profile = settings.profiles[settings.currentProfile]
@@ -1564,13 +2613,262 @@ local function init()
 			settings.spellOrder = deepcopy(profile.spellOrder or {})
 			settings.itemSettings = deepcopy(profile.itemSettings or {})
 			settings.itemOrder = deepcopy(profile.itemOrder or {})
+			settings.buffSettings = deepcopy(profile.buffSettings or {})
+			settings.buffOrder = deepcopy(profile.buffOrder or {})
 			rebuild_spell_bars()
+			rebuild_buff_bars()
 			print("|cff00ff00GCDIndicator:|r Profile '" .. settings.currentProfile .. "' loaded")
 		end)
 	end
 	
 	C_Timer.NewTicker(0.1, update_range_indicators)
 	C_Timer.NewTicker(0.05, animate_item_bars)
+	C_Timer.NewTicker(0.05, update_charge_indicators_tick)  -- ArcUI pattern: feed+check in same tick
+	C_Timer.NewTicker(0.5, update_item_charge_indicators)  -- Update item charges (less frequent)
+	C_Timer.NewTicker(5, detect_native_range_for_spells)  -- Auto-detect native range every 5 sec
+	C_Timer.NewTicker(0.2, function()  -- Buff/icon updates
+		scan_cdm_buff_frames()  -- Rescan CDM to pick up active/inactive changes
+		update_all_buff_bars()
+		update_spell_icons()  -- Update icons for proc abilities that transform
+	end)
+	
+	-- Create minimap button
+	create_minimap_button()
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- MINIMAP BUTTON (via LibDBIcon)
+-- ═══════════════════════════════════════════════════════════════════════════
+
+local LDB = LibStub("LibDataBroker-1.1")
+local LDBIcon = LibStub("LibDBIcon-1.0")
+
+-- Create the LDB data object
+local GCDILauncher = LDB:NewDataObject("GCDIndicator", {
+	type = "launcher",
+	label = "GCD Indicator",
+	icon = "Interface\\Icons\\Inv_10_inscription3_darkmoondeckbox_black",
+	OnClick = function(self, button)
+		local optFrame = _G["GCDIndicatorOptions"]
+		if optFrame and optFrame:IsShown() then
+			optFrame:Hide()
+		elseif GCDI.create_options_frame then
+			GCDI.create_options_frame()
+		end
+	end,
+	OnTooltipShow = function(tooltip)
+		tooltip:AddLine("GCD Indicator")
+		tooltip:AddLine("|cffffffffLeft-click:|r Open/close options", 1, 1, 1)
+		tooltip:AddLine("|cffffffffDrag:|r Move button", 0.7, 0.7, 0.7)
+	end,
+})
+
+GCDI.LDBObject = GCDILauncher
+
+create_minimap_button = function()
+	-- Initialize minimap settings if not present
+	if not settings.minimap then
+		settings.minimap = {
+			hide = false,
+			minimapPos = 220,
+		}
+	end
+	
+	-- Register with LibDBIcon (handles HidingBar automatically)
+	if not LDBIcon:IsRegistered("GCDIndicator") then
+		LDBIcon:Register("GCDIndicator", GCDILauncher, settings.minimap)
+	end
+end
+
+GCDI.create_minimap_button = create_minimap_button
+
+-- Function to show/hide minimap button
+function GCDI.ToggleMinimapButton()
+	if settings.minimap then
+		settings.minimap.hide = not settings.minimap.hide
+		if settings.minimap.hide then
+			LDBIcon:Hide("GCDIndicator")
+		else
+			LDBIcon:Show("GCDIndicator")
+		end
+	end
+end
+
+-- Function to enter move mode (calls LibGCDI's /gcdi)
+function GCDI.toggle_move_mode()
+	-- Trigger the /gcdi command which shows the move popup
+	SlashCmdList['gcdi']()
+end
+
+-- Function to reset position (calls LibGCDI's /gcdr)
+function GCDI.reset_position()
+	-- Trigger the /gcdr command which shows the reset popup
+	SlashCmdList['gcdr']()
+end
+
+-- Preview mode background
+local previewBackground = nil
+
+-- Function to toggle preview mode
+function GCDI.toggle_preview_mode()
+	previewMode = not previewMode
+	
+	if previewMode then
+		-- Create background if it doesn't exist
+		if not previewBackground then
+			previewBackground = main_frame:CreateTexture(nil, "BACKGROUND", nil, -8)
+			previewBackground:SetColorTexture(0, 0, 0, 1)  -- Pitch black, fully opaque
+		end
+		
+		-- Size and show background to cover all bars
+		local pad = 10
+		previewBackground:ClearAllPoints()
+		previewBackground:SetPoint("TOPLEFT", main_frame.anchor, "TOPLEFT", -pad, pad + 5)
+		previewBackground:SetPoint("BOTTOMRIGHT", main_frame.anchor, "BOTTOMRIGHT", 400, -300)
+		previewBackground:Show()
+		
+		-- Fill resource bars with visible colors
+		-- IMPORTANT: Set MinMaxValues first, then Value, then Color
+		if resourceBars then
+			if resourceBars.health and resourceBars.health.bar then
+				resourceBars.health.bar:SetMinMaxValues(0, 100)
+				resourceBars.health.bar:SetValue(100)
+				resourceBars.health.bar:SetStatusBarColor(0, 0.8, 0)  -- Green
+				resourceBars.health.container:Show()
+			end
+			if resourceBars.rage and resourceBars.rage.bar then
+				resourceBars.rage.bar:SetMinMaxValues(0, 100)
+				resourceBars.rage.bar:SetValue(100)
+				resourceBars.rage.bar:SetStatusBarColor(0.8, 0, 0)  -- Red
+				resourceBars.rage.container:Show()
+			end
+			if resourceBars.energy and resourceBars.energy.bar then
+				resourceBars.energy.bar:SetMinMaxValues(0, 100)
+				resourceBars.energy.bar:SetValue(100)
+				resourceBars.energy.bar:SetStatusBarColor(1, 0.85, 0)  -- Yellow
+				resourceBars.energy.container:Show()
+			end
+			if resourceBars.comboPoints and resourceBars.comboPoints.bar then
+				resourceBars.comboPoints.bar:SetMinMaxValues(0, 100)
+				resourceBars.comboPoints.bar:SetValue(100)
+				resourceBars.comboPoints.bar:SetStatusBarColor(1, 0.5, 0)  -- Orange
+				resourceBars.comboPoints.container:Show()
+			end
+		end
+		
+		-- Set all spell bar indicators to visible colors
+		for spellID, data in pairs(trackedSpells) do
+			if data.rangeOverlay then
+				data.rangeOverlay:SetColorTexture(0, 1, 0, 1)  -- Green = in range
+			end
+			if data.chargeIndicators then
+				for _, indicator in ipairs(data.chargeIndicators) do
+					indicator.overlay:Hide()  -- Show blue (available)
+				end
+			end
+			if data.iconChangeIndicator then
+				data.iconChangeIndicator.overlay:Show()  -- Show red (changed)
+			end
+		end
+		
+		-- Set all item bar indicators
+		for itemKey, data in pairs(trackedItems) do
+			if data.rangeOverlay then
+				data.rangeOverlay:SetColorTexture(0, 1, 0, 1)  -- Green
+			end
+			if data.chargeOverlay then
+				data.chargeOverlay:Hide()  -- Hide overlay to show blue (has charge)
+			end
+		end
+		
+		-- Set all buff indicators to active
+		for buffID, data in pairs(trackedBuffs) do
+			if data.activeIndicator then
+				data.activeIndicator:SetColorTexture(0, 0.8, 0, 1)  -- Green = active
+			end
+			if data.stackIndicators then
+				for _, indicator in ipairs(data.stackIndicators) do
+					indicator.overlay:Hide()  -- Show blue (stack present)
+				end
+			end
+		end
+		
+		-- Show GCD and combat indicators with visible colors
+		if main_frame.gcdbar then
+			main_frame.gcdbar:SetStatusBarColor(1, 1, 1)  -- White (visible)
+			main_frame.gcdbar:SetValue(100)
+		end
+		if main_frame.combatbar then
+			main_frame.combatbar:SetStatusBarColor(1, 0, 0)  -- Red = in combat
+			main_frame.combatbar:SetValue(100)
+		end
+		if main_frame.stanceIndicator then
+			main_frame.stanceIndicator:SetColorTexture(0.5, 0.3, 0, 1)  -- Bear form color
+		end
+		
+		print("|cff00ff00GCDIndicator:|r Preview mode |cff00ff00ON|r - All bars filled")
+	else
+		-- Hide background
+		if previewBackground then
+			previewBackground:Hide()
+		end
+		
+		-- Force update all bars to restore real values
+		-- Resource bars need MinMaxValues reset and real values applied
+		if resourceBars then
+			if resourceBars.health and resourceBars.health.bar then
+				local max = tonumber(UnitHealthMax("player")) or 100000
+				resourceBars.health.bar:SetMinMaxValues(0, max)
+				resourceBars.health.bar:SetValue(UnitHealth("player"))
+				resourceBars.health.bar:SetStatusBarColor(RESOURCE_COLORS.health[1], RESOURCE_COLORS.health[2], RESOURCE_COLORS.health[3])
+			end
+			if resourceBars.rage and resourceBars.rage.bar then
+				local max = tonumber(UnitPowerMax("player", Enum.PowerType.Rage)) or 100
+				resourceBars.rage.bar:SetMinMaxValues(0, max)
+				resourceBars.rage.bar:SetValue(UnitPower("player", Enum.PowerType.Rage))
+				resourceBars.rage.bar:SetStatusBarColor(RESOURCE_COLORS.rage[1], RESOURCE_COLORS.rage[2], RESOURCE_COLORS.rage[3])
+			end
+			if resourceBars.energy and resourceBars.energy.bar then
+				local max = tonumber(UnitPowerMax("player", Enum.PowerType.Energy)) or 100
+				resourceBars.energy.bar:SetMinMaxValues(0, max)
+				resourceBars.energy.bar:SetValue(UnitPower("player", Enum.PowerType.Energy))
+				resourceBars.energy.bar:SetStatusBarColor(RESOURCE_COLORS.energy[1], RESOURCE_COLORS.energy[2], RESOURCE_COLORS.energy[3])
+			end
+			if resourceBars.comboPoints and resourceBars.comboPoints.bar then
+				local max = tonumber(UnitPowerMax("player", Enum.PowerType.ComboPoints)) or 8
+				resourceBars.comboPoints.bar:SetMinMaxValues(0, max)
+				resourceBars.comboPoints.bar:SetValue(UnitPower("player", Enum.PowerType.ComboPoints))
+				resourceBars.comboPoints.bar:SetStatusBarColor(RESOURCE_COLORS.comboPoints[1], RESOURCE_COLORS.comboPoints[2], RESOURCE_COLORS.comboPoints[3])
+			end
+		end
+		
+		-- Reset GCD and combat bars
+		if main_frame.gcdbar then
+			main_frame.gcdbar:SetStatusBarColor(0, 0, 0)
+			main_frame.gcdbar:SetValue(0)
+		end
+		if main_frame.combatbar then
+			main_frame.combatbar:SetStatusBarColor(UnitAffectingCombat("player") and 1 or 0, 0, 0)
+		end
+		
+		-- Update stance indicator
+		local formIndex = GetShapeshiftForm() or 0
+		local color = FORM_COLORS[formIndex] or FORM_COLORS.default
+		if main_frame.stanceIndicator then
+			main_frame.stanceIndicator:SetColorTexture(color[1], color[2], color[3], 1)
+		end
+		
+		-- Force update all tracked elements
+		update_all_spell_bars()
+		update_range_indicators()
+		update_all_charge_indicators()
+		update_all_item_bars()
+		update_item_charge_indicators()
+		update_all_buff_bars()
+		update_spell_icons()
+		
+		print("|cff00ff00GCDIndicator:|r Preview mode |cffff0000OFF|r - Normal display restored")
+	end
 end
 
 -- ═══════════════════════════════════════════════════════════════════════════
@@ -1594,6 +2892,136 @@ SlashCmdList["GCDOPT"] = function(msg)
 			print("  " .. key .. " = " .. tostring(data.name) .. " (ID: " .. tostring(data.itemID) .. ")")
 		end
 		print("|cff00ff00GCDIndicator:|r " .. count .. " items in catalog")
+	elseif msg == "buffs" then
+		-- List tracked buffs and their status
+		print("|cff00ff00GCDIndicator:|r --- Tracked Buffs Status ---")
+		print("|cff888888Note: Buff spell IDs are secret. Get IDs from Wowhead or tooltip addons.|r")
+		local count = 0
+		for spellID, data in pairs(GCDI.buffCatalog) do
+			count = count + 1
+			local auraData = C_UnitAuras.GetUnitAuraBySpellID("player", spellID)
+			local status = auraData and "|cff00ff00ACTIVE|r" or "|cff888888inactive|r"
+			local stacks = auraData and auraData.applications or 0
+			print("  " .. data.name .. " (ID: |cffffcc00" .. spellID .. "|r) - " .. status .. " [" .. stacks .. " stacks]")
+		end
+		if count == 0 then
+			print("  No buffs being tracked. Add buffs in /gcdopt -> Buffs tab")
+		end
+	elseif msg == "buffdebug" then
+		-- Debug: show what's saved in settings.buffSettings
+		print("|cff00ff00GCDIndicator:|r --- Buff Settings Debug ---")
+		if settings and settings.buffSettings then
+			local count = 0
+			for key, val in pairs(settings.buffSettings) do
+				count = count + 1
+				local keyType = type(key)
+				print("  Key: " .. tostring(key) .. " (type: " .. keyType .. "), enabled: " .. tostring(val.enabled))
+			end
+			print("|cff00ff00GCDIndicator:|r " .. count .. " entries in buffSettings")
+		else
+			print("  settings.buffSettings is nil or empty")
+		end
+		print("|cff00ff00GCDIndicator:|r --- Buff Catalog ---")
+		local catCount = 0
+		for spellID, data in pairs(GCDI.buffCatalog) do
+			catCount = catCount + 1
+			-- Test if this buff can be detected
+			local aura = C_UnitAuras.GetPlayerAuraBySpellID(spellID)
+			local canDetect = aura ~= nil and "YES" or "maybe-secret"
+			print("  " .. tostring(spellID) .. " = " .. tostring(data.name) .. " (detectable: " .. canDetect .. ")")
+		end
+		print("|cff00ff00GCDIndicator:|r " .. catCount .. " entries in buffCatalog")
+	elseif msg == "cdmimport" then
+		-- Force import from CDM
+		print("|cff00ff00GCDIndicator:|r Importing buffs from Cooldown Manager...")
+		local newBuffs = scan_cdm_buff_frames()
+		rebuild_buff_bars()
+		local totalBuffs = 0
+		for _ in pairs(GCDI.buffCatalog) do totalBuffs = totalBuffs + 1 end
+		print("|cff00ff00GCDIndicator:|r Imported " .. newBuffs .. " new buffs (" .. totalBuffs .. " total)")
+	
+	elseif msg == "range" then
+		-- Force detect native range for all spells
+		if not UnitExists("target") then
+			print("|cff00ff00GCDIndicator:|r Target an enemy first to detect native range")
+		else
+			detect_native_range_for_spells()
+			print("|cff00ff00GCDIndicator:|r Native range detection complete")
+			-- Show results
+			local nativeCount = 0
+			for spellID, _ in pairs(trackedSpells) do
+				if settings.spellSettings[spellID] and settings.spellSettings[spellID].hasNativeRange then
+					nativeCount = nativeCount + 1
+				end
+			end
+			print("|cff00ff00GCDIndicator:|r " .. nativeCount .. " spells have native range")
+		end
+	
+	elseif msg == "minimap" then
+		-- Toggle minimap button visibility
+		GCDI.ToggleMinimapButton()
+		local hidden = settings.minimap and settings.minimap.hide
+		print("|cff00ff00GCDIndicator:|r Minimap button " .. (hidden and "hidden" or "shown"))
+		
+	elseif msg == "testbuffs" or msg == "cdm" then
+		-- Scan Blizzard's Cooldown Manager for buff frames
+		print("|cff00ff00GCDIndicator:|r --- Scanning Cooldown Manager ---")
+		local viewer = _G["BuffIconCooldownViewer"]
+		if not viewer then
+			print("|cffff0000BuffIconCooldownViewer not found!|r")
+			print("Make sure Blizzard's Cooldown Manager is enabled in Edit Mode.")
+			return
+		end
+		
+		print("Viewer found: " .. tostring(viewer))
+		print("Has itemFramePool: " .. tostring(viewer.itemFramePool ~= nil))
+		
+		local activeCount = 0
+		local frameCount = 0
+		
+		-- Try itemFramePool first
+		if viewer.itemFramePool then
+			print("Using itemFramePool:EnumerateActive()...")
+			for frame in viewer.itemFramePool:EnumerateActive() do
+				frameCount = frameCount + 1
+				local cooldownID = frame.cooldownID
+				local auraInstanceID = frame.auraInstanceID
+				-- Note: frame.isActive is SECRET - cannot read it!
+				
+				local texture = frame.Icon and frame.Icon:GetTexture() or "none"
+				local activeStr = ""
+				if auraInstanceID and type(auraInstanceID) == "number" and auraInstanceID > 0 then
+					activeStr = "|cff00ff00ACTIVE|r (auraID: " .. auraInstanceID .. ")"
+					activeCount = activeCount + 1
+				else
+					activeStr = "|cff888888inactive|r (auraID: " .. tostring(auraInstanceID) .. ")"
+				end
+				print("  cdID: |cffffcc00" .. tostring(cooldownID) .. "|r - " .. activeStr .. " (tex: " .. tostring(texture) .. ")")
+			end
+		else
+			-- Fallback to GetChildren
+			print("Using GetChildren()...")
+			local children = {viewer:GetChildren()}
+			for _, frame in ipairs(children) do
+				frameCount = frameCount + 1
+				local cooldownID = frame.cooldownID
+				if cooldownID then
+					local auraInstanceID = frame.auraInstanceID
+					local activeStr = ""
+					if auraInstanceID and type(auraInstanceID) == "number" and auraInstanceID > 0 then
+						activeStr = "|cff00ff00ACTIVE|r (auraID: " .. auraInstanceID .. ")"
+						activeCount = activeCount + 1
+					else
+						activeStr = "|cff888888inactive|r"
+					end
+					print("  cdID: |cffffcc00" .. tostring(cooldownID) .. "|r - " .. activeStr)
+				else
+					print("  [frame without cooldownID]")
+				end
+			end
+		end
+		
+		print("|cff00ff00GCDIndicator:|r " .. frameCount .. " frames, " .. activeCount .. " active")
 	else
 		if GCDI.create_options_frame then
 			GCDI.create_options_frame()
