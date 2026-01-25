@@ -129,7 +129,10 @@ end
 -- Save the current order
 function CatalogManager:SaveOrder(orderedList)
     local settings = self.getSettings()
-    if not settings then return end
+    if not settings then 
+        print("|cffff0000LibCatalog:|r SaveOrder failed - no settings")
+        return 
+    end
     
     local newOrder = {}
     for i, id in ipairs(orderedList) do
@@ -151,19 +154,38 @@ function CatalogManager:MoveInOrder(id, direction)
         end
     end
     
-    if not currentIndex then return end
+    if not currentIndex then 
+        print("|cffff0000LibCatalog:|r Item not found in order: " .. tostring(id))
+        return 
+    end
     
     local newIndex = currentIndex + direction
     if newIndex < 1 or newIndex > #ordered then return end
     
     -- Swap
     ordered[currentIndex], ordered[newIndex] = ordered[newIndex], ordered[currentIndex]
+    
+    -- Debug: print before save
+    print("|cff00ff00LibCatalog:|r " .. self.name .. " - Moving " .. tostring(id) .. " from " .. currentIndex .. " to " .. newIndex)
+    
     self:SaveOrder(ordered)
+    
+    -- Debug: verify order was saved
+    local savedOrder = self.getOrderKey()
+    if savedOrder then
+        print("|cff00ff00LibCatalog:|r Saved order has " .. #savedOrder .. " items")
+    else
+        print("|cffff0000LibCatalog:|r Order not saved!")
+    end
     
     -- Auto-save and rebuild
     if GCDI and GCDI.auto_save_to_profile then
         GCDI.auto_save_to_profile()
+        print("|cff00ff00LibCatalog:|r Auto-saved to profile")
+    else
+        print("|cffff9900LibCatalog:|r No profile active, saving to base settings only")
     end
+    
     if self.onReorder then
         self.onReorder()
     end

@@ -412,7 +412,10 @@ local function init_catalog_managers()
 		getOrderKey = function() return settings and settings.spellOrder end,
 		setOrderKey = function(order) if settings then settings.spellOrder = order end end,
 		isEnabled = GCDI.is_spell_enabled,
-		onReorder = function() rebuild_spell_bars() end,
+		onReorder = function() 
+			rebuild_spell_bars()
+			print("|cff00ff00GCDIndicator:|r Spell bars rebuilt")
+		end,
 	})
 	
 	itemCatalogManager = LibCatalog:NewCatalog({
@@ -422,7 +425,11 @@ local function init_catalog_managers()
 		getOrderKey = function() return settings and settings.itemOrder end,
 		setOrderKey = function(order) if settings then settings.itemOrder = order end end,
 		isEnabled = GCDI.is_item_enabled,
-		onReorder = function() rebuild_item_bars(); reposition_all() end,
+		onReorder = function() 
+			rebuild_item_bars()
+			reposition_all()
+			print("|cff00ff00GCDIndicator:|r Item bars rebuilt")
+		end,
 	})
 	
 	buffCatalogManager = LibCatalog:NewCatalog({
@@ -432,7 +439,11 @@ local function init_catalog_managers()
 		getOrderKey = function() return settings and settings.buffOrder end,
 		setOrderKey = function(order) if settings then settings.buffOrder = order end end,
 		isEnabled = GCDI.is_buff_enabled,
-		onReorder = function() rebuild_buff_bars(); reposition_all() end,
+		onReorder = function() 
+			rebuild_buff_bars()
+			reposition_all()
+			print("|cff00ff00GCDIndicator:|r Buff bars rebuilt")
+		end,
 	})
 end
 
@@ -1471,6 +1482,33 @@ local function update_stance_indicator()
 	main_frame.stanceIndicator:SetColorTexture(color[1], color[2], color[3], 1)
 end
 
+local function update_aggro_indicator()
+	if previewMode then return end  -- Skip updates in preview mode
+	if not main_frame.aggrobar then return end
+	
+	-- Check if target is a valid hostile in combat
+	local validTarget = UnitExists("target") and 
+	                    UnitCanAttack("player", "target") and 
+	                    UnitAffectingCombat("target")
+	
+	if not validTarget then
+		-- No target, friendly target, or target not in combat = white
+		main_frame.aggrobar:SetStatusBarColor(1, 1, 1)
+		return
+	end
+	
+	-- Check threat situation on current target
+	local threatStatus = UnitThreatSituation("player", "target")
+	-- 3 = tanking and highest threat (has aggro)
+	local hasAggro = threatStatus and threatStatus >= 3
+	
+	if hasAggro then
+		main_frame.aggrobar:SetStatusBarColor(1, 0.5, 0)  -- Orange = has aggro
+	else
+		main_frame.aggrobar:SetStatusBarColor(0.3, 0.3, 0.3)  -- Grey = no aggro
+	end
+end
+
 reposition_all = function()
 	local barSize = configs.barHeight
 	local spacing = configs.barSpacing
@@ -2034,13 +2072,15 @@ local function on_event(self, event, arg1, arg2, ...)
 		
 	elseif event == "PLAYER_ENTERING_WORLD" then
 		main_frame.combatbar:SetStatusBarColor(UnitAffectingCombat("player") and 1 or 0, 0, 0)
+		update_aggro_indicator()
 		schedule_scan(0.5)
 		update_all_resources()
 		-- Try to detect native range after a delay (in case player has a target)
 		C_Timer.After(3, detect_native_range_for_spells)
 		
 	elseif event == "UPDATE_SHAPESHIFT_FORM" or event == "UPDATE_BONUS_ACTIONBAR" then
-		schedule_scan(0.1)
+		-- Only update stance indicator, don't rescan spells
+		-- Spells should stay static unless profile is changed
 		update_stance_indicator()
 		
 	elseif event == "PLAYER_SPECIALIZATION_CHANGED" then
@@ -2049,6 +2089,10 @@ local function on_event(self, event, arg1, arg2, ...)
 	elseif event == "PLAYER_TARGET_CHANGED" then
 		update_range_indicators()
 		detect_native_range_for_spells()  -- Auto-detect native range when targeting
+		update_aggro_indicator()
+		
+	elseif event == "UNIT_THREAT_SITUATION_UPDATE" then
+		update_aggro_indicator()
 		
 	elseif event == "UNIT_AURA" then
 		if arg1 == "player" then
@@ -2084,8 +2128,8 @@ local function on_event(self, event, arg1, arg2, ...)
 			end
 		end
 		
-	elseif not InCombatLockdown() then
-		schedule_scan(0.3)
+	-- Other events: don't rescan automatically
+	-- Spells should only change on profile change, spec change, or manual /gcdopt scan
 	end
 end
 
@@ -2142,7 +2186,7 @@ local function init()
 	main_frame.anchor = anchor
 	
 	local sepSize = 2
-	local containerWidth = (configs.size * 3) + (sepSize * 2) + (pad * 2)
+	local containerWidth = (configs.size * 4) + (sepSize * 3) + (pad * 2)  -- 4 indicators: stance, gcd, combat, aggro
 	local gcdCombatContainer = CreateFrame("Frame", nil, main_frame)
 	gcdCombatContainer:SetSize(containerWidth, configs.size + pad * 2)
 	main_frame.gcdcontainer = gcdCombatContainer
@@ -2196,6 +2240,21 @@ local function init()
 	combatbar:SetPoint("LEFT", sep2, "RIGHT", 0, 0)
 	main_frame.combatbar = combatbar
 	
+	local sep3 = gcdCombatContainer:CreateTexture(nil, "ARTWORK")
+	sep3:SetSize(sepSize, configs.size)
+	sep3:SetPoint("LEFT", combatbar, "RIGHT", 0, 0)
+	sep3:SetColorTexture(0, 0, 0, 1)
+	
+	local aggrobar = CreateFrame("StatusBar", nil, gcdCombatContainer)
+	aggrobar:SetStatusBarTexture("Interface\\Buttons\\WHITE8X8")
+	aggrobar:GetStatusBarTexture():SetHorizTile(false)
+	aggrobar:SetMinMaxValues(0, 100)
+	aggrobar:SetValue(100)
+	aggrobar:SetSize(configs.size, configs.size)
+	aggrobar:SetStatusBarColor(0.3, 0.3, 0.3)  -- Grey = no aggro
+	aggrobar:SetPoint("LEFT", sep3, "RIGHT", 0, 0)
+	main_frame.aggrobar = aggrobar
+	
 	GCDIndicator_Positions = GCDIndicator_Positions or {}
 	local libGCDI = LibStub and LibStub:GetLibrary("LibGCDI", true)
 	if libGCDI then
@@ -2231,6 +2290,7 @@ local function init()
 	end
 	update_all_resources()
 	update_stance_indicator()
+	update_aggro_indicator()
 	
 	local events = {
 		"SPELL_UPDATE_COOLDOWN",
@@ -2247,6 +2307,7 @@ local function init()
 		"UPDATE_SHAPESHIFT_FORM",
 		"UPDATE_BONUS_ACTIONBAR",
 		"PLAYER_TARGET_CHANGED",
+		"UNIT_THREAT_SITUATION_UPDATE",
 	}
 	for _, event in ipairs(events) do
 		main_frame:RegisterEvent(event)
@@ -2515,6 +2576,10 @@ function GCDI.toggle_preview_mode()
 			main_frame.combatbar:SetStatusBarColor(1, 0, 0)  -- Red = in combat
 			main_frame.combatbar:SetValue(100)
 		end
+		if main_frame.aggrobar then
+			main_frame.aggrobar:SetStatusBarColor(1, 0.5, 0)  -- Orange = has aggro
+			main_frame.aggrobar:SetValue(100)
+		end
 		if main_frame.stanceIndicator then
 			main_frame.stanceIndicator:SetColorTexture(0.5, 0.3, 0, 1)  -- Bear form color
 		end
@@ -2570,6 +2635,9 @@ function GCDI.toggle_preview_mode()
 		if main_frame.stanceIndicator then
 			main_frame.stanceIndicator:SetColorTexture(color[1], color[2], color[3], 1)
 		end
+		
+		-- Update aggro indicator
+		update_aggro_indicator()
 		
 		-- Force update all tracked elements
 		update_all_spell_bars()
