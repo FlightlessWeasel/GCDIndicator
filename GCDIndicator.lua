@@ -386,403 +386,106 @@ function GCDI.get_profile_names()
 end
 
 -- ═══════════════════════════════════════════════════════════════════════════
--- SPELL/ITEM ORDERING
+-- CATALOG ORDERING (via LibGCDI-Catalog)
 -- ═══════════════════════════════════════════════════════════════════════════
 
+local LibCatalog = LibStub("LibGCDI-Catalog")
+local LibDetector = LibStub("LibGCDI-Detector")
+
+-- Catalog managers (initialized after settings load)
+local spellCatalogManager, itemCatalogManager, buffCatalogManager
+
+-- Initialize catalog managers (called after settings are available)
+local function init_catalog_managers()
+	spellCatalogManager = LibCatalog:NewCatalog({
+		name = "spells",
+		getCatalog = function() return GCDI.spellCatalog end,
+		getSettings = function() return settings end,
+		getOrderKey = function() return settings and settings.spellOrder end,
+		setOrderKey = function(order) if settings then settings.spellOrder = order end end,
+		isEnabled = GCDI.is_spell_enabled,
+		onReorder = function() rebuild_spell_bars() end,
+	})
+	
+	itemCatalogManager = LibCatalog:NewCatalog({
+		name = "items",
+		getCatalog = function() return GCDI.itemCatalog end,
+		getSettings = function() return settings end,
+		getOrderKey = function() return settings and settings.itemOrder end,
+		setOrderKey = function(order) if settings then settings.itemOrder = order end end,
+		isEnabled = GCDI.is_item_enabled,
+		onReorder = function() rebuild_item_bars(); reposition_all() end,
+	})
+	
+	buffCatalogManager = LibCatalog:NewCatalog({
+		name = "buffs",
+		getCatalog = function() return GCDI.buffCatalog end,
+		getSettings = function() return settings end,
+		getOrderKey = function() return settings and settings.buffOrder end,
+		setOrderKey = function(order) if settings then settings.buffOrder = order end end,
+		isEnabled = GCDI.is_buff_enabled,
+		onReorder = function() rebuild_buff_bars(); reposition_all() end,
+	})
+end
+
+-- Wrapper functions for backward compatibility (used by options UI and internal code)
 local function get_ordered_spells()
-	if not settings then return spellBars end
-	
-	local ordered = {}
-	local inOrder = {}
-	
-	for _, spellID in ipairs(settings.spellOrder or {}) do
-		if trackedSpells[spellID] then
-			table.insert(ordered, spellID)
-			inOrder[spellID] = true
-		end
-	end
-	
-	for _, spellID in ipairs(spellBars) do
-		if not inOrder[spellID] then
-			table.insert(ordered, spellID)
-		end
-	end
-	
-	return ordered
+	if not spellCatalogManager then return spellBars end
+	return spellCatalogManager:GetEnabledOrdered()
 end
 
 function GCDI.get_all_catalog_spells_ordered()
-	if not settings then return {} end
-	
-	local enabledOrdered = {}
-	local disabledOrdered = {}
-	local inOrder = {}
-	
-	for _, spellID in ipairs(settings.spellOrder or {}) do
-		if GCDI.spellCatalog[spellID] then
-			inOrder[spellID] = true
-			if GCDI.is_spell_enabled(spellID) then
-				table.insert(enabledOrdered, spellID)
-			else
-				table.insert(disabledOrdered, spellID)
-			end
-		end
-	end
-	
-	local unsortedEnabled = {}
-	local unsortedDisabled = {}
-	for spellID, data in pairs(GCDI.spellCatalog) do
-		if not inOrder[spellID] then
-			if GCDI.is_spell_enabled(spellID) then
-				table.insert(unsortedEnabled, { spellID = spellID, name = data.name })
-			else
-				table.insert(unsortedDisabled, { spellID = spellID, name = data.name })
-			end
-		end
-	end
-	table.sort(unsortedEnabled, function(a, b) return a.name < b.name end)
-	table.sort(unsortedDisabled, function(a, b) return a.name < b.name end)
-	
-	for _, entry in ipairs(unsortedEnabled) do
-		table.insert(enabledOrdered, entry.spellID)
-	end
-	for _, entry in ipairs(unsortedDisabled) do
-		table.insert(disabledOrdered, entry.spellID)
-	end
-	
-	local result = {}
-	for _, spellID in ipairs(enabledOrdered) do
-		table.insert(result, spellID)
-	end
-	for _, spellID in ipairs(disabledOrdered) do
-		table.insert(result, spellID)
-	end
-	
-	return result
-end
-
-local function save_spell_order(orderedList)
-	if not settings then return end
-	settings.spellOrder = {}
-	for i, spellID in ipairs(orderedList) do
-		settings.spellOrder[i] = spellID
-	end
+	if not spellCatalogManager then return {} end
+	return spellCatalogManager:GetAllOrdered()
 end
 
 function GCDI.move_spell_in_order(spellID, direction)
-	local ordered = GCDI.get_all_catalog_spells_ordered()
-	local currentIndex = nil
-	
-	for i, id in ipairs(ordered) do
-		if id == spellID then
-			currentIndex = i
-			break
-		end
-	end
-	
-	if not currentIndex then return end
-	
-	local newIndex = currentIndex + direction
-	if newIndex < 1 or newIndex > #ordered then return end
-	
-	ordered[currentIndex], ordered[newIndex] = ordered[newIndex], ordered[currentIndex]
-	save_spell_order(ordered)
-	GCDI.auto_save_to_profile()
-	rebuild_spell_bars()
+	if spellCatalogManager then spellCatalogManager:MoveInOrder(spellID, direction) end
 end
 
 function GCDI.move_spell_to_bottom(spellID)
-	local ordered = GCDI.get_all_catalog_spells_ordered()
-	local currentIndex = nil
-	
-	for i, id in ipairs(ordered) do
-		if id == spellID then
-			currentIndex = i
-			break
-		end
-	end
-	
-	if not currentIndex or currentIndex == #ordered then return end
-	
-	table.remove(ordered, currentIndex)
-	table.insert(ordered, spellID)
-	save_spell_order(ordered)
-	GCDI.auto_save_to_profile()
-	rebuild_spell_bars()
+	if spellCatalogManager then spellCatalogManager:MoveToBottom(spellID) end
 end
 
 function GCDI.get_ordered_items()
-	if not settings then return {} end
-	
-	local ordered = {}
-	local inOrder = {}
-	
-	for _, itemKey in ipairs(settings.itemOrder or {}) do
-		if GCDI.itemCatalog[itemKey] and GCDI.is_item_enabled(itemKey) then
-			table.insert(ordered, itemKey)
-			inOrder[itemKey] = true
-		end
-	end
-	
-	for itemKey in pairs(GCDI.itemCatalog) do
-		if not inOrder[itemKey] and GCDI.is_item_enabled(itemKey) then
-			table.insert(ordered, itemKey)
-		end
-	end
-	
-	return ordered
+	if not itemCatalogManager then return {} end
+	return itemCatalogManager:GetEnabledOrdered()
 end
 
 function GCDI.get_all_catalog_items_ordered()
-	if not settings then return {} end
-	
-	local enabledOrdered = {}
-	local disabledOrdered = {}
-	local inOrder = {}
-	
-	for _, itemKey in ipairs(settings.itemOrder or {}) do
-		if GCDI.itemCatalog[itemKey] then
-			inOrder[itemKey] = true
-			if GCDI.is_item_enabled(itemKey) then
-				table.insert(enabledOrdered, itemKey)
-			else
-				table.insert(disabledOrdered, itemKey)
-			end
-		end
-	end
-	
-	local unsortedEnabled = {}
-	local unsortedDisabled = {}
-	for itemKey, data in pairs(GCDI.itemCatalog) do
-		if not inOrder[itemKey] then
-			if GCDI.is_item_enabled(itemKey) then
-				table.insert(unsortedEnabled, { itemKey = itemKey, name = data.name })
-			else
-				table.insert(unsortedDisabled, { itemKey = itemKey, name = data.name })
-			end
-		end
-	end
-	table.sort(unsortedEnabled, function(a, b) return a.name < b.name end)
-	table.sort(unsortedDisabled, function(a, b) return a.name < b.name end)
-	
-	for _, entry in ipairs(unsortedEnabled) do
-		table.insert(enabledOrdered, entry.itemKey)
-	end
-	for _, entry in ipairs(unsortedDisabled) do
-		table.insert(disabledOrdered, entry.itemKey)
-	end
-	
-	local result = {}
-	for _, itemKey in ipairs(enabledOrdered) do
-		table.insert(result, itemKey)
-	end
-	for _, itemKey in ipairs(disabledOrdered) do
-		table.insert(result, itemKey)
-	end
-	
-	return result
-end
-
-local function save_item_order(orderedList)
-	if not settings then return end
-	settings.itemOrder = {}
-	for i, itemKey in ipairs(orderedList) do
-		settings.itemOrder[i] = itemKey
-	end
+	if not itemCatalogManager then return {} end
+	return itemCatalogManager:GetAllOrdered()
 end
 
 function GCDI.move_item_in_order(itemKey, direction)
-	local ordered = GCDI.get_all_catalog_items_ordered()
-	local currentIndex = nil
-	
-	for i, key in ipairs(ordered) do
-		if key == itemKey then
-			currentIndex = i
-			break
-		end
-	end
-	
-	if not currentIndex then return end
-	
-	local newIndex = currentIndex + direction
-	if newIndex < 1 or newIndex > #ordered then return end
-	
-	ordered[currentIndex], ordered[newIndex] = ordered[newIndex], ordered[currentIndex]
-	save_item_order(ordered)
-	GCDI.auto_save_to_profile()
-	rebuild_item_bars()
-	reposition_all()
+	if itemCatalogManager then itemCatalogManager:MoveInOrder(itemKey, direction) end
 end
 
 function GCDI.move_item_to_bottom(itemKey)
-	local ordered = GCDI.get_all_catalog_items_ordered()
-	local currentIndex = nil
-	
-	for i, key in ipairs(ordered) do
-		if key == itemKey then
-			currentIndex = i
-			break
-		end
-	end
-	
-	if not currentIndex or currentIndex == #ordered then return end
-	
-	table.remove(ordered, currentIndex)
-	table.insert(ordered, itemKey)
-	save_item_order(ordered)
-	GCDI.auto_save_to_profile()
-	rebuild_item_bars()
-	reposition_all()
+	if itemCatalogManager then itemCatalogManager:MoveToBottom(itemKey) end
 end
 
--- ═══════════════════════════════════════════════════════════════════════════
--- BUFF ORDERING
--- ═══════════════════════════════════════════════════════════════════════════
-
 local function get_ordered_buffs()
-	if not settings then return buffBars end
-	
-	local ordered = {}
-	local inOrder = {}
-	
-	for _, spellID in ipairs(settings.buffOrder or {}) do
-		if trackedBuffs[spellID] then
-			table.insert(ordered, spellID)
-			inOrder[spellID] = true
-		end
-	end
-	
-	for _, spellID in ipairs(buffBars) do
-		if not inOrder[spellID] then
-			table.insert(ordered, spellID)
-		end
-	end
-	
-	return ordered
+	if not buffCatalogManager then return buffBars end
+	return buffCatalogManager:GetEnabledOrdered()
 end
 
 function GCDI.get_ordered_buffs()
-	if not settings then return {} end
-	
-	local ordered = {}
-	local inOrder = {}
-	
-	for _, spellID in ipairs(settings.buffOrder or {}) do
-		if GCDI.buffCatalog[spellID] and GCDI.is_buff_enabled(spellID) then
-			table.insert(ordered, spellID)
-			inOrder[spellID] = true
-		end
-	end
-	
-	for spellID in pairs(GCDI.buffCatalog) do
-		if not inOrder[spellID] and GCDI.is_buff_enabled(spellID) then
-			table.insert(ordered, spellID)
-		end
-	end
-	
-	return ordered
+	if not buffCatalogManager then return {} end
+	return buffCatalogManager:GetEnabledOrdered()
 end
 
 function GCDI.get_all_catalog_buffs_ordered()
-	if not settings then return {} end
-	
-	local enabledOrdered = {}
-	local disabledOrdered = {}
-	local inOrder = {}
-	
-	for _, spellID in ipairs(settings.buffOrder or {}) do
-		if GCDI.buffCatalog[spellID] then
-			inOrder[spellID] = true
-			if GCDI.is_buff_enabled(spellID) then
-				table.insert(enabledOrdered, spellID)
-			else
-				table.insert(disabledOrdered, spellID)
-			end
-		end
-	end
-	
-	local unsortedEnabled = {}
-	local unsortedDisabled = {}
-	for spellID, data in pairs(GCDI.buffCatalog) do
-		if not inOrder[spellID] then
-			if GCDI.is_buff_enabled(spellID) then
-				table.insert(unsortedEnabled, { spellID = spellID, name = data.name })
-			else
-				table.insert(unsortedDisabled, { spellID = spellID, name = data.name })
-			end
-		end
-	end
-	table.sort(unsortedEnabled, function(a, b) return a.name < b.name end)
-	table.sort(unsortedDisabled, function(a, b) return a.name < b.name end)
-	
-	for _, entry in ipairs(unsortedEnabled) do
-		table.insert(enabledOrdered, entry.spellID)
-	end
-	for _, entry in ipairs(unsortedDisabled) do
-		table.insert(disabledOrdered, entry.spellID)
-	end
-	
-	local result = {}
-	for _, spellID in ipairs(enabledOrdered) do
-		table.insert(result, spellID)
-	end
-	for _, spellID in ipairs(disabledOrdered) do
-		table.insert(result, spellID)
-	end
-	
-	return result
-end
-
-local function save_buff_order(orderedList)
-	if not settings then return end
-	settings.buffOrder = {}
-	for i, spellID in ipairs(orderedList) do
-		settings.buffOrder[i] = spellID
-	end
+	if not buffCatalogManager then return {} end
+	return buffCatalogManager:GetAllOrdered()
 end
 
 function GCDI.move_buff_in_order(spellID, direction)
-	local ordered = GCDI.get_all_catalog_buffs_ordered()
-	local currentIndex = nil
-	
-	for i, id in ipairs(ordered) do
-		if id == spellID then
-			currentIndex = i
-			break
-		end
-	end
-	
-	if not currentIndex then return end
-	
-	local newIndex = currentIndex + direction
-	if newIndex < 1 or newIndex > #ordered then return end
-	
-	ordered[currentIndex], ordered[newIndex] = ordered[newIndex], ordered[currentIndex]
-	save_buff_order(ordered)
-	GCDI.auto_save_to_profile()
-	rebuild_buff_bars()
-	reposition_all()
+	if buffCatalogManager then buffCatalogManager:MoveInOrder(spellID, direction) end
 end
 
 function GCDI.move_buff_to_bottom(spellID)
-	local ordered = GCDI.get_all_catalog_buffs_ordered()
-	local currentIndex = nil
-	
-	for i, id in ipairs(ordered) do
-		if id == spellID then
-			currentIndex = i
-			break
-		end
-	end
-	
-	if not currentIndex or currentIndex == #ordered then return end
-	
-	table.remove(ordered, currentIndex)
-	table.insert(ordered, spellID)
-	save_buff_order(ordered)
-	GCDI.auto_save_to_profile()
-	rebuild_buff_bars()
-	reposition_all()
+	if buffCatalogManager then buffCatalogManager:MoveToBottom(spellID) end
 end
 
 -- ═══════════════════════════════════════════════════════════════════════════
@@ -886,27 +589,15 @@ local function update_spell_icons()
 	end
 end
 
--- Update charge indicators using detector bars (ArcUI pattern)
--- Both feed and check happen in same call, run via OnUpdate/ticker
+-- Update charge indicators using LibDetector
 local function update_charge_indicators_tick()
 	if previewMode then return end  -- Skip updates in preview mode
 	for spellID, data in pairs(trackedSpells) do
-		if data.chargeIndicators and GCDI.is_spell_enabled(spellID) then
+		if data.chargeIndicators and data.chargeDetectors and GCDI.is_spell_enabled(spellID) then
 			local chargeInfo = C_Spell.GetSpellCharges(spellID)
 			if chargeInfo then
-				local secretCurrentCharges = chargeInfo.currentCharges
-				
-				-- Feed secret value to all detectors, then immediately check results
-				for i, indicator in ipairs(data.chargeIndicators) do
-					-- Feed
-					indicator.detector:SetValue(secretCurrentCharges)
-					-- Check (ArcUI does this in same call)
-					if indicator.detector:GetStatusBarTexture():IsShown() then
-						indicator.overlay:Hide()  -- Charge available - show blue
-					else
-						indicator.overlay:Show()  -- On cooldown - show black
-					end
-				end
+				-- Use LibDetector to update indicators from secret value
+				LibDetector:UpdateIndicators(data.chargeDetectors, data.chargeIndicators, chargeInfo.currentCharges)
 			end
 		end
 	end
@@ -995,9 +686,11 @@ local function create_spell_bar(spellID, spellName, texture, actionSlot)
 	
 	-- Create charge indicators if spell has charges (to the right of range)
 	local chargeIndicators = nil
+	local chargeDetectors = nil
 	
 	if hasCharges then
 		chargeIndicators = {}
+		chargeDetectors = LibDetector:CreateDetectorArray(maxCharges)
 		local prevElement = rangeBase
 		
 		for i = 1, maxCharges do
@@ -1014,24 +707,9 @@ local function create_spell_bar(spellID, spellName, texture, actionSlot)
 			chargeOverlay:SetColorTexture(0, 0, 0, 1)  -- Black = on cooldown
 			chargeOverlay:Hide()  -- Start hidden (charge available)
 			
-			-- Hidden detector bar to safely read secret charge values
-			-- StatusBar shows texture when value > min
-			-- So min=i-1, max=i means: shows when currentCharges >= i
-			-- Must parent to UIParent and use proper size for texture detection to work
-			local detector = CreateFrame("StatusBar", nil, UIParent)
-			detector:SetSize(100, 10)
-			detector:SetPoint("TOPLEFT", UIParent, "TOPLEFT", -500, 500)  -- Off-screen
-			detector:SetStatusBarTexture("Interface\\TargetingFrame\\UI-StatusBar")
-			detector:SetStatusBarColor(1, 1, 1, 1)
-			detector:SetMinMaxValues(i - 1, i)  -- Shows when charges >= i (value > min)
-			detector:SetValue(0)
-			detector:SetAlpha(0)  -- Invisible but functional
-			detector:Show()
-			
 			chargeIndicators[i] = {
 				bg = chargeBg,
 				overlay = chargeOverlay,
-				detector = detector,
 			}
 			
 			prevElement = chargeBg
@@ -1071,6 +749,7 @@ local function create_spell_bar(spellID, spellName, texture, actionSlot)
 		actionSlot = actionSlot,
 		rangeOverlay = rangeOverlay,
 		chargeIndicators = chargeIndicators,
+		chargeDetectors = chargeDetectors,  -- LibDetector array for secret value reading
 		maxCharges = hasCharges and maxCharges or nil,
 		icon = icon,  -- Store icon reference for icon change detection
 		originalTexture = texture,  -- Store original texture for comparison
@@ -1301,27 +980,10 @@ local function update_buff_bar(buffID)
 		if auraID and type(auraID) == "number" and auraID > 0 then
 			isActive = true
 			
-			-- Get stacks using ArcUI's approach:
-			-- Use GetAuraDataByAuraInstanceID to get the aura data, then read applications
+			-- Get stacks using LibDetector to read secret applications value
 			local auraData = C_UnitAuras.GetAuraDataByAuraInstanceID("player", auraID)
-			if auraData then
-				local secretApps = auraData.applications
-				
-				-- Use detector pattern to extract the secret value
-				-- Feed to detectors, then check which ones show their texture
-				if data.stackDetectors and secretApps then
-					for i, detector in ipairs(data.stackDetectors) do
-						detector:SetValue(secretApps)
-					end
-					-- Check which detectors show their texture (threshold met)
-					for i, detector in ipairs(data.stackDetectors) do
-						if detector:GetStatusBarTexture():IsShown() then
-							stacks = i
-						else
-							break
-						end
-					end
-				end
+			if auraData and data.stackDetectors then
+				stacks = LibDetector:CheckValue(data.stackDetectors, auraData.applications)
 			end
 		end
 	end
@@ -1429,11 +1091,11 @@ local function create_buff_bar(spellID, spellName, texture)
 	
 	-- Stack indicators (optional) - colored boxes only, no text
 	local stackIndicators = nil
-	local stackDetectors = nil  -- Hidden StatusBars for detecting secret stack values
+	local stackDetectors = nil
 	
 	if showStacks and maxStacksDisplay > 0 then
 		stackIndicators = {}
-		stackDetectors = {}  -- Create detectors for ArcUI-style stack detection
+		stackDetectors = LibDetector:CreateDetectorArray(maxStacksDisplay)
 		local prevElement = activeIndicator
 		
 		for i = 1, maxStacksDisplay do
@@ -1450,23 +1112,10 @@ local function create_buff_bar(spellID, spellName, texture)
 			stackOverlay:SetColorTexture(BUFF_COLORS.stackEmpty[1], BUFF_COLORS.stackEmpty[2], BUFF_COLORS.stackEmpty[3], 1)
 			stackOverlay:Show()  -- Start shown (no stacks)
 			
-			-- Hidden detector StatusBar for this stack level (ArcUI pattern)
-			-- When value >= threshold, the statusbar texture becomes visible
-			local detector = CreateFrame("StatusBar", nil, UIParent)
-			detector:SetSize(100, 10)
-			detector:SetPoint("TOPLEFT", UIParent, "TOPLEFT", -500, 500 - (i * 15))
-			detector:SetStatusBarTexture("Interface\\TargetingFrame\\UI-StatusBar")
-			detector:SetStatusBarColor(1, 1, 1, 1)
-			detector:SetMinMaxValues(i - 1, i)  -- Shows texture when value >= i
-			detector:SetValue(0)
-			detector:SetAlpha(0)  -- Invisible
-			detector:Show()
-			
 			stackIndicators[i] = {
 				bg = stackBg,
 				overlay = stackOverlay,
 			}
-			stackDetectors[i] = detector
 			
 			prevElement = stackBg
 		end
@@ -2441,6 +2090,9 @@ local function init()
 		settings.profiles = {}
 	end
 	
+	-- Initialize catalog managers now that settings are available
+	init_catalog_managers()
+	
 	main_frame:SetPoint("BOTTOM", UIParent, "BOTTOM", 0, 0)
 	main_frame:SetSize(1, 1)
 	
@@ -2621,15 +2273,38 @@ local function init()
 		end)
 	end
 	
-	C_Timer.NewTicker(0.1, update_range_indicators)
-	C_Timer.NewTicker(0.05, animate_item_bars)
-	C_Timer.NewTicker(0.05, update_charge_indicators_tick)  -- ArcUI pattern: feed+check in same tick
-	C_Timer.NewTicker(0.5, update_item_charge_indicators)  -- Update item charges (less frequent)
-	C_Timer.NewTicker(5, detect_native_range_for_spells)  -- Auto-detect native range every 5 sec
-	C_Timer.NewTicker(0.2, function()  -- Buff/icon updates
-		scan_cdm_buff_frames()  -- Rescan CDM to pick up active/inactive changes
-		update_all_buff_bars()
-		update_spell_icons()  -- Update icons for proc abilities that transform
+	-- Master update ticker (0.05s base interval)
+	-- Consolidates all periodic updates with counters for different frequencies
+	local tickCount = 0
+	C_Timer.NewTicker(0.05, function()
+		tickCount = tickCount + 1
+		
+		-- Every tick (0.05s): Item cooldown animation, charge indicators
+		animate_item_bars()
+		update_charge_indicators_tick()
+		
+		-- Every 2 ticks (0.1s): Range indicators
+		if tickCount % 2 == 0 then
+			update_range_indicators()
+		end
+		
+		-- Every 4 ticks (0.2s): Buff/icon updates
+		if tickCount % 4 == 0 then
+			scan_cdm_buff_frames()
+			update_all_buff_bars()
+			update_spell_icons()
+		end
+		
+		-- Every 10 ticks (0.5s): Item charge indicators
+		if tickCount % 10 == 0 then
+			update_item_charge_indicators()
+		end
+		
+		-- Every 100 ticks (5s): Native range detection
+		if tickCount % 100 == 0 then
+			detect_native_range_for_spells()
+			tickCount = 0  -- Reset to prevent overflow
+		end
 	end)
 	
 	-- Create minimap button
