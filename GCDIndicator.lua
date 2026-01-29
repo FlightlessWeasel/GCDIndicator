@@ -2381,36 +2381,24 @@ local function init()
 		end)
 	end
 	
-	-- Master update ticker (0.05s base interval)
-	-- Consolidates all periodic updates with counters for different frequencies
+	-- Master update ticker (0.015s / 15ms base interval)
+	-- All updates run every tick except native range detection
 	local tickCount = 0
-	C_Timer.NewTicker(0.05, function()
+	C_Timer.NewTicker(0.015, function()
 		tickCount = tickCount + 1
 		
-		-- Every tick (0.05s): GCD, Item cooldown animation, charge indicators
+		-- Every tick (15ms): All frequent updates
 		update_gcd()
 		animate_item_bars()
 		update_charge_indicators_tick()
+		update_range_indicators()
+		scan_cdm_buff_frames()
+		update_all_buff_bars()
+		update_spell_icons()
+		update_item_charge_indicators()
 		
-		-- Every 2 ticks (0.1s): Range indicators
-		if tickCount % 2 == 0 then
-			update_range_indicators()
-		end
-		
-		-- Every 4 ticks (0.2s): Buff/icon updates
-		if tickCount % 4 == 0 then
-			scan_cdm_buff_frames()
-			update_all_buff_bars()
-			update_spell_icons()
-		end
-		
-		-- Every 10 ticks (0.5s): Item charge indicators
-		if tickCount % 10 == 0 then
-			update_item_charge_indicators()
-		end
-		
-		-- Every 100 ticks (5s): Native range detection
-		if tickCount % 100 == 0 then
+		-- Every 333 ticks (~5s): Native range detection
+		if tickCount % 333 == 0 then
 			detect_native_range_for_spells()
 			tickCount = 0  -- Reset to prevent overflow
 		end
