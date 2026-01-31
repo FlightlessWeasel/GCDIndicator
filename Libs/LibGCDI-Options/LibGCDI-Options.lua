@@ -8,6 +8,9 @@ if not GCDI then
 	return
 end
 
+-- Library references
+local LibProfiles = LibStub("LibGCDI-Profiles")
+
 -- Local references to GCDI data
 local settings = nil  -- Set during init
 local configs = GCDI.configs
@@ -19,9 +22,11 @@ local spellRows = {}
 local itemRows = {}
 local buffRows = {}
 local optionsElements = {}
+local gcdTabElements = {}
+local resourcesTabElements = {}
 local itemsTabElements = {}
 local buffsTabElements = {}
-local currentTab = "spells"
+local currentTab = "gcd"
 
 -- Forward declarations
 local refresh_profiles_tab
@@ -73,6 +78,393 @@ local function create_range_dropdown(parent, width, selectedIndex, onChange)
 	end
 	
 	return dropdown
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- GCD TAB
+-- ═══════════════════════════════════════════════════════════════════════════
+
+local GCD_INDICATOR_OPTIONS = {
+	{ key = "showGcdRow", name = "Show GCD Row", desc = "Show the entire GCD indicator row" },
+	{ key = "showStance", name = "Show Stance", desc = "Show the stance/form indicator", disabled = true },
+	{ key = "showGcd", name = "Show GCD", desc = "Show the global cooldown bar", disabled = true },
+	{ key = "showCombat", name = "Show Combat", desc = "Show the combat status indicator", disabled = true },
+	{ key = "showAggro", name = "Show Aggro", desc = "Show the threat/aggro indicator", disabled = true },
+}
+
+local function refresh_gcd_tab()
+	if not optionsFrame or not optionsFrame.gcdScrollChild then return end
+	
+	local frame = optionsFrame.gcdScrollChild
+	
+	-- Clear existing elements
+	for _, element in ipairs(gcdTabElements) do
+		element:Hide()
+		element:SetParent(nil)
+	end
+	wipe(gcdTabElements)
+	
+	local function track(element)
+		table.insert(gcdTabElements, element)
+		return element
+	end
+	
+	local yOffset = -10
+	
+	-- ═══════════════════════════════════════════════════════════════════════════
+	-- GCD ROW OPTIONS
+	-- ═══════════════════════════════════════════════════════════════════════════
+	
+	local title = track(frame:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge"))
+	title:SetPoint("TOPLEFT", 5, yOffset)
+	title:SetText("GCD Row Options")
+	yOffset = yOffset - 25
+	
+	local desc = track(frame:CreateFontString(nil, "OVERLAY", "GameFontHighlight"))
+	desc:SetPoint("TOPLEFT", 5, yOffset)
+	desc:SetText("Toggle which indicators appear in the GCD status row.")
+	desc:SetTextColor(0.7, 0.7, 0.7)
+	yOffset = yOffset - 25
+	
+	-- Ensure gcdSettings exists
+	if not settings.gcdSettings then
+		settings.gcdSettings = {
+			showGcdRow = true,
+			showStance = true,
+			showGcd = true,
+			showCombat = true,
+			showAggro = true,
+		}
+	end
+	
+	-- Create toggle for each option
+	for _, opt in ipairs(GCD_INDICATOR_OPTIONS) do
+		local checkbox = track(CreateFrame("CheckButton", nil, frame, "UICheckButtonTemplate"))
+		checkbox:SetSize(24, 24)
+		checkbox:SetPoint("TOPLEFT", 10, yOffset)
+		checkbox:SetChecked(settings.gcdSettings[opt.key] ~= false)
+		
+		if opt.disabled then
+			checkbox:Disable()
+			checkbox:SetAlpha(0.5)
+		else
+			checkbox:SetScript("OnClick", function(self)
+				settings.gcdSettings[opt.key] = self:GetChecked()
+				GCDI.reposition_all()
+			end)
+		end
+		
+		local label = track(frame:CreateFontString(nil, "OVERLAY", "GameFontNormal"))
+		label:SetPoint("LEFT", checkbox, "RIGHT", 5, 0)
+		label:SetText(opt.name)
+		if opt.disabled then
+			label:SetTextColor(0.5, 0.5, 0.5)
+		end
+		
+		local descText = track(frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall"))
+		descText:SetPoint("LEFT", label, "RIGHT", 15, 0)
+		if opt.disabled then
+			descText:SetText("- " .. opt.desc .. " (coming soon)")
+			descText:SetTextColor(0.4, 0.4, 0.4)
+		else
+			descText:SetText("- " .. opt.desc)
+			descText:SetTextColor(0.6, 0.6, 0.6)
+		end
+		
+		yOffset = yOffset - 28
+	end
+	
+	yOffset = yOffset - 15
+	
+	-- ═══════════════════════════════════════════════════════════════════════════
+	-- STANCE/FORM COLORS
+	-- ═══════════════════════════════════════════════════════════════════════════
+	
+	local sep1 = track(frame:CreateTexture(nil, "ARTWORK"))
+	sep1:SetColorTexture(0.4, 0.4, 0.4, 1)
+	sep1:SetSize(480, 1)
+	sep1:SetPoint("TOPLEFT", 5, yOffset)
+	yOffset = yOffset - 20
+	
+	local stanceTitle = track(frame:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge"))
+	stanceTitle:SetPoint("TOPLEFT", 5, yOffset)
+	stanceTitle:SetText("Stance/Form Colors")
+	yOffset = yOffset - 25
+	
+	local stanceDesc = track(frame:CreateFontString(nil, "OVERLAY", "GameFontHighlight"))
+	stanceDesc:SetPoint("TOPLEFT", 5, yOffset)
+	stanceDesc:SetText("The stance indicator changes color based on your current form or stance.")
+	stanceDesc:SetTextColor(0.7, 0.7, 0.7)
+	yOffset = yOffset - 20
+	
+	-- Get player's class
+	local _, playerClass = UnitClass("player")
+	local formColors = GCDI.FORM_COLORS
+	
+	-- Class name header
+	local className = track(frame:CreateFontString(nil, "OVERLAY", "GameFontNormal"))
+	className:SetPoint("TOPLEFT", 10, yOffset)
+	className:SetText("Your Class: |cffffcc00" .. (playerClass or "Unknown") .. "|r")
+	yOffset = yOffset - 25
+	
+	-- Get available forms dynamically from the game API
+	local currentForm = GetShapeshiftForm() or 0
+	local formsToShow = GCDI.GetAvailableForms()
+	
+	-- Add color info to each form
+	for _, formInfo in ipairs(formsToShow) do
+		formInfo.color = formColors[formInfo.index] or formColors.default
+		formInfo.isCurrent = (currentForm == formInfo.index)
+	end
+	
+	-- Display each form
+	for _, formInfo in ipairs(formsToShow) do
+		local row = track(CreateFrame("Frame", nil, frame))
+		row:SetSize(400, 20)
+		row:SetPoint("TOPLEFT", 15, yOffset)
+		
+		-- Color swatch
+		local colorSwatch = track(row:CreateTexture(nil, "ARTWORK"))
+		colorSwatch:SetSize(16, 16)
+		colorSwatch:SetPoint("LEFT", 0, 0)
+		colorSwatch:SetColorTexture(formInfo.color[1], formInfo.color[2], formInfo.color[3], 1)
+		
+		-- Border around swatch
+		local swatchBorder = track(row:CreateTexture(nil, "OVERLAY"))
+		swatchBorder:SetSize(18, 18)
+		swatchBorder:SetPoint("CENTER", colorSwatch, "CENTER", 0, 0)
+		swatchBorder:SetColorTexture(0.3, 0.3, 0.3, 1)
+		colorSwatch:SetDrawLayer("OVERLAY", 1)
+		
+		-- Form name
+		local formLabel = track(row:CreateFontString(nil, "OVERLAY", "GameFontNormal"))
+		formLabel:SetPoint("LEFT", colorSwatch, "RIGHT", 10, 0)
+		
+		local labelText = string.format("[%d] %s", formInfo.index, formInfo.name)
+		if formInfo.isCurrent then
+			labelText = labelText .. " |cff00ff00(Current)|r"
+		end
+		formLabel:SetText(labelText)
+		
+		yOffset = yOffset - 22
+	end
+	
+	yOffset = yOffset - 15
+	
+	-- ═══════════════════════════════════════════════════════════════════════════
+	-- INDICATOR LEGEND
+	-- ═══════════════════════════════════════════════════════════════════════════
+	
+	local sep2 = track(frame:CreateTexture(nil, "ARTWORK"))
+	sep2:SetColorTexture(0.4, 0.4, 0.4, 1)
+	sep2:SetSize(480, 1)
+	sep2:SetPoint("TOPLEFT", 5, yOffset)
+	yOffset = yOffset - 20
+	
+	local legendTitle = track(frame:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge"))
+	legendTitle:SetPoint("TOPLEFT", 5, yOffset)
+	legendTitle:SetText("Indicator Legend")
+	yOffset = yOffset - 25
+	
+	-- GCD Bar legend
+	local gcdLegend = track(frame:CreateFontString(nil, "OVERLAY", "GameFontNormal"))
+	gcdLegend:SetPoint("TOPLEFT", 10, yOffset)
+	gcdLegend:SetText("|cffffffffGCD Bar:|r Shows global cooldown progress (white bar)")
+	yOffset = yOffset - 20
+	
+	-- Combat indicator legend
+	local combatLegend = track(frame:CreateFontString(nil, "OVERLAY", "GameFontNormal"))
+	combatLegend:SetPoint("TOPLEFT", 10, yOffset)
+	combatLegend:SetText("|cffff0000Combat:|r Red = In Combat, |cff333333Black = Out of Combat|r")
+	yOffset = yOffset - 20
+	
+	-- Aggro indicator legend
+	local aggroLegend = track(frame:CreateFontString(nil, "OVERLAY", "GameFontNormal"))
+	aggroLegend:SetPoint("TOPLEFT", 10, yOffset)
+	aggroLegend:SetText("|cffff8000Aggro:|r Orange = Has Threat, |cff666666Grey = No Threat|r, |cffffffffWhite = No Target|r")
+	yOffset = yOffset - 20
+	
+	-- Update scroll child height
+	frame:SetHeight(math.abs(yOffset) + 20)
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- RESOURCES TAB
+-- ═══════════════════════════════════════════════════════════════════════════
+
+local RESOURCE_NAMES = {
+	{ key = "health", name = "Health", color = {0, 0.8, 0}, barType = "continuous", powerType = nil, classes = "All" },
+	{ key = "mana", name = "Mana", color = {0, 0.5, 1}, barType = "continuous", powerType = Enum.PowerType.Mana, classes = "Mage, Priest, Warlock, Paladin, Druid, Shaman, Monk, Evoker" },
+	{ key = "rage", name = "Rage", color = {0.8, 0, 0}, barType = "continuous", powerType = Enum.PowerType.Rage, classes = "Warrior, Druid (Bear)" },
+	{ key = "energy", name = "Energy", color = {1, 0.85, 0}, barType = "continuous", powerType = Enum.PowerType.Energy, classes = "Rogue, Druid (Cat), Monk" },
+	{ key = "focus", name = "Focus", color = {1, 0.5, 0.2}, barType = "continuous", powerType = Enum.PowerType.Focus, classes = "Hunter" },
+	{ key = "runicPower", name = "Runic Power", color = {0, 0.82, 1}, barType = "continuous", powerType = Enum.PowerType.RunicPower, classes = "Death Knight" },
+	{ key = "runes", name = "Runes", color = {0.8, 0.2, 0.2}, barType = "charges", powerType = Enum.PowerType.Runes, classes = "Death Knight" },
+	{ key = "comboPoints", name = "Combo Points", color = {1, 0.5, 0}, barType = "charges", powerType = Enum.PowerType.ComboPoints, classes = "Rogue, Druid (Cat)" },
+	{ key = "soulShards", name = "Soul Shards", color = {0.58, 0.51, 0.79}, barType = "charges", powerType = Enum.PowerType.SoulShards, classes = "Warlock" },
+	{ key = "holyPower", name = "Holy Power", color = {0.95, 0.9, 0.6}, barType = "charges", powerType = Enum.PowerType.HolyPower, classes = "Paladin" },
+	{ key = "chi", name = "Chi", color = {0.71, 1, 0.92}, barType = "charges", powerType = Enum.PowerType.Chi, classes = "Monk (Windwalker)" },
+	{ key = "arcaneCharges", name = "Arcane Charges", color = {0.1, 0.1, 0.98}, barType = "charges", powerType = Enum.PowerType.ArcaneCharges, classes = "Mage (Arcane)" },
+	{ key = "insanity", name = "Insanity", color = {0.4, 0, 0.8}, barType = "continuous", powerType = Enum.PowerType.Insanity, classes = "Priest (Shadow)" },
+	{ key = "maelstrom", name = "Maelstrom", color = {0, 0.5, 1}, barType = "continuous", powerType = Enum.PowerType.Maelstrom, classes = "Shaman (Elemental)" },
+	{ key = "fury", name = "Fury", color = {0.79, 0.26, 0.99}, barType = "continuous", powerType = Enum.PowerType.Fury, classes = "Demon Hunter (Havoc)" },
+	{ key = "pain", name = "Pain", color = {1, 0.61, 0}, barType = "continuous", powerType = Enum.PowerType.Pain, classes = "Demon Hunter (Vengeance)" },
+	{ key = "astralPower", name = "Astral Power", color = {0.3, 0.52, 0.9}, barType = "continuous", powerType = Enum.PowerType.LunarPower, classes = "Druid (Balance)" },
+	{ key = "essence", name = "Essence", color = {0.27, 0.84, 0.76}, barType = "charges", powerType = Enum.PowerType.Essence, classes = "Evoker" },
+}
+
+local function refresh_resources_tab()
+	if not optionsFrame or not optionsFrame.resourcesScrollChild then return end
+	
+	-- Always sync settings reference
+	settings = GCDI.settings
+	
+	-- Ensure resourceSettings exists
+	if not settings.resourceSettings then
+		settings.resourceSettings = {}
+	end
+	
+	-- Clear existing elements
+	for _, element in pairs(resourcesTabElements) do
+		if element.Hide then element:Hide() end
+		if element.SetParent then element:SetParent(nil) end
+	end
+	wipe(resourcesTabElements)
+	
+	local scrollChild = optionsFrame.resourcesScrollChild
+	local yOffset = -10
+	
+	local function track(element)
+		table.insert(resourcesTabElements, element)
+		return element
+	end
+	
+	-- Section title
+	local sectionTitle = track(scrollChild:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge"))
+	sectionTitle:SetPoint("TOPLEFT", 10, yOffset)
+	sectionTitle:SetText("Resource Bars")
+	yOffset = yOffset - 25
+	
+	local sectionDesc = track(scrollChild:CreateFontString(nil, "OVERLAY", "GameFontHighlight"))
+	sectionDesc:SetPoint("TOPLEFT", 10, yOffset)
+	sectionDesc:SetText("Toggle which resource bars are displayed.")
+	sectionDesc:SetTextColor(0.7, 0.7, 0.7)
+	yOffset = yOffset - 30
+	
+	-- Helper to format numbers human-readable
+	local function formatNumber(num)
+		if num >= 1000000 then
+			return string.format("%.1fM", num / 1000000)
+		elseif num >= 1000 then
+			return string.format("%.1fK", num / 1000)
+		else
+			return tostring(num)
+		end
+	end
+	
+	-- Column headers
+	local nameHeader = track(scrollChild:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall"))
+	nameHeader:SetPoint("TOPLEFT", 55, yOffset)
+	nameHeader:SetText("Resource")
+	
+	local maxHeader = track(scrollChild:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall"))
+	maxHeader:SetPoint("TOPLEFT", 160, yOffset)
+	maxHeader:SetWidth(40)
+	maxHeader:SetJustifyH("CENTER")
+	maxHeader:SetText("Max")
+	
+	local typeHeader = track(scrollChild:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall"))
+	typeHeader:SetPoint("TOPLEFT", 205, yOffset)
+	typeHeader:SetWidth(55)
+	typeHeader:SetJustifyH("CENTER")
+	typeHeader:SetText("Type")
+	
+	local classHeader = track(scrollChild:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall"))
+	classHeader:SetPoint("TOPLEFT", 265, yOffset)
+	classHeader:SetText("Class")
+	yOffset = yOffset - 20
+	
+	-- Create checkbox for each resource
+	for _, resource in ipairs(RESOURCE_NAMES) do
+		local row = track(CreateFrame("Frame", nil, scrollChild))
+		row:SetSize(520, 30)
+		row:SetPoint("TOPLEFT", 10, yOffset)
+		
+		-- Enabled checkbox
+		local checkbox = CreateFrame("CheckButton", nil, row, "UICheckButtonTemplate")
+		checkbox:SetSize(24, 24)
+		checkbox:SetPoint("LEFT", 0, 0)
+		
+		-- Default to enabled if not set
+		local isEnabled = settings.resourceSettings[resource.key]
+		if isEnabled == nil then
+			isEnabled = true
+			settings.resourceSettings[resource.key] = true
+		end
+		checkbox:SetChecked(isEnabled)
+		
+		checkbox:SetScript("OnClick", function(self)
+			settings.resourceSettings[resource.key] = self:GetChecked()
+			GCDI.auto_save_to_profile()
+			GCDI.reposition_all()
+		end)
+		
+		-- Color swatch
+		local colorSwatch = row:CreateTexture(nil, "ARTWORK")
+		colorSwatch:SetSize(16, 16)
+		colorSwatch:SetPoint("LEFT", checkbox, "RIGHT", 5, 0)
+		colorSwatch:SetColorTexture(resource.color[1], resource.color[2], resource.color[3], 1)
+		
+		-- Resource name
+		local nameText = row:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+		nameText:SetPoint("LEFT", colorSwatch, "RIGHT", 10, 0)
+		nameText:SetWidth(110)
+		nameText:SetJustifyH("LEFT")
+		nameText:SetText(resource.name)
+		
+		-- Get max value
+		local maxValue = 0
+		if resource.key == "health" then
+			local rawMax = UnitHealthMax("player")
+			maxValue = tonumber(rawMax) or 0
+		elseif resource.powerType then
+			local rawMax = UnitPowerMax("player", resource.powerType)
+			maxValue = tonumber(rawMax) or 0
+		end
+		
+		-- Max value display (centered)
+		local maxText = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+		maxText:SetPoint("LEFT", 150, 0)
+		maxText:SetWidth(40)
+		maxText:SetJustifyH("CENTER")
+		if maxValue > 0 then
+			maxText:SetText("|cffffffff" .. formatNumber(maxValue) .. "|r")
+		else
+			maxText:SetText("|cff666666-|r")
+		end
+		
+		-- Bar type display (centered)
+		local typeText = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+		typeText:SetPoint("LEFT", 195, 0)
+		typeText:SetWidth(55)
+		typeText:SetJustifyH("CENTER")
+		if resource.barType == "charges" then
+			typeText:SetText("|cff00ccffCharges|r")
+		else
+			typeText:SetText("|cff88ff88Bar|r")
+		end
+		
+		-- Class display
+		local classText = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+		classText:SetPoint("LEFT", 255, 0)
+		classText:SetWidth(200)
+		classText:SetJustifyH("LEFT")
+		classText:SetText("|cff888888" .. (resource.classes or "") .. "|r")
+		
+		yOffset = yOffset - 35
+	end
+	
+	scrollChild:SetHeight(math.abs(yOffset) + 20)
 end
 
 -- ═══════════════════════════════════════════════════════════════════════════
@@ -979,6 +1371,24 @@ local function switch_tab(tabName)
 	if not optionsFrame then return end
 	currentTab = tabName
 	
+	if optionsFrame.gcdTabBtn then
+		if tabName == "gcd" then
+			optionsFrame.gcdTabBtn:SetNormalFontObject("GameFontHighlight")
+			optionsFrame.gcdTabBtn:GetFontString():SetTextColor(1, 1, 1)
+		else
+			optionsFrame.gcdTabBtn:SetNormalFontObject("GameFontNormal")
+			optionsFrame.gcdTabBtn:GetFontString():SetTextColor(0.7, 0.7, 0.7)
+		end
+	end
+	if optionsFrame.resourcesTabBtn then
+		if tabName == "resources" then
+			optionsFrame.resourcesTabBtn:SetNormalFontObject("GameFontHighlight")
+			optionsFrame.resourcesTabBtn:GetFontString():SetTextColor(1, 1, 1)
+		else
+			optionsFrame.resourcesTabBtn:SetNormalFontObject("GameFontNormal")
+			optionsFrame.resourcesTabBtn:GetFontString():SetTextColor(0.7, 0.7, 0.7)
+		end
+	end
 	if optionsFrame.spellsTabBtn then
 		if tabName == "spells" then
 			optionsFrame.spellsTabBtn:SetNormalFontObject("GameFontHighlight")
@@ -1025,6 +1435,12 @@ local function switch_tab(tabName)
 		end
 	end
 
+	if optionsFrame.gcdScrollFrame then
+		optionsFrame.gcdScrollFrame:SetShown(tabName == "gcd")
+	end
+	if optionsFrame.resourcesScrollFrame then
+		optionsFrame.resourcesScrollFrame:SetShown(tabName == "resources")
+	end
 	if optionsFrame.spellsScrollFrame then
 		optionsFrame.spellsScrollFrame:SetShown(tabName == "spells")
 	end
@@ -1041,7 +1457,11 @@ local function switch_tab(tabName)
 		optionsFrame.profilesFrame:SetShown(tabName == "profiles")
 	end
 	
-	if tabName == "spells" then
+	if tabName == "gcd" then
+		refresh_gcd_tab()
+	elseif tabName == "resources" then
+		refresh_resources_tab()
+	elseif tabName == "spells" then
 		refresh_spells_tab()
 	elseif tabName == "items" then
 		refresh_items_tab()
@@ -1117,6 +1537,8 @@ StaticPopupDialogs["GCDI_IMPORT_PROFILE_NAME"] = {
 		if data.io then s.itemOrder = data.io end
 		if data.bs then s.buffSettings = data.bs end
 		if data.bo then s.buffOrder = data.bo end
+		if data.rs then s.resourceSettings = data.rs end
+		if data.gs then s.gcdSettings = data.gs end
 		
 		-- Save as new profile
 		s.profiles = s.profiles or {}
@@ -1128,6 +1550,8 @@ StaticPopupDialogs["GCDI_IMPORT_PROFILE_NAME"] = {
 			itemOrder = s.itemOrder or {},
 			buffSettings = s.buffSettings or {},
 			buffOrder = s.buffOrder or {},
+			resourceSettings = s.resourceSettings or {},
+			gcdSettings = s.gcdSettings or {},
 		}
 		s.currentProfile = name
 		
@@ -1198,6 +1622,8 @@ local function do_save_profile(name)
 		itemOrder = deepcopy(s.itemOrder or {}),
 		buffSettings = deepcopy(s.buffSettings or {}),
 		buffOrder = deepcopy(s.buffOrder or {}),
+		resourceSettings = deepcopy(s.resourceSettings or {}),
+		gcdSettings = deepcopy(s.gcdSettings or {}),
 		spellCatalog = deepcopy(GCDI.spellCatalog),
 		itemCatalog = deepcopy(GCDI.itemCatalog),
 		buffCatalog = deepcopy(GCDI.buffCatalog),
@@ -1211,48 +1637,9 @@ local function do_save_profile(name)
 	return true
 end
 
--- Compact serialization for export (one line, minimal whitespace)
-local function serialize_compact(tbl)
-	local parts = {}
-	for k, v in pairs(tbl) do
-		local key = type(k) == "number" and "[" .. k .. "]" or k
-		local val
-		if type(v) == "table" then
-			val = serialize_compact(v)
-		elseif type(v) == "string" then
-			val = "\"" .. v:gsub("\\", "\\\\"):gsub("\"", "\\\"") .. "\""
-		elseif type(v) == "boolean" then
-			val = v and "t" or "f"  -- shorter than true/false
-		elseif type(v) == "number" then
-			val = tostring(v)
-		else
-			val = "nil"
-		end
-		table.insert(parts, key .. "=" .. val)
-	end
-	return "{" .. table.concat(parts, ",") .. "}"
-end
-
--- Deserialize compact format back to a table
-local function deserialize_compact(str)
-	-- Convert our compact booleans back
-	str = str:gsub("=t,", "=true,"):gsub("=t}", "=true}")
-	str = str:gsub("=f,", "=false,"):gsub("=f}", "=false}")
-	
-	local func, err = loadstring("return " .. str)
-	if not func then
-		return nil, "Parse error: " .. tostring(err)
-	end
-	setfenv(func, {})
-	local ok, result = pcall(func)
-	if not ok then
-		return nil, "Execution error: " .. tostring(result)
-	end
-	if type(result) ~= "table" then
-		return nil, "Invalid data"
-	end
-	return result
-end
+-- Serialization functions from LibGCDI-Profiles
+local serialize_compact = LibProfiles.serialize
+local deserialize_compact = LibProfiles.deserialize
 
 -- Export/Import popup window
 local exportImportFrame = nil
@@ -1580,6 +1967,8 @@ refresh_profiles_tab = function()
 			io = settings.itemOrder or {},
 			bs = settings.buffSettings or {},
 			bo = settings.buffOrder or {},
+			rs = settings.resourceSettings or {},
+			gs = settings.gcdSettings or {},
 		}
 		
 		local ok, str = pcall(serialize_compact, exportData)
@@ -1610,7 +1999,11 @@ local function refresh_options_frame()
 	-- Update settings reference
 	settings = GCDI.settings
 	
-	if currentTab == "spells" then
+	if currentTab == "gcd" then
+		refresh_gcd_tab()
+	elseif currentTab == "resources" then
+		refresh_resources_tab()
+	elseif currentTab == "spells" then
 		refresh_spells_tab()
 	elseif currentTab == "items" then
 		refresh_items_tab()
@@ -1654,35 +2047,77 @@ local function create_options_frame()
 	-- TAB BUTTONS (moved up since profiles is now a tab)
 	local tabY = -30
 	
+	-- GCD TAB (first tab)
+	local gcdTabBtn = CreateFrame("Button", nil, optionsFrame)
+	gcdTabBtn:SetSize(45, 24)
+	gcdTabBtn:SetPoint("TOPLEFT", 15, tabY)
+	gcdTabBtn:SetNormalFontObject("GameFontHighlight")
+	gcdTabBtn:SetHighlightFontObject("GameFontHighlight")
+	
+	local gcdTabText = gcdTabBtn:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+	gcdTabText:SetPoint("CENTER")
+	gcdTabText:SetText("GCD")
+	gcdTabBtn:SetFontString(gcdTabText)
+	
+	local gcdTabBg = gcdTabBtn:CreateTexture(nil, "BACKGROUND")
+	gcdTabBg:SetAllPoints()
+	gcdTabBg:SetColorTexture(0.2, 0.2, 0.2, 0.8)
+	
+	gcdTabBtn:SetScript("OnClick", function() switch_tab("gcd") end)
+	gcdTabBtn:SetScript("OnEnter", function() gcdTabBg:SetColorTexture(0.3, 0.3, 0.3, 0.8) end)
+	gcdTabBtn:SetScript("OnLeave", function() gcdTabBg:SetColorTexture(0.2, 0.2, 0.2, 0.8) end)
+	optionsFrame.gcdTabBtn = gcdTabBtn
+	
+	-- RESOURCES TAB (second tab)
+	local resourcesTabBtn = CreateFrame("Button", nil, optionsFrame)
+	resourcesTabBtn:SetSize(75, 24)
+	resourcesTabBtn:SetPoint("LEFT", gcdTabBtn, "RIGHT", 5, 0)
+	resourcesTabBtn:SetNormalFontObject("GameFontNormal")
+	resourcesTabBtn:SetHighlightFontObject("GameFontHighlight")
+	
+	local resourcesTabText = resourcesTabBtn:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+	resourcesTabText:SetPoint("CENTER")
+	resourcesTabText:SetText("Resources")
+	resourcesTabBtn:SetFontString(resourcesTabText)
+	
+	local resourcesTabBg = resourcesTabBtn:CreateTexture(nil, "BACKGROUND")
+	resourcesTabBg:SetAllPoints()
+	resourcesTabBg:SetColorTexture(0.15, 0.15, 0.15, 0.8)
+	
+	resourcesTabBtn:SetScript("OnClick", function() switch_tab("resources") end)
+	resourcesTabBtn:SetScript("OnEnter", function() resourcesTabBg:SetColorTexture(0.3, 0.3, 0.3, 0.8) end)
+	resourcesTabBtn:SetScript("OnLeave", function() resourcesTabBg:SetColorTexture(0.15, 0.15, 0.15, 0.8) end)
+	optionsFrame.resourcesTabBtn = resourcesTabBtn
+	
 	local spellsTabBtn = CreateFrame("Button", nil, optionsFrame)
-	spellsTabBtn:SetSize(80, 24)
-	spellsTabBtn:SetPoint("TOPLEFT", 15, tabY)
-	spellsTabBtn:SetNormalFontObject("GameFontHighlight")
+	spellsTabBtn:SetSize(55, 24)
+	spellsTabBtn:SetPoint("LEFT", resourcesTabBtn, "RIGHT", 5, 0)
+	spellsTabBtn:SetNormalFontObject("GameFontNormal")
 	spellsTabBtn:SetHighlightFontObject("GameFontHighlight")
 	
-	local spellsTabText = spellsTabBtn:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+	local spellsTabText = spellsTabBtn:CreateFontString(nil, "OVERLAY", "GameFontNormal")
 	spellsTabText:SetPoint("CENTER")
 	spellsTabText:SetText("Spells")
 	spellsTabBtn:SetFontString(spellsTabText)
 	
 	local spellsTabBg = spellsTabBtn:CreateTexture(nil, "BACKGROUND")
 	spellsTabBg:SetAllPoints()
-	spellsTabBg:SetColorTexture(0.2, 0.2, 0.2, 0.8)
+	spellsTabBg:SetColorTexture(0.15, 0.15, 0.15, 0.8)
 	
 	spellsTabBtn:SetScript("OnClick", function() switch_tab("spells") end)
 	spellsTabBtn:SetScript("OnEnter", function() spellsTabBg:SetColorTexture(0.3, 0.3, 0.3, 0.8) end)
-	spellsTabBtn:SetScript("OnLeave", function() spellsTabBg:SetColorTexture(0.2, 0.2, 0.2, 0.8) end)
+	spellsTabBtn:SetScript("OnLeave", function() spellsTabBg:SetColorTexture(0.15, 0.15, 0.15, 0.8) end)
 	optionsFrame.spellsTabBtn = spellsTabBtn
 	
 	local itemsTabBtn = CreateFrame("Button", nil, optionsFrame)
-	itemsTabBtn:SetSize(100, 24)
+	itemsTabBtn:SetSize(50, 24)
 	itemsTabBtn:SetPoint("LEFT", spellsTabBtn, "RIGHT", 5, 0)
 	itemsTabBtn:SetNormalFontObject("GameFontNormal")
 	itemsTabBtn:SetHighlightFontObject("GameFontHighlight")
 	
 	local itemsTabText = itemsTabBtn:CreateFontString(nil, "OVERLAY", "GameFontNormal")
 	itemsTabText:SetPoint("CENTER")
-	itemsTabText:SetText("Items/Trinkets")
+	itemsTabText:SetText("Items")
 	itemsTabBtn:SetFontString(itemsTabText)
 	
 	local itemsTabBg = itemsTabBtn:CreateTexture(nil, "BACKGROUND")
@@ -1757,10 +2192,34 @@ local function create_options_frame()
 	profilesTabBtn:SetScript("OnLeave", function() profilesTabBg:SetColorTexture(0.15, 0.15, 0.15, 0.8) end)
 	optionsFrame.profilesTabBtn = profilesTabBtn
 	
+	-- GCD SCROLL FRAME (shown by default)
+	local gcdScrollFrame = CreateFrame("ScrollFrame", nil, optionsFrame, "UIPanelScrollFrameTemplate")
+	gcdScrollFrame:SetPoint("TOPLEFT", 10, -60)
+	gcdScrollFrame:SetPoint("BOTTOMRIGHT", -30, 40)
+	optionsFrame.gcdScrollFrame = gcdScrollFrame
+	
+	local gcdScrollChild = CreateFrame("Frame", nil, gcdScrollFrame)
+	gcdScrollChild:SetSize(450, 600)
+	gcdScrollFrame:SetScrollChild(gcdScrollChild)
+	optionsFrame.gcdScrollChild = gcdScrollChild
+	
+	-- RESOURCES SCROLL FRAME
+	local resourcesScrollFrame = CreateFrame("ScrollFrame", nil, optionsFrame, "UIPanelScrollFrameTemplate")
+	resourcesScrollFrame:SetPoint("TOPLEFT", 10, -60)
+	resourcesScrollFrame:SetPoint("BOTTOMRIGHT", -30, 40)
+	resourcesScrollFrame:Hide()
+	optionsFrame.resourcesScrollFrame = resourcesScrollFrame
+	
+	local resourcesScrollChild = CreateFrame("Frame", nil, resourcesScrollFrame)
+	resourcesScrollChild:SetSize(450, 400)
+	resourcesScrollFrame:SetScrollChild(resourcesScrollChild)
+	optionsFrame.resourcesScrollChild = resourcesScrollChild
+	
 	-- SPELLS SCROLL FRAME
 	local spellsScrollFrame = CreateFrame("ScrollFrame", nil, optionsFrame, "UIPanelScrollFrameTemplate")
 	spellsScrollFrame:SetPoint("TOPLEFT", 10, -60)
 	spellsScrollFrame:SetPoint("BOTTOMRIGHT", -30, 40)
+	spellsScrollFrame:Hide()
 	optionsFrame.spellsScrollFrame = spellsScrollFrame
 	
 	local spellsScrollChild = CreateFrame("Frame", nil, spellsScrollFrame)
@@ -1916,7 +2375,7 @@ local function create_options_frame()
 	
 	table.insert(UISpecialFrames, "GCDIndicatorOptions")
 	
-	currentTab = "spells"
+	currentTab = "gcd"
 	refresh_options_frame()
 	optionsFrame:Show()
 end

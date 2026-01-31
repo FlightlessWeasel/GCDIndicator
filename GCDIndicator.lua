@@ -35,6 +35,16 @@ local wipe = wipe
 -- Forward declare functions
 local save_profile, delete_profile
 
+-- Library references
+local LibProfiles = LibStub("LibGCDI-Profiles")
+local LibResources = LibStub("LibGCDI-Resources")
+local LibRange = LibStub("LibGCDI-Range")
+local LibScanner = LibStub("LibGCDI-Scanner")
+local LibBars = LibStub("LibGCDI-Bars")
+
+-- Utility functions from libraries
+local deepcopy = LibProfiles.deepcopy
+
 -- Constants
 local GCD_SPELL_ID = 61304
 local INTERPOLATION = Enum.StatusBarInterpolation.ExponentialEaseOut
@@ -79,30 +89,31 @@ local CONSUMABLE_ITEM_IDS = {
 local actionBarItems = {}
 
 local RESOURCE_COLORS = {
-	health = { 0.0, 0.8, 0.0 },
-	rage = { 0.8, 0.0, 0.0 },
-	energy = { 1.0, 0.85, 0.0 },
-	comboPoints = { 1.0, 0.5, 0.0 },
+	health = { 0.0, 0.8, 0.0 },        -- Green
+	mana = { 0.0, 0.5, 1.0 },          -- Blue
+	rage = { 0.8, 0.0, 0.0 },          -- Red
+	energy = { 1.0, 0.85, 0.0 },       -- Yellow
+	focus = { 1.0, 0.5, 0.2 },         -- Orange-brown (Hunter)
+	runicPower = { 0.0, 0.82, 1.0 },   -- Cyan (Death Knight)
+	runes = { 0.8, 0.2, 0.2 },         -- Dark Red (Death Knight)
+	comboPoints = { 1.0, 0.5, 0.0 },   -- Orange
+	soulShards = { 0.58, 0.51, 0.79 }, -- Purple (Warlock)
+	holyPower = { 0.95, 0.9, 0.6 },    -- Gold (Paladin)
+	chi = { 0.71, 1.0, 0.92 },         -- Jade (Monk)
+	arcaneCharges = { 0.1, 0.1, 0.98 },-- Deep Blue (Arcane Mage)
+	insanity = { 0.4, 0.0, 0.8 },      -- Deep Purple (Shadow Priest)
+	maelstrom = { 0.0, 0.5, 1.0 },     -- Blue (Shaman)
+	fury = { 0.79, 0.26, 0.99 },       -- Magenta (Havoc DH)
+	pain = { 1.0, 0.61, 0.0 },         -- Orange (Vengeance DH)
+	astralPower = { 0.3, 0.52, 0.9 },  -- Light Blue (Balance Druid)
+	essence = { 0.27, 0.84, 0.76 },    -- Teal (Evoker)
+	lunar = { 0.3, 0.52, 0.9 },        -- Blue (Balance Druid alternate)
+	solar = { 1.0, 0.85, 0.0 },        -- Yellow (Balance Druid alternate)
 }
 
-local RANGE_COLORS = {
-	inRange = { 0.0, 0.8, 0.0 },
-	outOfRange = { 0.8, 0.0, 0.0 },
-	noTarget = { 0.3, 0.3, 0.3 },
-}
-
-GCDI.RANGE_ITEMS = {
-	[0] = { id = nil, name = "No Range (Grey)", yards = 0 },
-	[1] = { id = 37727,  name = "Melee (5 yards)", yards = 5 },
-	[2] = { id = 63427,  name = "Close (8 yards)", yards = 8 },
-	[3] = { id = 34368,  name = "Short (10 yards)", yards = 10 },
-	[4] = { id = 32321,  name = "Medium (15 yards)", yards = 15 },
-	[5] = { id = 21519,  name = "Mid-Range (20 yards)", yards = 20 },
-	[6] = { id = 116139, name = "Long (25 yards)", yards = 25 },
-	[7] = { id = 33069,  name = "Ranged (30 yards)", yards = 30 },
-	[8] = { id = 35278,  name = "Far (35 yards)", yards = 35 },
-	[9] = { id = 41509,  name = "Max Range (40 yards)", yards = 40 },
-}
+-- Use range colors and items from library
+local RANGE_COLORS = LibRange.RANGE_COLORS
+GCDI.RANGE_ITEMS = LibRange.RANGE_ITEMS
 local RANGE_ITEMS = GCDI.RANGE_ITEMS
 
 local DEFAULT_SETTINGS = {
@@ -115,6 +126,33 @@ local DEFAULT_SETTINGS = {
 	buffOrder = {},
 	profiles = {},
 	currentProfile = nil,
+	resourceSettings = {
+		health = true,
+		mana = true,
+		rage = true,
+		energy = true,
+		focus = true,
+		runicPower = true,
+		runes = true,
+		comboPoints = true,
+		soulShards = true,
+		holyPower = true,
+		chi = true,
+		arcaneCharges = true,
+		insanity = true,
+		maelstrom = true,
+		fury = true,
+		pain = true,
+		astralPower = true,
+		essence = true,
+	},
+	gcdSettings = {
+		showGcdRow = true,
+		showStance = true,
+		showGcd = true,
+		showCombat = true,
+		showAggro = true,
+	},
 }
 
 -- Settings reference
@@ -122,17 +160,59 @@ GCDI.settings = nil
 local settings = nil
 
 local FORM_COLORS = {
-	[0] = { 0.5, 0.5, 0.5 },
-	[1] = { 0.6, 0.4, 0.2 },
-	[2] = { 1.0, 0.6, 0.2 },
-	[3] = { 0.3, 0.6, 1.0 },
-	[4] = { 0.2, 0.8, 0.4 },
-	[5] = { 0.8, 0.8, 1.0 },
+	[0] = { 0.5, 0.5, 0.5 },   -- Caster (grey)
+	[1] = { 0.6, 0.4, 0.2 },   -- Bear (brown)
+	[2] = { 1.0, 0.6, 0.2 },   -- Cat (orange)
+	[3] = { 0.3, 0.6, 1.0 },   -- Travel (blue)
+	[4] = { 0.6, 0.4, 0.8 },   -- Moonkin (purple)
+	[5] = { 0.2, 0.8, 0.4 },   -- Tree of Life (green)
 	default = { 0.7, 0.7, 0.7 },
 }
 
+-- Get form/stance name dynamically from game API
+-- Returns the actual spell name for the shapeshift form at given index
+function GCDI.GetFormName(formIndex)
+	if formIndex == 0 then
+		return "No Form"
+	end
+	
+	-- GetShapeshiftFormInfo returns: icon, active, castable, spellID
+	local icon, active, castable, spellID = GetShapeshiftFormInfo(formIndex)
+	if spellID then
+		local name = C_Spell.GetSpellName(spellID)
+		if name then
+			return name
+		end
+	end
+	
+	return "Form " .. formIndex
+end
+
+-- Get all available forms for the player
+function GCDI.GetAvailableForms()
+	local forms = {}
+	local numForms = GetNumShapeshiftForms() or 0
+	
+	-- Always include "No Form" as index 0
+	table.insert(forms, { index = 0, name = "No Form", spellID = nil })
+	
+	for i = 1, numForms do
+		local icon, active, castable, spellID = GetShapeshiftFormInfo(i)
+		local name = GCDI.GetFormName(i)
+		table.insert(forms, { index = i, name = name, spellID = spellID })
+	end
+	
+	return forms
+end
+
+-- Export FORM_COLORS for options UI
+GCDI.FORM_COLORS = FORM_COLORS
+
 -- Forward declarations
 local reposition_all, rebuild_spell_bars, rebuild_item_bars, rebuild_buff_bars
+
+-- Layout bounds (updated by reposition_all, used by preview mode)
+local layoutBounds = { width = 200, height = 100 }
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- UTILITY FUNCTIONS
@@ -161,36 +241,7 @@ local function stopTimerBar(bar)
 	bar:SetValue(0)
 end
 
-local function deepcopy(orig, seen)
-	if type(orig) ~= 'table' then
-		return orig
-	end
-	
-	-- Handle circular references
-	seen = seen or {}
-	if seen[orig] then
-		return seen[orig]
-	end
-	
-	local copy = {}
-	seen[orig] = copy
-	
-	for k, v in pairs(orig) do
-		-- Skip frame objects and functions (they can't be deep copied)
-		local vtype = type(v)
-		if vtype == 'function' then
-			-- skip functions
-		elseif vtype == 'table' and type(v.GetObjectType) == 'function' then
-			-- skip WoW frame objects
-		elseif vtype == 'userdata' then
-			-- skip userdata
-		else
-			copy[k] = deepcopy(v, seen)
-		end
-	end
-	
-	return copy
-end
+-- deepcopy is now provided by LibGCDI-Profiles
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- SPELL/ITEM HELPERS (exposed to GCDI)
@@ -277,26 +328,16 @@ end
 -- ═══════════════════════════════════════════════════════════════════════════
 
 save_profile = function(name)
-	if not settings or not name or name == "" then return false end
-	
-	settings.profiles = settings.profiles or {}
-	settings.profiles[name] = {
-		globalRangeFallback = settings.globalRangeFallback,
-		spellSettings = deepcopy(settings.spellSettings),
-		spellOrder = deepcopy(settings.spellOrder),
-		itemSettings = deepcopy(settings.itemSettings or {}),
-		itemOrder = deepcopy(settings.itemOrder or {}),
-		buffSettings = deepcopy(settings.buffSettings or {}),
-		buffOrder = deepcopy(settings.buffOrder or {}),
-		-- Save catalogs so we don't need to rescan
-		spellCatalog = deepcopy(GCDI.spellCatalog),
-		itemCatalog = deepcopy(GCDI.itemCatalog),
-		buffCatalog = deepcopy(GCDI.buffCatalog),
+	local catalogs = {
+		spellCatalog = GCDI.spellCatalog,
+		itemCatalog = GCDI.itemCatalog,
+		buffCatalog = GCDI.buffCatalog,
 	}
-	settings.currentProfile = name
-	
-	print("|cff00ff00GCDIndicator:|r Profile '" .. name .. "' saved!")
-	return true
+	local success = LibProfiles:SaveProfile(settings, name, catalogs)
+	if success then
+		print("|cff00ff00GCDIndicator:|r Profile '" .. name .. "' saved!")
+	end
+	return success
 end
 
 function GCDI.load_profile(name)
@@ -306,77 +347,43 @@ function GCDI.load_profile(name)
 		return false
 	end
 	
-	local profile = settings.profiles[name]
-	settings.globalRangeFallback = profile.globalRangeFallback or 0
-	settings.spellSettings = deepcopy(profile.spellSettings or {})
-	settings.spellOrder = deepcopy(profile.spellOrder or {})
-	settings.itemSettings = deepcopy(profile.itemSettings or {})
-	settings.itemOrder = deepcopy(profile.itemOrder or {})
-	settings.buffSettings = deepcopy(profile.buffSettings or {})
-	settings.buffOrder = deepcopy(profile.buffOrder or {})
-	settings.currentProfile = name
+	local catalogs = {
+		spellCatalog = GCDI.spellCatalog,
+		itemCatalog = GCDI.itemCatalog,
+		buffCatalog = GCDI.buffCatalog,
+	}
+	local success = LibProfiles:LoadProfile(settings, name, catalogs)
 	
-	-- Load saved catalogs if available (avoids rescanning)
-	if profile.spellCatalog then
-		GCDI.spellCatalog = deepcopy(profile.spellCatalog)
+	if success then
+		rebuild_spell_bars()
+		rebuild_item_bars()
+		rebuild_buff_bars()
+		reposition_all()
+		if GCDI.refresh_options_frame then GCDI.refresh_options_frame() end
+		print("|cff00ff00GCDIndicator:|r Profile '" .. name .. "' loaded!")
 	end
-	if profile.itemCatalog then
-		GCDI.itemCatalog = deepcopy(profile.itemCatalog)
-	end
-	if profile.buffCatalog then
-		GCDI.buffCatalog = deepcopy(profile.buffCatalog)
-	end
-	
-	rebuild_spell_bars()
-	rebuild_item_bars()
-	rebuild_buff_bars()
-	reposition_all()
-	if GCDI.refresh_options_frame then GCDI.refresh_options_frame() end
-	
-	print("|cff00ff00GCDIndicator:|r Profile '" .. name .. "' loaded!")
-	return true
+	return success
 end
 
 delete_profile = function(name)
-	if not settings or not name then return false end
-	if not settings.profiles or not settings.profiles[name] then return false end
-	
-	settings.profiles[name] = nil
-	if settings.currentProfile == name then
-		settings.currentProfile = nil
+	local success = LibProfiles:DeleteProfile(settings, name)
+	if success then
+		print("|cff00ff00GCDIndicator:|r Profile '" .. name .. "' deleted!")
 	end
-	print("|cff00ff00GCDIndicator:|r Profile '" .. name .. "' deleted!")
-	return true
+	return success
 end
 
 function GCDI.auto_save_to_profile()
-	if not settings or not settings.currentProfile then return end
-	if not settings.profiles then settings.profiles = {} end
-	
-	settings.profiles[settings.currentProfile] = {
-		globalRangeFallback = settings.globalRangeFallback,
-		spellSettings = deepcopy(settings.spellSettings),
-		spellOrder = deepcopy(settings.spellOrder),
-		itemSettings = deepcopy(settings.itemSettings or {}),
-		itemOrder = deepcopy(settings.itemOrder or {}),
-		buffSettings = deepcopy(settings.buffSettings or {}),
-		buffOrder = deepcopy(settings.buffOrder or {}),
-		-- Save catalogs so we don't need to rescan
-		spellCatalog = deepcopy(GCDI.spellCatalog),
-		itemCatalog = deepcopy(GCDI.itemCatalog),
-		buffCatalog = deepcopy(GCDI.buffCatalog),
+	local catalogs = {
+		spellCatalog = GCDI.spellCatalog,
+		itemCatalog = GCDI.itemCatalog,
+		buffCatalog = GCDI.buffCatalog,
 	}
+	LibProfiles:AutoSave(settings, catalogs)
 end
 
 function GCDI.get_profile_names()
-	local names = {}
-	if settings and settings.profiles then
-		for name in pairs(settings.profiles) do
-			table.insert(names, name)
-		end
-		table.sort(names)
-	end
-	return names
+	return LibProfiles:GetProfileNames(settings)
 end
 
 -- ═══════════════════════════════════════════════════════════════════════════
@@ -975,8 +982,9 @@ end
 local BUFF_COLORS = {
 	active = { 0.2, 0.8, 0.2 },     -- Green when buff is active
 	inactive = { 0.3, 0.3, 0.3 },   -- Grey when buff is not active
-	stackActive = { 0.4, 0.7, 1.0 }, -- Blue for active stack
-	stackEmpty = { 0, 0, 0 },        -- Black for empty stack
+	stackEmpty = { 0, 0, 0 },        -- Black for empty stack (0 stacks)
+	stackHalf = { 0.4, 0.7, 1.0 },   -- Blue for 1 stack (half filled)
+	stackFull = { 0.2, 0.8, 0.2 },   -- Green for 2 stacks (fully filled)
 }
 
 local function update_buff_bar(buffID)
@@ -1040,24 +1048,27 @@ local function update_buff_bar(buffID)
 		data.activeIndicator:SetColorTexture(BUFF_COLORS.active[1], BUFF_COLORS.active[2], BUFF_COLORS.active[3], 1)
 		
 		-- Update stack indicators if present
+		-- Each indicator represents 2 stacks: blue = 1 stack, green = 2 stacks
 		if data.stackIndicators and GCDI.should_show_buff_stacks(buffID) then
-			local maxDisplay = GCDI.get_buff_max_stacks_display(buffID)
-			
+			-- Just iterate through all indicators we have (count is already correct)
 			for i, indicator in ipairs(data.stackIndicators) do
-				if i <= maxDisplay then
-					if i <= stacks then
-						indicator.overlay:Hide()  -- Show blue (stack active)
-					else
-						indicator.overlay:Show()  -- Show black (stack empty)
-					end
-					indicator.bg:Show()
-				else
-					indicator.bg:Hide()
+				-- Indicator i represents stacks (2*i - 1) and (2*i)
+				local stacksForThisIndicator = stacks - (2 * (i - 1))
+				
+				if stacksForThisIndicator >= 2 then
+					-- 2 stacks = green (full)
+					indicator.bg:SetColorTexture(BUFF_COLORS.stackFull[1], BUFF_COLORS.stackFull[2], BUFF_COLORS.stackFull[3], 1)
 					indicator.overlay:Hide()
+				elseif stacksForThisIndicator >= 1 then
+					-- 1 stack = blue (half)
+					indicator.bg:SetColorTexture(BUFF_COLORS.stackHalf[1], BUFF_COLORS.stackHalf[2], BUFF_COLORS.stackHalf[3], 1)
+					indicator.overlay:Hide()
+				else
+					-- 0 stacks = black (empty)
+					indicator.overlay:Show()
 				end
+				indicator.bg:Show()
 			end
-			
-			-- Stack text removed - only show colored boxes
 		end
 	else
 		-- Buff is not active
@@ -1067,7 +1078,8 @@ local function update_buff_bar(buffID)
 		-- Show all stack indicators as black (empty)
 		if data.stackIndicators then
 			for _, indicator in ipairs(data.stackIndicators) do
-				indicator.overlay:Show()  -- Show black
+				indicator.bg:SetColorTexture(BUFF_COLORS.stackHalf[1], BUFF_COLORS.stackHalf[2], BUFF_COLORS.stackHalf[3], 1)
+				indicator.overlay:Show()  -- Show black overlay
 			end
 		end
 	end
@@ -1087,11 +1099,13 @@ local function create_buff_bar(spellID, spellName, texture)
 	
 	-- Check if we should show stacks for this buff
 	local showStacks = GCDI.should_show_buff_stacks(spellID)
-	local maxStacksDisplay = GCDI.get_buff_max_stacks_display(spellID)
+	local maxStacks = GCDI.get_buff_max_stacks_display(spellID)  -- Max stacks setting (e.g., 10)
+	-- Each indicator represents 2 stacks, so calculate indicator count
+	local indicatorCount = math.ceil(maxStacks / 2)  -- e.g., 10 stacks = 5 indicators
 	
 	-- Layout: [Icon][Active Indicator][Stacks?]
 	-- Active indicator is a single square that shows green when buff is active
-	local stackWidth = showStacks and (maxStacksDisplay * barSize + (maxStacksDisplay - 1) * 2) or 0
+	local stackWidth = showStacks and (indicatorCount * barSize + (indicatorCount - 1) * 2) or 0
 	local extraGap = showStacks and 2 or 0
 	local containerWidth = (barSize * 2 + 2) + stackWidth + extraGap + pad * 2
 	
@@ -1116,20 +1130,21 @@ local function create_buff_bar(spellID, spellName, texture)
 	activeIndicator:SetColorTexture(BUFF_COLORS.inactive[1], BUFF_COLORS.inactive[2], BUFF_COLORS.inactive[3], 1)
 	
 	-- Stack indicators (optional) - colored boxes only, no text
+	-- Each indicator represents 2 stacks: blue = 1 stack, green = 2 stacks
 	local stackIndicators = nil
 	local stackDetectors = nil
 	
-	if showStacks and maxStacksDisplay > 0 then
+	if showStacks and indicatorCount > 0 then
 		stackIndicators = {}
-		stackDetectors = LibDetector:CreateDetectorArray(maxStacksDisplay)
+		stackDetectors = LibDetector:CreateDetectorArray(maxStacks)  -- Detect up to maxStacks
 		local prevElement = activeIndicator
 		
-		for i = 1, maxStacksDisplay do
-			-- Blue background (stack active)
+		for i = 1, indicatorCount do
+			-- Blue background (default color, will be updated based on stacks)
 			local stackBg = container:CreateTexture(nil, "ARTWORK")
 			stackBg:SetSize(barSize, barSize)
 			stackBg:SetPoint("LEFT", prevElement, "RIGHT", 2, 0)
-			stackBg:SetColorTexture(BUFF_COLORS.stackActive[1], BUFF_COLORS.stackActive[2], BUFF_COLORS.stackActive[3], 1)
+			stackBg:SetColorTexture(BUFF_COLORS.stackHalf[1], BUFF_COLORS.stackHalf[2], BUFF_COLORS.stackHalf[3], 1)
 			
 			-- Black overlay (stack empty) - shown when stack is NOT present
 			local stackOverlay = container:CreateTexture(nil, "OVERLAY")
@@ -1172,163 +1187,52 @@ local function clear_buff_bars()
 end
 
 -- ═══════════════════════════════════════════════════════════════════════════
--- RANGE INDICATOR
+-- RANGE INDICATOR (via LibGCDI-Range)
 -- ═══════════════════════════════════════════════════════════════════════════
 
-local function get_range_fallback_index(spellID)
-	if not settings then return 0 end
-	
-	local spellSettings = settings.spellSettings[spellID]
-	if spellSettings and spellSettings.rangeFallback ~= nil then
-		return spellSettings.rangeFallback
-	end
-	
-	return settings.globalRangeFallback or 0
-end
-
-local function is_in_fallback_range(spellID)
-	local rangeIndex = get_range_fallback_index(spellID)
-	local item = RANGE_ITEMS[rangeIndex]
-	
-	if not item or not item.id then
-		return nil
-	end
-	
-	local result = C_Item.IsItemInRange(item.id, "target")
-	return result == true
-end
-
-local function auto_detect_self_cast(spellID, actionSlot)
-	if not settings or not actionSlot then return false end
-	
-	local spellSettings = settings.spellSettings[spellID]
-	if spellSettings and spellSettings.selfCast ~= nil then
-		return spellSettings.selfCast == true
-	end
-	
-	if not UnitExists("target") or not UnitCanAttack("player", "target") then
-		return false
-	end
-	
-	local inRange = IsActionInRange(actionSlot)
-	if inRange == nil then
-		if not settings.spellSettings[spellID] then
-			settings.spellSettings[spellID] = {}
-		end
-		settings.spellSettings[spellID].selfCast = true
-		return true
-	end
-	return false
-end
-
-local function has_range_override(spellID)
-	if not settings then return false end
-	local spellSettings = settings.spellSettings[spellID]
-	return spellSettings and spellSettings.rangeFallback ~= nil
-end
-
-local function has_native_range_setting(spellID)
-	if not settings then return false end
-	local spellSettings = settings.spellSettings[spellID]
-	return spellSettings and spellSettings.hasNativeRange == true
-end
-
--- Auto-detect native range for all tracked spells
-local function detect_native_range_for_spells()
-	if not UnitExists("target") then return end
-	
-	for spellID, data in pairs(trackedSpells) do
-		if GCDI.is_spell_enabled(spellID) then
-			local actionSlot = data.actionSlot
-			if actionSlot then
-				local rangeResult = IsActionInRange(actionSlot)
-				if rangeResult ~= nil then
-					-- This spell has native range detection
-					if not settings.spellSettings[spellID] then
-						settings.spellSettings[spellID] = {}
-					end
-					if settings.spellSettings[spellID].hasNativeRange ~= true then
-						settings.spellSettings[spellID].hasNativeRange = true
-						if configs.debugMode then
-							local name = GCDI.spellCatalog[spellID] and GCDI.spellCatalog[spellID].name or spellID
-							print("|cff00ff00GCDIndicator:|r Native range detected for: " .. name)
-						end
-					end
-				end
+-- Initialize LibRange with callbacks to access addon state
+local function init_lib_range()
+	LibRange:Init({
+		getSettings = function() return settings end,
+		getSpellSettings = function(spellID)
+			return settings and settings.spellSettings and settings.spellSettings[spellID]
+		end,
+		setSpellSetting = function(spellID, key, value)
+			if not settings then return end
+			if not settings.spellSettings then settings.spellSettings = {} end
+			if not settings.spellSettings[spellID] then settings.spellSettings[spellID] = {} end
+			settings.spellSettings[spellID][key] = value
+		end,
+		isSpellEnabled = GCDI.is_spell_enabled,
+		getTrackedSpells = function() return trackedSpells end,
+		getSpellBars = function() return spellBars end,
+		getSpellCatalog = function() return GCDI.spellCatalog end,
+		isPreviewMode = function() return previewMode end,
+		debugPrint = function(msg)
+			if configs.debugMode then
+				print("|cff00ff00GCDIndicator:|r " .. msg)
 			end
-		end
-	end
+		end,
+	})
+end
+
+-- Wrapper functions for backward compatibility
+local function detect_native_range_for_spells()
+	LibRange:DetectNativeRangeForSpells()
 end
 
 GCDI.detect_native_range_for_spells = detect_native_range_for_spells
 
 local function update_range_indicators()
-	if previewMode then return end  -- Skip updates in preview mode
-	for i, spellID in ipairs(spellBars) do
-		local spellData = trackedSpells[spellID]
-		if spellData and spellData.rangeOverlay and GCDI.is_spell_enabled(spellID) then
-			local overlay = spellData.rangeOverlay
-			local actionSlot = spellData.actionSlot
-			
-			if is_spell_self_cast(spellID) then
-				-- Hide both base and overlay for self-cast spells
-				if spellData.rangeBase then spellData.rangeBase:Hide() end
-				overlay:Hide()
-			else
-				-- Show both for non-self-cast spells
-				if spellData.rangeBase then spellData.rangeBase:Show() end
-				overlay:Show()
-				
-				if not UnitExists("target") then
-					overlay:SetColorTexture(RANGE_COLORS.noTarget[1], RANGE_COLORS.noTarget[2], RANGE_COLORS.noTarget[3], 1)
-				else
-					local useOverride = has_range_override(spellID)
-					
-					if useOverride then
-						local fallbackResult = is_in_fallback_range(spellID)
-						if fallbackResult == nil then
-							overlay:SetColorTexture(RANGE_COLORS.noTarget[1], RANGE_COLORS.noTarget[2], RANGE_COLORS.noTarget[3], 1)
-						elseif fallbackResult then
-							overlay:SetColorTexture(RANGE_COLORS.inRange[1], RANGE_COLORS.inRange[2], RANGE_COLORS.inRange[3], 1)
-						else
-							overlay:SetColorTexture(RANGE_COLORS.outOfRange[1], RANGE_COLORS.outOfRange[2], RANGE_COLORS.outOfRange[3], 1)
-						end
-					elseif has_native_range_setting(spellID) then
-						local inRange
-						if actionSlot then
-							inRange = IsActionInRange(actionSlot)
-						end
-						
-						if inRange == true then
-							overlay:SetColorTexture(RANGE_COLORS.inRange[1], RANGE_COLORS.inRange[2], RANGE_COLORS.inRange[3], 1)
-						elseif inRange == false then
-							overlay:SetColorTexture(RANGE_COLORS.outOfRange[1], RANGE_COLORS.outOfRange[2], RANGE_COLORS.outOfRange[3], 1)
-						else
-							overlay:SetColorTexture(RANGE_COLORS.noTarget[1], RANGE_COLORS.noTarget[2], RANGE_COLORS.noTarget[3], 1)
-						end
-					else
-						if auto_detect_self_cast(spellID, actionSlot) then
-							-- Hide both for auto-detected self-cast
-							if spellData.rangeBase then spellData.rangeBase:Hide() end
-							overlay:Hide()
-						else
-							local fallbackResult = is_in_fallback_range(spellID)
-							if fallbackResult == nil then
-								overlay:SetColorTexture(RANGE_COLORS.noTarget[1], RANGE_COLORS.noTarget[2], RANGE_COLORS.noTarget[3], 1)
-							elseif fallbackResult then
-								overlay:SetColorTexture(RANGE_COLORS.inRange[1], RANGE_COLORS.inRange[2], RANGE_COLORS.inRange[3], 1)
-							else
-								overlay:SetColorTexture(RANGE_COLORS.outOfRange[1], RANGE_COLORS.outOfRange[2], RANGE_COLORS.outOfRange[3], 1)
-							end
-						end
-					end
-				end
-			end
-		end
-	end
+	LibRange:UpdateRangeIndicators()
 end
 
 GCDI.UpdateRangeIndicators = update_range_indicators
+
+-- Helper function used by spell bar creation
+local function is_spell_self_cast(spellID)
+	return LibRange:IsSpellSelfCast(spellID)
+end
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- RESOURCE BARS
@@ -1377,77 +1281,275 @@ local function update_health_bar()
 end
 
 local function update_rage_bar()
-	if previewMode then return end  -- Skip updates in preview mode
+	if previewMode then return end
 	if not resourceBars.rage then return end
 	local bar = resourceBars.rage.bar
 	local rawMax = UnitPowerMax("player", Enum.PowerType.Rage)
 	local max = tonumber(rawMax) or 100
-	if max > 0 then
-		bar:SetMinMaxValues(0, max)
-		bar:SetValue(UnitPower("player", Enum.PowerType.Rage))
-		resourceBars.rage.container:Show()
-	else
-		resourceBars.rage.container:Hide()
-	end
+	bar:SetMinMaxValues(0, math.max(max, 1))
+	bar:SetValue(UnitPower("player", Enum.PowerType.Rage))
 end
 
 local function update_energy_bar()
-	if previewMode then return end  -- Skip updates in preview mode
+	if previewMode then return end
 	if not resourceBars.energy then return end
 	local bar = resourceBars.energy.bar
 	local rawMax = UnitPowerMax("player", Enum.PowerType.Energy)
 	local max = tonumber(rawMax) or 100
-	if max > 0 then
-		bar:SetMinMaxValues(0, max)
-		bar:SetValue(UnitPower("player", Enum.PowerType.Energy))
-		resourceBars.energy.container:Show()
-	else
-		resourceBars.energy.container:Hide()
-	end
+	bar:SetMinMaxValues(0, math.max(max, 1))
+	bar:SetValue(UnitPower("player", Enum.PowerType.Energy))
 end
 
 local function update_combo_points_bar()
-	if previewMode then return end  -- Skip updates in preview mode
+	if previewMode then return end
 	if not resourceBars.comboPoints then return end
 	local data = resourceBars.comboPoints
 	local bar = data.bar
 	local rawMax = UnitPowerMax("player", Enum.PowerType.ComboPoints)
-	local max = tonumber(rawMax) or 8
-	if max > 0 then
-		bar:SetMinMaxValues(0, max)
-		bar:SetValue(UnitPower("player", Enum.PowerType.ComboPoints))
-		
-		local segmentWidth = 8
-		local separatorWidth = 2
-		local numSeparators = max - 1
-		local barWidth = (max * segmentWidth) + (numSeparators * separatorWidth)
-		local pad = configs.bgPadding
-		data.container:SetWidth(barWidth + pad * 2)
-		
-		if data.separators and data.separatorFrame then
-			for i, sep in ipairs(data.separators) do
-				if i < max then
-					local xPos = (i * segmentWidth) + ((i - 1) * separatorWidth)
-					sep:ClearAllPoints()
-					sep:SetPoint("TOPLEFT", data.separatorFrame, "TOPLEFT", xPos, 0)
-					sep:Show()
-				else
-					sep:Hide()
-				end
+	local actualMax = tonumber(rawMax) or 0
+	-- If class doesn't have combo points (max = 0), show minimum 2 indicators for visual consistency
+	local max = actualMax == 0 and 2 or math.max(actualMax, 1)
+	
+	bar:SetMinMaxValues(0, max)
+	bar:SetValue(UnitPower("player", Enum.PowerType.ComboPoints))
+	
+	-- Fixed total width of 200px, calculate segment width based on max
+	local totalWidth = 200
+	local separatorWidth = 2
+	local numSeparators = max - 1
+	local totalSeparatorWidth = numSeparators * separatorWidth
+	local segmentWidth = (totalWidth - totalSeparatorWidth) / max
+	local pad = configs.bgPadding
+	data.container:SetWidth(totalWidth + pad * 2)
+	
+	if data.separators and data.separatorFrame then
+		for i, sep in ipairs(data.separators) do
+			if i < max then
+				local xPos = (i * segmentWidth) + ((i - 1) * separatorWidth)
+				sep:ClearAllPoints()
+				sep:SetPoint("TOPLEFT", data.separatorFrame, "TOPLEFT", xPos, 0)
+				sep:Show()
+			else
+				sep:Hide()
 			end
 		end
-		
-		data.container:Show()
-	else
-		data.container:Hide()
 	end
+end
+
+local function update_mana_bar()
+	if previewMode then return end
+	if not resourceBars.mana then return end
+	local bar = resourceBars.mana.bar
+	local rawMax = UnitPowerMax("player", Enum.PowerType.Mana)
+	local max = tonumber(rawMax) or 100
+	bar:SetMinMaxValues(0, math.max(max, 1))
+	bar:SetValue(UnitPower("player", Enum.PowerType.Mana))
+end
+
+local function update_focus_bar()
+	if previewMode then return end
+	if not resourceBars.focus then return end
+	local bar = resourceBars.focus.bar
+	local rawMax = UnitPowerMax("player", Enum.PowerType.Focus)
+	local max = tonumber(rawMax) or 100
+	bar:SetMinMaxValues(0, math.max(max, 1))
+	bar:SetValue(UnitPower("player", Enum.PowerType.Focus))
+end
+
+local function update_runic_power_bar()
+	if previewMode then return end
+	if not resourceBars.runicPower then return end
+	local bar = resourceBars.runicPower.bar
+	local rawMax = UnitPowerMax("player", Enum.PowerType.RunicPower)
+	local max = tonumber(rawMax) or 100
+	bar:SetMinMaxValues(0, math.max(max, 1))
+	bar:SetValue(UnitPower("player", Enum.PowerType.RunicPower))
+end
+
+local function update_runes_bar()
+	if previewMode then return end
+	if not resourceBars.runes then return end
+	local data = resourceBars.runes
+	local bar = data.bar
+	
+	-- Check actual max runes (6 for DK, 0 for other classes)
+	local rawMax = UnitPowerMax("player", Enum.PowerType.Runes)
+	local actualMax = tonumber(rawMax) or 0
+	-- If class doesn't have runes (max = 0), show minimum 2 indicators for visual consistency
+	local max = actualMax == 0 and 2 or actualMax
+	local current = UnitPower("player", Enum.PowerType.Runes) or 0
+	
+	bar:SetMinMaxValues(0, max)
+	bar:SetValue(current)
+	
+	-- Update separators based on max
+	if not data.separators then
+		data.separators = {}
+	end
+	
+	-- Fixed total width of 200px, calculate segment width based on max
+	local totalWidth = 200
+	local separatorWidth = 2
+	local numSeparators = max - 1
+	local totalSeparatorWidth = numSeparators * separatorWidth
+	local segmentWidth = (totalWidth - totalSeparatorWidth) / max
+	local pad = configs.bgPadding
+	data.container:SetWidth(totalWidth + pad * 2)
+	
+	-- Create separator frame if needed
+	if not data.separatorFrame then
+		data.separatorFrame = CreateFrame("Frame", nil, data.container)
+		data.separatorFrame:SetAllPoints(bar)
+		data.separatorFrame:SetFrameLevel(data.container:GetFrameLevel() + 2)
+	end
+	
+	-- Create/update separators
+	for i = 1, max - 1 do
+		if not data.separators[i] then
+			local sep = data.separatorFrame:CreateTexture(nil, "OVERLAY")
+			sep:SetColorTexture(0, 0, 0, 1)
+			sep:SetSize(separatorWidth, configs.barHeight)
+			data.separators[i] = sep
+		end
+		local xPos = (i * segmentWidth) + ((i - 1) * separatorWidth)
+		data.separators[i]:ClearAllPoints()
+		data.separators[i]:SetPoint("TOPLEFT", data.separatorFrame, "TOPLEFT", xPos, 0)
+		data.separators[i]:Show()
+	end
+	
+	-- Hide extra separators if any
+	for i = max, #data.separators do
+		if data.separators[i] then
+			data.separators[i]:Hide()
+		end
+	end
+end
+
+-- Helper function to update charge-based resource bars with separators
+local function update_charge_bar(data, powerType, defaultMax)
+	if previewMode then return end
+	if not data then return end
+	local bar = data.bar
+	local rawMax = UnitPowerMax("player", powerType)
+	local actualMax = tonumber(rawMax) or 0
+	-- If class doesn't have this resource (max = 0), show minimum 2 indicators for visual consistency
+	local max = actualMax == 0 and 2 or math.max(actualMax, 1)
+	
+	bar:SetMinMaxValues(0, max)
+	bar:SetValue(UnitPower("player", powerType))
+	
+	-- Update width and separators like combo points
+	local totalWidth = 200
+	local separatorWidth = 2
+	local numSeparators = max - 1
+	local totalSeparatorWidth = numSeparators * separatorWidth
+	local segmentWidth = (totalWidth - totalSeparatorWidth) / max
+	local pad = configs.bgPadding
+	data.container:SetWidth(totalWidth + pad * 2)
+	
+	if data.separators and data.separatorFrame then
+		for i, sep in ipairs(data.separators) do
+			if i < max then
+				local xPos = (i * segmentWidth) + ((i - 1) * separatorWidth)
+				sep:ClearAllPoints()
+				sep:SetPoint("TOPLEFT", data.separatorFrame, "TOPLEFT", xPos, 0)
+				sep:Show()
+			else
+				sep:Hide()
+			end
+		end
+	end
+end
+
+local function update_soul_shards_bar()
+	update_charge_bar(resourceBars.soulShards, Enum.PowerType.SoulShards, 5)
+end
+
+local function update_holy_power_bar()
+	update_charge_bar(resourceBars.holyPower, Enum.PowerType.HolyPower, 5)
+end
+
+local function update_chi_bar()
+	update_charge_bar(resourceBars.chi, Enum.PowerType.Chi, 5)
+end
+
+local function update_arcane_charges_bar()
+	update_charge_bar(resourceBars.arcaneCharges, Enum.PowerType.ArcaneCharges, 4)
+end
+
+local function update_insanity_bar()
+	if previewMode then return end
+	if not resourceBars.insanity then return end
+	local bar = resourceBars.insanity.bar
+	local rawMax = UnitPowerMax("player", Enum.PowerType.Insanity)
+	local max = tonumber(rawMax) or 100
+	bar:SetMinMaxValues(0, math.max(max, 1))
+	bar:SetValue(UnitPower("player", Enum.PowerType.Insanity))
+end
+
+local function update_maelstrom_bar()
+	if previewMode then return end
+	if not resourceBars.maelstrom then return end
+	local bar = resourceBars.maelstrom.bar
+	local rawMax = UnitPowerMax("player", Enum.PowerType.Maelstrom)
+	local max = tonumber(rawMax) or 100
+	bar:SetMinMaxValues(0, math.max(max, 1))
+	bar:SetValue(UnitPower("player", Enum.PowerType.Maelstrom))
+end
+
+local function update_fury_bar()
+	if previewMode then return end
+	if not resourceBars.fury then return end
+	local bar = resourceBars.fury.bar
+	local rawMax = UnitPowerMax("player", Enum.PowerType.Fury)
+	local max = tonumber(rawMax) or 100
+	bar:SetMinMaxValues(0, math.max(max, 1))
+	bar:SetValue(UnitPower("player", Enum.PowerType.Fury))
+end
+
+local function update_pain_bar()
+	if previewMode then return end
+	if not resourceBars.pain then return end
+	local bar = resourceBars.pain.bar
+	local rawMax = UnitPowerMax("player", Enum.PowerType.Pain)
+	local max = tonumber(rawMax) or 100
+	bar:SetMinMaxValues(0, math.max(max, 1))
+	bar:SetValue(UnitPower("player", Enum.PowerType.Pain))
+end
+
+local function update_lunar_power_bar()
+	if previewMode then return end
+	if not resourceBars.astralPower then return end
+	local bar = resourceBars.astralPower.bar
+	local rawMax = UnitPowerMax("player", Enum.PowerType.LunarPower)
+	local max = tonumber(rawMax) or 100
+	bar:SetMinMaxValues(0, math.max(max, 1))
+	bar:SetValue(UnitPower("player", Enum.PowerType.LunarPower))
+end
+
+local function update_essence_bar()
+	update_charge_bar(resourceBars.essence, Enum.PowerType.Essence, 5)
 end
 
 local function update_all_resources()
 	update_health_bar()
+	update_mana_bar()
 	update_rage_bar()
 	update_energy_bar()
+	update_focus_bar()
+	update_runic_power_bar()
+	update_runes_bar()
 	update_combo_points_bar()
+	update_soul_shards_bar()
+	update_holy_power_bar()
+	update_chi_bar()
+	update_arcane_charges_bar()
+	update_insanity_bar()
+	update_maelstrom_bar()
+	update_fury_bar()
+	update_pain_bar()
+	update_lunar_power_bar()
+	update_essence_bar()
 end
 
 local function update_stance_indicator()
@@ -1497,56 +1599,200 @@ reposition_all = function()
 	
 	-- Resource bar width (200 + padding)
 	local resourceBarWidth = 200 + pad * 2
-	local buffXOffset = resourceBarWidth + 5  -- 5 pixel gap to the right of resource bars
+	-- Each spell column is 1/3 the life bar width (~67px + padding)
+	local columnWidth = math.floor(200 / 3) + pad * 2
+	local columnGap = 4  -- Gap between columns
 	
 	local yOffset = 0
-	local resources = { "health", "rage", "energy", "comboPoints" }
-	for _, name in ipairs(resources) do
-		if resourceBars[name] then
-			resourceBars[name].container:ClearAllPoints()
-			resourceBars[name].container:SetPoint("TOPLEFT", main_frame.anchor, "TOPLEFT", 0, yOffset)
-			resourceBars[name].container:Show()
+	
+	-- Helper to check if a resource is enabled
+	local function isResourceEnabled(key)
+		if not settings or not settings.resourceSettings then return true end
+		local enabled = settings.resourceSettings[key]
+		if enabled == nil then return true end  -- Default to enabled
+		return enabled
+	end
+	
+	-- 1. GLOBAL CHECKS (GCD container: Stance, GCD, Combat, Aggro) - FIRST ROW
+	local gcdSettings = settings.gcdSettings or {}
+	if gcdSettings.showGcdRow ~= false then
+		main_frame.gcdcontainer:ClearAllPoints()
+		main_frame.gcdcontainer:SetPoint("TOPLEFT", main_frame.anchor, "TOPLEFT", 0, yOffset)
+		main_frame.gcdcontainer:Show()
+		
+		-- Show/hide individual elements based on settings
+		if main_frame.stanceIndicator then
+			main_frame.stanceIndicator:SetShown(gcdSettings.showStance ~= false)
+		end
+		if main_frame.gcdbar then
+			main_frame.gcdbar:GetParent():SetShown(gcdSettings.showGcd ~= false)
+		end
+		if main_frame.combatbar then
+			main_frame.combatbar:SetShown(gcdSettings.showCombat ~= false)
+		end
+		if main_frame.aggrobar then
+			main_frame.aggrobar:SetShown(gcdSettings.showAggro ~= false)
+		end
+		
+		yOffset = yOffset - gcdContainerHeight - spacing
+	else
+		main_frame.gcdcontainer:Hide()
+	end
+	
+	-- 2. LIFE BAR (health)
+	if resourceBars.health then
+		if isResourceEnabled("health") then
+			resourceBars.health.container:ClearAllPoints()
+			resourceBars.health.container:SetPoint("TOPLEFT", main_frame.anchor, "TOPLEFT", 0, yOffset)
+			resourceBars.health.container:Show()
 			yOffset = yOffset - resourceBarHeight - spacing
+		else
+			resourceBars.health.container:Hide()
 		end
 	end
 	
-	main_frame.gcdcontainer:ClearAllPoints()
-	main_frame.gcdcontainer:SetPoint("TOPLEFT", main_frame.anchor, "TOPLEFT", 0, yOffset)
-	yOffset = yOffset - gcdContainerHeight - spacing
+	-- 3. RESOURCE BARS (all class resources)
+	local otherResources = { 
+		"mana", "rage", "energy", "focus", "runicPower", "runes",
+		"comboPoints", "soulShards", "holyPower", "chi", "arcaneCharges",
+		"insanity", "maelstrom", "fury", "pain", "astralPower", "essence"
+	}
+	for _, name in ipairs(otherResources) do
+		if resourceBars[name] then
+			if isResourceEnabled(name) then
+				resourceBars[name].container:ClearAllPoints()
+				resourceBars[name].container:SetPoint("TOPLEFT", main_frame.anchor, "TOPLEFT", 0, yOffset)
+				resourceBars[name].container:Show()
+				yOffset = yOffset - resourceBarHeight - spacing
+			else
+				resourceBars[name].container:Hide()
+			end
+		end
+	end
+	
+	-- 4. SPELLS AND ITEMS in 2 columns
+	-- Combine spells and items into one list
+	local allSpellsAndItems = {}
 	
 	local orderedSpells = get_ordered_spells()
-	for i, spellID in ipairs(orderedSpells) do
+	for _, spellID in ipairs(orderedSpells) do
 		local data = trackedSpells[spellID]
 		if data and data.container then
-			data.container:ClearAllPoints()
-			data.container:SetPoint("TOPLEFT", main_frame.anchor, "TOPLEFT", 0, yOffset)
-			yOffset = yOffset - spellBarHeight - spacing
+			table.insert(allSpellsAndItems, { type = "spell", id = spellID, container = data.container })
 		end
 	end
 	
 	local orderedItems = GCDI.get_ordered_items()
-	for i, itemKey in ipairs(orderedItems) do
+	for _, itemKey in ipairs(orderedItems) do
 		local data = trackedItems[itemKey]
 		if data and data.container then
-			data.container:ClearAllPoints()
-			data.container:SetPoint("TOPLEFT", main_frame.anchor, "TOPLEFT", 0, yOffset)
-			data.container:Show()
-			yOffset = yOffset - spellBarHeight - spacing
+			table.insert(allSpellsAndItems, { type = "item", id = itemKey, container = data.container })
 		end
 	end
 	
-	-- Position buff bars to the RIGHT of resource bars, starting from top
-	local buffYOffset = 0  -- Start at top
+	-- Split into three columns
+	local totalCount = #allSpellsAndItems
+	local itemsPerColumn = math.ceil(totalCount / 3)
+	local splitPoint1 = itemsPerColumn  -- End of first column
+	local splitPoint2 = itemsPerColumn * 2  -- End of second column
+	
+	local col1Y = yOffset
+	local col2Y = yOffset
+	local col3Y = yOffset
+	local col2X = columnWidth + columnGap  -- Second column X position
+	local col3X = (columnWidth + columnGap) * 2  -- Third column X position
+	
+	for i, entry in ipairs(allSpellsAndItems) do
+		entry.container:ClearAllPoints()
+		if i <= splitPoint1 then
+			-- First column (first third)
+			entry.container:SetPoint("TOPLEFT", main_frame.anchor, "TOPLEFT", 0, col1Y)
+			col1Y = col1Y - spellBarHeight - spacing
+		elseif i <= splitPoint2 then
+			-- Second column (second third)
+			entry.container:SetPoint("TOPLEFT", main_frame.anchor, "TOPLEFT", col2X, col2Y)
+			col2Y = col2Y - spellBarHeight - spacing
+		else
+			-- Third column (last third)
+			entry.container:SetPoint("TOPLEFT", main_frame.anchor, "TOPLEFT", col3X, col3Y)
+			col3Y = col3Y - spellBarHeight - spacing
+		end
+		entry.container:Show()
+	end
+	
+	-- Calculate where the columns end (use the lowest of the three)
+	local columnsEndY = math.min(col1Y, col2Y, col3Y)
+	
+	-- 5. BUFFS below the spell/item columns (also in 3 columns)
 	local orderedBuffs = get_ordered_buffs()
+	local buffCount = #orderedBuffs
+	local buffsPerColumn = math.ceil(buffCount / 3)
+	local buffSplit1 = buffsPerColumn
+	local buffSplit2 = buffsPerColumn * 2
+	
+	local buffCol1Y = columnsEndY
+	local buffCol2Y = columnsEndY
+	local buffCol3Y = columnsEndY
+	
 	for i, spellID in ipairs(orderedBuffs) do
 		local data = trackedBuffs[spellID]
 		if data and data.container then
 			data.container:ClearAllPoints()
-			data.container:SetPoint("TOPLEFT", main_frame.anchor, "TOPLEFT", buffXOffset, buffYOffset)
+			if i <= buffSplit1 then
+				-- First column
+				data.container:SetPoint("TOPLEFT", main_frame.anchor, "TOPLEFT", 0, buffCol1Y)
+				buffCol1Y = buffCol1Y - spellBarHeight - spacing
+			elseif i <= buffSplit2 then
+				-- Second column
+				data.container:SetPoint("TOPLEFT", main_frame.anchor, "TOPLEFT", col2X, buffCol2Y)
+				buffCol2Y = buffCol2Y - spellBarHeight - spacing
+			else
+				-- Third column
+				data.container:SetPoint("TOPLEFT", main_frame.anchor, "TOPLEFT", col3X, buffCol3Y)
+				buffCol3Y = buffCol3Y - spellBarHeight - spacing
+			end
 			data.container:Show()
-			buffYOffset = buffYOffset - spellBarHeight - spacing
 		end
 	end
+	
+	-- Calculate final layout bounds
+	-- Height is the lowest Y point reached (most negative)
+	local finalY = math.min(buffCol1Y, buffCol2Y, buffCol3Y)
+	
+	-- Width depends on which columns are actually used
+	local maxWidth = resourceBarWidth  -- Start with resource bar width as baseline
+	
+	-- Check how many columns spells/items use
+	if totalCount > 0 then
+		if totalCount > splitPoint2 then
+			-- Using all 3 columns
+			maxWidth = math.max(maxWidth, col3X + columnWidth)
+		elseif totalCount > splitPoint1 then
+			-- Using 2 columns
+			maxWidth = math.max(maxWidth, col2X + columnWidth)
+		else
+			-- Using 1 column
+			maxWidth = math.max(maxWidth, columnWidth)
+		end
+	end
+	
+	-- Check how many columns buffs use
+	if buffCount > 0 then
+		if buffCount > buffSplit2 then
+			-- Using all 3 columns
+			maxWidth = math.max(maxWidth, col3X + columnWidth)
+		elseif buffCount > buffSplit1 then
+			-- Using 2 columns
+			maxWidth = math.max(maxWidth, col2X + columnWidth)
+		else
+			-- Using 1 column
+			maxWidth = math.max(maxWidth, columnWidth)
+		end
+	end
+	
+	-- Store bounds (height is positive, representing total vertical space used)
+	layoutBounds.width = maxWidth
+	layoutBounds.height = -finalY  -- Convert negative offset to positive height
 	
 	update_all_resources()
 	update_stance_indicator()
@@ -2039,12 +2285,38 @@ local function on_event(self, event, arg1, arg2, ...)
 		
 	elseif event == "UNIT_POWER_UPDATE" or event == "UNIT_POWER_FREQUENT" then
 		if arg1 == "player" then
-			if arg2 == "RAGE" then
+			if arg2 == "MANA" then
+				update_mana_bar()
+			elseif arg2 == "RAGE" then
 				update_rage_bar()
 			elseif arg2 == "ENERGY" then
 				update_energy_bar()
+			elseif arg2 == "FOCUS" then
+				update_focus_bar()
+			elseif arg2 == "RUNIC_POWER" then
+				update_runic_power_bar()
 			elseif arg2 == "COMBO_POINTS" then
 				update_combo_points_bar()
+			elseif arg2 == "SOUL_SHARDS" then
+				update_soul_shards_bar()
+			elseif arg2 == "HOLY_POWER" then
+				update_holy_power_bar()
+			elseif arg2 == "CHI" then
+				update_chi_bar()
+			elseif arg2 == "ARCANE_CHARGES" then
+				update_arcane_charges_bar()
+			elseif arg2 == "INSANITY" then
+				update_insanity_bar()
+			elseif arg2 == "MAELSTROM" then
+				update_maelstrom_bar()
+			elseif arg2 == "FURY" then
+				update_fury_bar()
+			elseif arg2 == "PAIN" then
+				update_pain_bar()
+			elseif arg2 == "LUNAR_POWER" then
+				update_lunar_power_bar()
+			elseif arg2 == "ESSENCE" then
+				update_essence_bar()
 			end
 		end
 		
@@ -2072,6 +2344,9 @@ local function on_event(self, event, arg1, arg2, ...)
 		-- Only update stance indicator, don't rescan spells
 		-- Spells should stay static unless profile is changed
 		update_stance_indicator()
+		
+	elseif event == "RUNE_POWER_UPDATE" then
+		update_runes_bar()
 		
 	elseif event == "PLAYER_SPECIALIZATION_CHANGED" then
 		schedule_scan(0.5)
@@ -2161,9 +2436,45 @@ local function init()
 	if not settings.profiles then
 		settings.profiles = {}
 	end
+	if not settings.resourceSettings then
+		settings.resourceSettings = {
+			health = true,
+			mana = true,
+			rage = true,
+			energy = true,
+			focus = true,
+			runicPower = true,
+			runes = true,
+			comboPoints = true,
+			soulShards = true,
+			holyPower = true,
+			chi = true,
+			arcaneCharges = true,
+			insanity = true,
+			maelstrom = true,
+			fury = true,
+			pain = true,
+			astralPower = true,
+			essence = true,
+		}
+	end
+	
+	-- Initialize gcdSettings
+	if not settings.gcdSettings then
+		settings.gcdSettings = {
+			showGcdRow = true,
+			showStance = true,
+			showGcd = true,
+			showCombat = true,
+			showAggro = true,
+		}
+	end
 	
 	-- Initialize catalog managers now that settings are available
 	init_catalog_managers()
+	
+	-- Initialize range library with callbacks
+	init_lib_range()
 	
 	main_frame:SetPoint("BOTTOM", UIParent, "BOTTOM", 0, 0)
 	main_frame:SetSize(1, 1)
@@ -2255,20 +2566,46 @@ local function init()
 	end
 	
 	local barSize = configs.barHeight
+	-- Create all resource bars
 	resourceBars.health = create_resource_bar("health", RESOURCE_COLORS.health)
+	resourceBars.mana = create_resource_bar("mana", RESOURCE_COLORS.mana)
 	resourceBars.rage = create_resource_bar("rage", RESOURCE_COLORS.rage)
 	resourceBars.energy = create_resource_bar("energy", RESOURCE_COLORS.energy)
+	resourceBars.focus = create_resource_bar("focus", RESOURCE_COLORS.focus)
+	resourceBars.runicPower = create_resource_bar("runicPower", RESOURCE_COLORS.runicPower)
+	resourceBars.runes = create_resource_bar("runes", RESOURCE_COLORS.runes)
 	resourceBars.comboPoints = create_resource_bar("comboPoints", RESOURCE_COLORS.comboPoints)
+	resourceBars.soulShards = create_resource_bar("soulShards", RESOURCE_COLORS.soulShards)
+	resourceBars.holyPower = create_resource_bar("holyPower", RESOURCE_COLORS.holyPower)
+	resourceBars.chi = create_resource_bar("chi", RESOURCE_COLORS.chi)
+	resourceBars.arcaneCharges = create_resource_bar("arcaneCharges", RESOURCE_COLORS.arcaneCharges)
+	resourceBars.insanity = create_resource_bar("insanity", RESOURCE_COLORS.insanity)
+	resourceBars.maelstrom = create_resource_bar("maelstrom", RESOURCE_COLORS.maelstrom)
+	resourceBars.fury = create_resource_bar("fury", RESOURCE_COLORS.fury)
+	resourceBars.pain = create_resource_bar("pain", RESOURCE_COLORS.pain)
+	resourceBars.astralPower = create_resource_bar("astralPower", RESOURCE_COLORS.astralPower)
+	resourceBars.essence = create_resource_bar("essence", RESOURCE_COLORS.essence)
 	
-	resourceBars.comboPoints.separators = {}
-	local sepFrame = resourceBars.comboPoints.separatorFrame
-	for i = 1, 7 do
-		local sep = sepFrame:CreateTexture(nil, "OVERLAY")
-		sep:SetSize(2, barSize)
-		sep:SetColorTexture(0, 0, 0, 1)
-		sep:Hide()
-		resourceBars.comboPoints.separators[i] = sep
+	-- Helper function to add separators to charge-based resource bars
+	local function add_separators(resourceData, maxSeparators)
+		resourceData.separators = {}
+		local sepFrame = resourceData.separatorFrame
+		for i = 1, maxSeparators do
+			local sep = sepFrame:CreateTexture(nil, "OVERLAY")
+			sep:SetSize(2, barSize)
+			sep:SetColorTexture(0, 0, 0, 1)
+			sep:Hide()
+			resourceData.separators[i] = sep
+		end
 	end
+	
+	-- Add separators to all charge-based resources
+	add_separators(resourceBars.comboPoints, 9)  -- Up to 10 combo points
+	add_separators(resourceBars.soulShards, 4)   -- Up to 5 soul shards
+	add_separators(resourceBars.holyPower, 4)    -- Up to 5 holy power
+	add_separators(resourceBars.chi, 5)          -- Up to 6 chi
+	add_separators(resourceBars.arcaneCharges, 3)-- Up to 4 arcane charges
+	add_separators(resourceBars.essence, 5)      -- Up to 6 essence
 	
 	local yOffset = 0
 	local resourceBarHeight = barSize + pad * 2
@@ -2299,6 +2636,7 @@ local function init()
 		"PLAYER_SPECIALIZATION_CHANGED",
 		"UPDATE_SHAPESHIFT_FORM",
 		"UPDATE_BONUS_ACTIONBAR",
+		"RUNE_POWER_UPDATE",
 		"PLAYER_TARGET_CHANGED",
 		"UNIT_THREAT_SITUATION_UPDATE",
 	}
@@ -2492,39 +2830,34 @@ function GCDI.toggle_preview_mode()
 			previewBackground:SetColorTexture(0, 0, 0, 1)  -- Pitch black, fully opaque
 		end
 		
-		-- Size and show background to cover all bars
-		local pad = 10
+		-- Size and show background to cover all bars based on actual layout
+		local bgPad = 10
 		previewBackground:ClearAllPoints()
-		previewBackground:SetPoint("TOPLEFT", main_frame.anchor, "TOPLEFT", -pad, pad + 5)
-		previewBackground:SetPoint("BOTTOMRIGHT", main_frame.anchor, "BOTTOMRIGHT", 400, -300)
+		previewBackground:SetPoint("TOPLEFT", main_frame.anchor, "TOPLEFT", -bgPad, bgPad + 5)
+		-- Use calculated layout bounds + padding
+		local bgWidth = layoutBounds.width + bgPad * 2
+		local bgHeight = layoutBounds.height + bgPad * 2
+		previewBackground:SetSize(bgWidth, bgHeight)
 		previewBackground:Show()
 		
-		-- Fill resource bars with visible colors
+		-- Fill all resource bars with visible colors
 		-- IMPORTANT: Set MinMaxValues first, then Value, then Color
 		if resourceBars then
-			if resourceBars.health and resourceBars.health.bar then
-				resourceBars.health.bar:SetMinMaxValues(0, 100)
-				resourceBars.health.bar:SetValue(100)
-				resourceBars.health.bar:SetStatusBarColor(0, 0.8, 0)  -- Green
-				resourceBars.health.container:Show()
-			end
-			if resourceBars.rage and resourceBars.rage.bar then
-				resourceBars.rage.bar:SetMinMaxValues(0, 100)
-				resourceBars.rage.bar:SetValue(100)
-				resourceBars.rage.bar:SetStatusBarColor(0.8, 0, 0)  -- Red
-				resourceBars.rage.container:Show()
-			end
-			if resourceBars.energy and resourceBars.energy.bar then
-				resourceBars.energy.bar:SetMinMaxValues(0, 100)
-				resourceBars.energy.bar:SetValue(100)
-				resourceBars.energy.bar:SetStatusBarColor(1, 0.85, 0)  -- Yellow
-				resourceBars.energy.container:Show()
-			end
-			if resourceBars.comboPoints and resourceBars.comboPoints.bar then
-				resourceBars.comboPoints.bar:SetMinMaxValues(0, 100)
-				resourceBars.comboPoints.bar:SetValue(100)
-				resourceBars.comboPoints.bar:SetStatusBarColor(1, 0.5, 0)  -- Orange
-				resourceBars.comboPoints.container:Show()
+			local allResources = {
+				"health", "mana", "rage", "energy", "focus", "runicPower", "runes",
+				"comboPoints", "soulShards", "holyPower", "chi", "arcaneCharges",
+				"insanity", "maelstrom", "fury", "pain", "astralPower", "essence"
+			}
+			for _, key in ipairs(allResources) do
+				local data = resourceBars[key]
+				if data and data.bar then
+					data.bar:SetMinMaxValues(0, 100)
+					data.bar:SetValue(100)
+					local color = RESOURCE_COLORS[key]
+					if color then
+						data.bar:SetStatusBarColor(color[1], color[2], color[3])
+					end
+				end
 			end
 		end
 		
@@ -2559,8 +2892,14 @@ function GCDI.toggle_preview_mode()
 				data.activeIndicator:SetColorTexture(0, 0.8, 0, 1)  -- Green = active
 			end
 			if data.stackIndicators then
-				for _, indicator in ipairs(data.stackIndicators) do
-					indicator.overlay:Hide()  -- Show blue (stack present)
+				for i, indicator in ipairs(data.stackIndicators) do
+					-- Alternate colors in preview: odd = green (full), even = blue (half)
+					if i % 2 == 1 then
+						indicator.bg:SetColorTexture(BUFF_COLORS.stackFull[1], BUFF_COLORS.stackFull[2], BUFF_COLORS.stackFull[3], 1)
+					else
+						indicator.bg:SetColorTexture(BUFF_COLORS.stackHalf[1], BUFF_COLORS.stackHalf[2], BUFF_COLORS.stackHalf[3], 1)
+					end
+					indicator.overlay:Hide()
 				end
 			end
 		end
@@ -2590,33 +2929,8 @@ function GCDI.toggle_preview_mode()
 		end
 		
 		-- Force update all bars to restore real values
-		-- Resource bars need MinMaxValues reset and real values applied
-		if resourceBars then
-			if resourceBars.health and resourceBars.health.bar then
-				local max = tonumber(UnitHealthMax("player")) or 100000
-				resourceBars.health.bar:SetMinMaxValues(0, max)
-				resourceBars.health.bar:SetValue(UnitHealth("player"))
-				resourceBars.health.bar:SetStatusBarColor(RESOURCE_COLORS.health[1], RESOURCE_COLORS.health[2], RESOURCE_COLORS.health[3])
-			end
-			if resourceBars.rage and resourceBars.rage.bar then
-				local max = tonumber(UnitPowerMax("player", Enum.PowerType.Rage)) or 100
-				resourceBars.rage.bar:SetMinMaxValues(0, max)
-				resourceBars.rage.bar:SetValue(UnitPower("player", Enum.PowerType.Rage))
-				resourceBars.rage.bar:SetStatusBarColor(RESOURCE_COLORS.rage[1], RESOURCE_COLORS.rage[2], RESOURCE_COLORS.rage[3])
-			end
-			if resourceBars.energy and resourceBars.energy.bar then
-				local max = tonumber(UnitPowerMax("player", Enum.PowerType.Energy)) or 100
-				resourceBars.energy.bar:SetMinMaxValues(0, max)
-				resourceBars.energy.bar:SetValue(UnitPower("player", Enum.PowerType.Energy))
-				resourceBars.energy.bar:SetStatusBarColor(RESOURCE_COLORS.energy[1], RESOURCE_COLORS.energy[2], RESOURCE_COLORS.energy[3])
-			end
-			if resourceBars.comboPoints and resourceBars.comboPoints.bar then
-				local max = tonumber(UnitPowerMax("player", Enum.PowerType.ComboPoints)) or 8
-				resourceBars.comboPoints.bar:SetMinMaxValues(0, max)
-				resourceBars.comboPoints.bar:SetValue(UnitPower("player", Enum.PowerType.ComboPoints))
-				resourceBars.comboPoints.bar:SetStatusBarColor(RESOURCE_COLORS.comboPoints[1], RESOURCE_COLORS.comboPoints[2], RESOURCE_COLORS.comboPoints[3])
-			end
-		end
+		-- Call individual update functions to properly restore each resource bar
+		update_all_resources()
 		
 		-- Reset GCD and combat bars
 		if main_frame.gcdbar then
@@ -2645,6 +2959,9 @@ function GCDI.toggle_preview_mode()
 		update_item_charge_indicators()
 		update_all_buff_bars()
 		update_spell_icons()
+		
+		-- Reposition to restore proper layout based on settings
+		reposition_all()
 		
 		print("|cff00ff00GCDIndicator:|r Preview mode |cffff0000OFF|r - Normal display restored")
 	end
