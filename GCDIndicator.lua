@@ -117,7 +117,7 @@ GCDI.RANGE_ITEMS = LibRange.RANGE_ITEMS
 local RANGE_ITEMS = GCDI.RANGE_ITEMS
 
 local DEFAULT_SETTINGS = {
-	globalRangeFallback = 0,
+	globalRangeFallback = 1,  -- Default to melee (5 yards) for range detection
 	spellSettings = {},
 	spellOrder = {},
 	itemSettings = {},
@@ -290,32 +290,33 @@ function GCDI.get_buff_max_stacks_display(spellID)
 end
 
 function GCDI.get_action_slot_for_spell(spellID)
-	-- Search all action bar button types
-	local barPrefixes = {
-		"ActionButton",           -- Main action bar (1-12)
-		"MultiBarBottomLeftButton",  -- Bottom left bar
-		"MultiBarBottomRightButton", -- Bottom right bar
-		"MultiBarRightButton",       -- Right bar 1
-		"MultiBarLeftButton",        -- Right bar 2 (left of right bar 1)
-		"MultiBar5Button",           -- Additional bars (retail)
-		"MultiBar6Button",
-		"MultiBar7Button",
-		"MultiBar8Button",
-	}
+	-- Get override spell ID (for talents that replace base spells)
+	local overrideID = C_Spell.GetOverrideSpell(spellID) or spellID
 	
-	for _, prefix in ipairs(barPrefixes) do
-		for i = 1, 12 do
-			local button = _G[prefix .. i]
-			if button and button.action then
-				local actionType, id = GetActionInfo(button.action)
-				local slotSpellID
-				if actionType == "spell" then
-					slotSpellID = id
-				elseif actionType == "macro" and id then
-					slotSpellID = GetMacroSpell(id)
+	-- Scan all action slots (1-180 covers all action bars)
+	for slot = 1, 180 do
+		local actionType, id = GetActionInfo(slot)
+		
+		if actionType == "spell" and id then
+			-- Direct spell match
+			if id == spellID or id == overrideID then
+				return slot
+			end
+			-- Check if this spell is an override of our target
+			local slotOverride = C_Spell.GetOverrideSpell(id)
+			if slotOverride and (slotOverride == spellID or slotOverride == overrideID) then
+				return slot
+			end
+		elseif actionType == "macro" and id then
+			-- Check macro for spell
+			local macroSpell = GetMacroSpell(id)
+			if macroSpell then
+				if macroSpell == spellID or macroSpell == overrideID then
+					return slot
 				end
-				if slotSpellID == spellID then
-					return button.action
+				local macroOverride = C_Spell.GetOverrideSpell(macroSpell)
+				if macroOverride and (macroOverride == spellID or macroOverride == overrideID) then
+					return slot
 				end
 			end
 		end
@@ -3037,22 +3038,84 @@ SlashCmdList["GCDOPT"] = function(msg)
 		print("|cff00ff00GCDIndicator:|r Imported " .. newBuffs .. " new buffs (" .. totalBuffs .. " total)")
 	
 	elseif msg == "range" then
-		-- Force detect native range for all spells
-		if not UnitExists("target") then
-			print("|cff00ff00GCDIndicator:|r Target an enemy first to detect native range")
-		else
-			detect_native_range_for_spells()
-			print("|cff00ff00GCDIndicator:|r Native range detection complete")
-			-- Show results
-			local nativeCount = 0
-			for spellID, _ in pairs(trackedSpells) do
-				if settings.spellSettings[spellID] and settings.spellSettings[spellID].hasNativeRange then
-					nativeCount = nativeCount + 1
+		-- Debug range detection for all tracked spells
+		print("|cff00ff00GCDIndicator:|r --- Range Detection Debug ---")
+		print("|cff888888Global Range Fallback: " .. tostring(settings.globalRangeFallback) .. " (" .. (LibRange.RANGE_ITEMS[settings.globalRangeFallback or 0].name or "Unknown") .. ")|r")
+		print("|cff888888Target: " .. (UnitExists("target") and UnitName("target") or "None") .. "|r")
+		print("")
+		
+		for spellID, data in pairs(trackedSpells) do
+			local catalogEntry = GCDI.spellCatalog[spellID]
+			local spellName = catalogEntry and catalogEntry.name or ("Spell " .. spellID)
+			local actionSlot = data.actionSlot
+			local spellSettings = settings.spellSettings and settings.spellSettings[spellID] or {}
+			
+			local rangeMethod = "Fallback Item"
+			if spellSettings.selfCast then
+				rangeMethod = "Self-Cast (hidden)"
+			elseif spellSettings.rangeFallback then
+				rangeMethod = "Override: " .. LibRange.RANGE_ITEMS[spellSettings.rangeFallback].name
+			elseif spellSettings.hasNativeRange and actionSlot then
+				rangeMethod = "Native (IsActionInRange)"
+			elseif actionSlot then
+				rangeMethod = "Action Slot (will try native)"
+			end
+			
+			local slotInfo = actionSlot and ("|cff00ff00Slot " .. actionSlot .. "|r") or "|cffff0000No slot found|r"
+			local rangeResult = "N/A"
+			
+			if actionSlot and UnitExists("target") then
+				local inRange = IsActionInRange(actionSlot)
+				if inRange == true then
+					rangeResult = "|cff00ff00IN RANGE|r"
+				elseif inRange == false then
+					rangeResult = "|cffff0000OUT OF RANGE|r"
+				else
+					rangeResult = "|cff888888nil (no range info)|r"
 				end
 			end
-			print("|cff00ff00GCDIndicator:|r " .. nativeCount .. " spells have native range")
+			
+			print("  " .. spellName .. " (ID: " .. spellID .. ")")
+			print("    Action: " .. slotInfo .. " | Method: " .. rangeMethod)
+			if UnitExists("target") then
+				print("    Range Check: " .. rangeResult)
+			end
+		end
+		
+		if not UnitExists("target") then
+			print("")
+			print("|cffffcc00Tip: Target an enemy to see range check results|r")
 		end
 	
+	elseif msg == "rangetest" then
+		-- Force all range indicators to bright colors for visibility testing
+		print("|cff00ff00GCDIndicator:|r Testing range indicator visibility...")
+		local count = 0
+		for spellID, data in pairs(trackedSpells) do
+			if data.rangeOverlay then
+				count = count + 1
+				-- Cycle through bright colors
+				local colorIndex = count % 3
+				if colorIndex == 0 then
+					data.rangeOverlay:SetColorTexture(1, 0, 1, 1)  -- Magenta
+				elseif colorIndex == 1 then
+					data.rangeOverlay:SetColorTexture(0, 1, 1, 1)  -- Cyan
+				else
+					data.rangeOverlay:SetColorTexture(1, 1, 0, 1)  -- Yellow
+				end
+				data.rangeOverlay:Show()
+				if data.rangeBase then
+					data.rangeBase:SetColorTexture(0, 0, 0, 1)  -- Black base for contrast
+					data.rangeBase:Show()
+				end
+				print("  Spell " .. spellID .. ": overlay=" .. tostring(data.rangeOverlay:IsShown()) .. ", visible=" .. tostring(data.rangeOverlay:IsVisible()))
+			else
+				print("  Spell " .. spellID .. ": |cffff0000NO RANGE OVERLAY|r (self-cast or not created)")
+			end
+		end
+		print("|cff00ff00GCDIndicator:|r Set " .. count .. " range overlays to bright colors")
+		print("|cffffcc00Note: Colors will reset on next target change or update tick|r")
+		
 	elseif msg == "minimap" then
 		-- Toggle minimap button visibility
 		GCDI.ToggleMinimapButton()

@@ -62,12 +62,25 @@ lib.callbacks = {
 -- INITIALIZATION
 -- ═══════════════════════════════════════════════════════════════════════════
 
+-- Valid callback keys
+local VALID_CALLBACKS = {
+	getSettings = true,
+	getSpellSettings = true,
+	setSpellSetting = true,
+	isSpellEnabled = true,
+	getTrackedSpells = true,
+	getSpellBars = true,
+	getSpellCatalog = true,
+	isPreviewMode = true,
+	debugPrint = true,
+}
+
 -- Initialize the library with callbacks to access addon state
 -- @param callbacks: Table of callback functions
 function lib:Init(callbacks)
 	if callbacks then
 		for key, func in pairs(callbacks) do
-			if lib.callbacks[key] ~= nil then
+			if VALID_CALLBACKS[key] then
 				lib.callbacks[key] = func
 			end
 		end
@@ -272,44 +285,55 @@ function lib:UpdateRangeIndicators()
 					overlay:SetColorTexture(colors.noTarget[1], colors.noTarget[2], colors.noTarget[3], 1)
 				else
 					local useOverride = lib:HasRangeOverride(spellID)
+					local inRange = nil
 					
 					if useOverride then
+						-- User has explicitly set a range fallback for this spell
 						local fallbackResult = lib:IsInFallbackRange(spellID)
-						if fallbackResult == nil then
-							overlay:SetColorTexture(colors.noTarget[1], colors.noTarget[2], colors.noTarget[3], 1)
-						elseif fallbackResult then
-							overlay:SetColorTexture(colors.inRange[1], colors.inRange[2], colors.inRange[3], 1)
-						else
-							overlay:SetColorTexture(colors.outOfRange[1], colors.outOfRange[2], colors.outOfRange[3], 1)
+						if fallbackResult ~= nil then
+							inRange = fallbackResult
 						end
-					elseif lib:HasNativeRangeSetting(spellID) then
-						local inRange
-						if actionSlot then
-							inRange = IsActionInRange(actionSlot)
-						end
-						
-						if inRange == true then
-							overlay:SetColorTexture(colors.inRange[1], colors.inRange[2], colors.inRange[3], 1)
-						elseif inRange == false then
-							overlay:SetColorTexture(colors.outOfRange[1], colors.outOfRange[2], colors.outOfRange[3], 1)
+					elseif actionSlot then
+						-- Try native range detection first if we have an action slot
+						local nativeRange = IsActionInRange(actionSlot)
+						if nativeRange ~= nil then
+							inRange = nativeRange
+							-- Mark as having native range if not already
+							if not lib:HasNativeRangeSetting(spellID) then
+								local setSpellSetting = lib.callbacks.setSpellSetting
+								if setSpellSetting then
+									setSpellSetting(spellID, "hasNativeRange", true)
+								end
+							end
 						else
-							overlay:SetColorTexture(colors.noTarget[1], colors.noTarget[2], colors.noTarget[3], 1)
-						end
-					else
-						if lib:AutoDetectSelfCast(spellID, actionSlot) then
-							-- Hide both for auto-detected self-cast
-							if spellData.rangeBase then spellData.rangeBase:Hide() end
-							overlay:Hide()
-						else
-							local fallbackResult = lib:IsInFallbackRange(spellID)
-							if fallbackResult == nil then
-								overlay:SetColorTexture(colors.noTarget[1], colors.noTarget[2], colors.noTarget[3], 1)
-							elseif fallbackResult then
-								overlay:SetColorTexture(colors.inRange[1], colors.inRange[2], colors.inRange[3], 1)
-							else
-								overlay:SetColorTexture(colors.outOfRange[1], colors.outOfRange[2], colors.outOfRange[3], 1)
+							-- Native range returned nil (self-cast or no range)
+							-- Try auto-detect self-cast
+							if lib:AutoDetectSelfCast(spellID, actionSlot) then
+								if spellData.rangeBase then spellData.rangeBase:Hide() end
+								overlay:Hide()
+								inRange = "selfcast"
 							end
 						end
+					end
+					
+					-- Fallback to item-based range if native didn't work
+					if inRange == nil then
+						local fallbackResult = lib:IsInFallbackRange(spellID)
+						if fallbackResult ~= nil then
+							inRange = fallbackResult
+						end
+					end
+					
+					-- Apply the color based on result
+					if inRange == "selfcast" then
+						-- Already handled above (hidden)
+					elseif inRange == true then
+						overlay:SetColorTexture(colors.inRange[1], colors.inRange[2], colors.inRange[3], 1)
+					elseif inRange == false then
+						overlay:SetColorTexture(colors.outOfRange[1], colors.outOfRange[2], colors.outOfRange[3], 1)
+					else
+						-- No range info available - use grey
+						overlay:SetColorTexture(colors.noTarget[1], colors.noTarget[2], colors.noTarget[3], 1)
 					end
 				end
 			end
