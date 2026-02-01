@@ -76,6 +76,7 @@ GCDI.buffCatalog = {}
 local trackedBuffs = {}
 local buffBars = {}
 local cdmBuffFrames = {}  -- cooldownID -> CDM frame reference
+local cooldownToSpellID = {}  -- Maps CDM cooldownID -> actual spellID (like ArcUI)
 
 local CONSUMABLE_ITEM_IDS = {
 	[5512] = "Healthstone",
@@ -226,6 +227,8 @@ end
 
 local function applyTimerToBar(bar, durObj)
 	if durObj then
+		-- Must set min/max before SetTimerDuration (like ArcUI)
+		bar:SetMinMaxValues(0, 1)
 		bar:SetTimerDuration(durObj, INTERPOLATION, DIRECTION)
 		bar:SetToTargetValue()
 	else
@@ -287,6 +290,16 @@ end
 function GCDI.get_buff_max_stacks_display(spellID)
 	local buffSettings = GCDI.get_buff_settings(spellID)
 	return buffSettings.maxStacksDisplay or 5  -- Default to 5 stacks
+end
+
+function GCDI.should_show_duration_bar(spellID)
+	local buffSettings = GCDI.get_buff_settings(spellID)
+	return buffSettings.showDurationBar == true  -- Default to NOT showing duration bar
+end
+
+function GCDI.get_duration_threshold(spellID)
+	local buffSettings = GCDI.get_buff_settings(spellID)
+	return buffSettings.durationThreshold or 30  -- Default to 30%
 end
 
 function GCDI.get_action_slot_for_spell(spellID)
@@ -1000,11 +1013,14 @@ local function update_buff_bar(buffID)
 	local isActive = false
 	local stacks = 0
 	
-	-- Get fresh CDM frame reference from latest scan
-	local cdmFrame = cdmBuffFrames[buffID]
-	
-	-- Also check catalog for stored frame reference
+	-- Get catalog entry to find cooldownID
 	local catalogEntry = GCDI.buffCatalog[buffID]
+	local cooldownID = catalogEntry and catalogEntry.cooldownID or buffID
+	
+	-- Get fresh CDM frame reference from latest scan using cooldownID
+	local cdmFrame = cdmBuffFrames[cooldownID]
+	
+	-- Also check catalog for stored frame reference as fallback
 	if not cdmFrame and catalogEntry and catalogEntry.cdmFrame then
 		cdmFrame = catalogEntry.cdmFrame
 	end
@@ -1071,6 +1087,20 @@ local function update_buff_bar(buffID)
 				indicator.bg:Show()
 			end
 		end
+		
+		-- Update duration bar using CDM frame methods
+		if data.durationBar and cdmFrame then
+			local auraID = cdmFrame.auraInstanceID
+			local unit = cdmFrame.GetAuraDataUnit and cdmFrame:GetAuraDataUnit() or "player"
+			
+			if auraID and type(auraID) == "number" and auraID > 0 then
+				local durObj = C_UnitAuras.GetAuraDuration(unit, auraID)
+				if durObj then
+					data.durationBar.bar:SetMinMaxValues(0, 1)
+					data.durationBar.bar:SetTimerDuration(durObj, Enum.StatusBarInterpolation.ExponentialEaseOut, Enum.StatusBarTimerDirection.RemainingTime)
+				end
+			end
+		end
 	else
 		-- Buff is not active
 		data.active = false
@@ -1082,6 +1112,11 @@ local function update_buff_bar(buffID)
 				indicator.bg:SetColorTexture(BUFF_COLORS.stackHalf[1], BUFF_COLORS.stackHalf[2], BUFF_COLORS.stackHalf[3], 1)
 				indicator.overlay:Show()  -- Show black overlay
 			end
+		end
+		
+		-- Reset duration bar
+		if data.durationBar then
+			data.durationBar.bar:SetValue(0)
 		end
 	end
 end
@@ -1104,11 +1139,15 @@ local function create_buff_bar(spellID, spellName, texture)
 	-- Each indicator represents 2 stacks, so calculate indicator count
 	local indicatorCount = math.ceil(maxStacks / 2)  -- e.g., 10 stacks = 5 indicators
 	
-	-- Layout: [Icon][Active Indicator][Stacks?]
+	-- Check if we should show duration bar for this buff
+	local showDurationBar = GCDI.should_show_duration_bar(spellID)
+	
+	-- Layout: [Icon][Active Indicator][Stacks?][Duration Bar?]
 	-- Active indicator is a single square that shows green when buff is active
 	local stackWidth = showStacks and (indicatorCount * barSize + (indicatorCount - 1) * 2) or 0
 	local extraGap = showStacks and 2 or 0
-	local containerWidth = (barSize * 2 + 2) + stackWidth + extraGap + pad * 2
+	local durationBarWidth = showDurationBar and (barSize + 2) or 0  -- 8x8 clipped indicator
+	local containerWidth = (barSize * 2 + 2) + stackWidth + extraGap + durationBarWidth + pad * 2
 	
 	local container = CreateFrame("Frame", nil, main_frame)
 	container:SetSize(containerWidth, barSize + pad * 2)
@@ -1135,6 +1174,8 @@ local function create_buff_bar(spellID, spellName, texture)
 	local stackIndicators = nil
 	local stackDetectors = nil
 	
+	local lastElement = activeIndicator  -- Track last element for duration bar positioning
+	
 	if showStacks and indicatorCount > 0 then
 		stackIndicators = {}
 		stackDetectors = LibDetector:CreateDetectorArray(maxStacks)  -- Detect up to maxStacks
@@ -1160,7 +1201,41 @@ local function create_buff_bar(spellID, spellName, texture)
 			}
 			
 			prevElement = stackBg
+			lastElement = stackBg
 		end
+	end
+	
+	-- Duration bar (10k wide, clipped to 8x8, offset based on threshold)
+	local durationBar = nil
+	if showDurationBar then
+		local threshold = GCDI.get_duration_threshold(spellID)
+		local barWidth = 10000
+		local offset = -(threshold / 100) * barWidth  -- e.g., 30% = -3000px
+		
+		-- Clip container (8x8 visible window)
+		local clipFrame = CreateFrame("Frame", nil, container)
+		clipFrame:SetSize(barSize, barSize)
+		clipFrame:SetPoint("LEFT", lastElement, "RIGHT", 2, 0)
+		clipFrame:SetClipsChildren(true)
+		
+		-- White background (shows when bar has drained past this point)
+		local bg = clipFrame:CreateTexture(nil, "BACKGROUND")
+		bg:SetAllPoints()
+		bg:SetColorTexture(1, 1, 1, 1)
+		
+		-- Wide status bar (black), offset so threshold aligns with visible window
+		local bar = CreateFrame("StatusBar", nil, clipFrame)
+		bar:SetSize(barWidth, barSize)
+		bar:SetPoint("LEFT", clipFrame, "LEFT", offset, 0)
+		bar:SetStatusBarTexture("Interface\\Buttons\\WHITE8X8")
+		bar:SetStatusBarColor(0, 0, 0, 1)
+		bar:SetMinMaxValues(0, 1)
+		bar:SetValue(1)
+		
+		durationBar = {
+			clipFrame = clipFrame,
+			bar = bar,
+		}
 	end
 	
 	trackedBuffs[spellID] = {
@@ -1168,6 +1243,7 @@ local function create_buff_bar(spellID, spellName, texture)
 		activeIndicator = activeIndicator,
 		stackIndicators = stackIndicators,
 		stackDetectors = stackDetectors,  -- For ArcUI-style stack detection
+		durationBar = durationBar,
 		active = false,
 		name = spellName,
 		icon = texture,
@@ -1886,6 +1962,57 @@ local function scan_action_bars_for_items()
 	end
 end
 
+-- ═══════════════════════════════════════════════════════════════════════════
+-- CDM SPELL INFO HELPER (like ArcUI)
+-- Gets actual spellID from CDM frame or API
+-- Priority: frame.cooldownInfo > C_CooldownViewer API
+-- ═══════════════════════════════════════════════════════════════════════════
+local function GetCDMSpellInfo(frame, cooldownID)
+	local spellID = nil
+	local spellName = nil
+	local texture = nil
+	local hasCharges = false
+	
+	-- Method 1: Read from frame.cooldownInfo (like ArcUI does)
+	local cooldownInfo = frame and frame.cooldownInfo
+	if cooldownInfo then
+		spellID = cooldownInfo.overrideSpellID or cooldownInfo.spellID
+		hasCharges = cooldownInfo.hasCharges or false
+	end
+	
+	-- Method 2: Fallback to CDM API
+	if not spellID and cooldownID and C_CooldownViewer and C_CooldownViewer.GetCooldownViewerCooldownInfo then
+		local cdInfo = C_CooldownViewer.GetCooldownViewerCooldownInfo(cooldownID)
+		if cdInfo then
+			spellID = cdInfo.overrideSpellID or cdInfo.spellID
+			hasCharges = cdInfo.hasCharges or false
+		end
+	end
+	
+	-- Get spell name and texture from spell API
+	if spellID then
+		if C_Spell and C_Spell.GetSpellInfo then
+			local info = C_Spell.GetSpellInfo(spellID)
+			if info then
+				spellName = info.name
+			end
+		end
+		if C_Spell and C_Spell.GetSpellTexture then
+			texture = C_Spell.GetSpellTexture(spellID)
+		end
+	end
+	
+	-- Fallback: try frame icon
+	if not texture and frame and frame.Icon then
+		local frameTexture = frame.Icon:GetTexture()
+		if frameTexture and not issecretvalue(frameTexture) then
+			texture = frameTexture
+		end
+	end
+	
+	return spellID, spellName, texture, hasCharges
+end
+
 -- Scan Blizzard's Cooldown Manager for buff frames
 local function scan_cdm_buff_frames()
 	-- Don't wipe - update in place to preserve references
@@ -1903,62 +2030,78 @@ local function scan_cdm_buff_frames()
 	local foundCount = 0
 	local newCount = 0
 	
+	-- Helper to process a CDM frame
+	local function processFrame(frame)
+		local cooldownID = frame.cooldownID
+		if not cooldownID then return end
+		
+		foundCount = foundCount + 1
+		cdmBuffFrames[cooldownID] = frame
+		foundThisScan[cooldownID] = true
+		
+		-- Get spell info from CDM (like ArcUI)
+		local spellID, spellName, texture, hasCharges = GetCDMSpellInfo(frame, cooldownID)
+		
+		-- Use spellID as the catalog key if available, otherwise cooldownID
+		-- This ensures we use stable spell IDs rather than CDM internal IDs
+		local catalogKey = spellID or cooldownID
+		
+		-- Store mapping from cooldownID -> spellID for lookups
+		if spellID and spellID ~= cooldownID then
+			cooldownToSpellID[cooldownID] = spellID
+		end
+		
+		if not GCDI.buffCatalog[catalogKey] then
+			GCDI.buffCatalog[catalogKey] = {
+				name = spellName or ("Buff " .. catalogKey),
+				texture = texture or 134400,  -- Default question mark
+				cooldownID = cooldownID,
+				spellID = spellID,  -- Store actual spellID for spell lookups
+				cdmFrame = frame,
+				hasStacks = false,
+				hasCharges = hasCharges,
+			}
+			
+			-- Save to settings using spellID if available (more stable)
+			if settings then
+				if not settings.buffSettings then
+					settings.buffSettings = {}
+				end
+				if not settings.buffSettings[catalogKey] then
+					settings.buffSettings[catalogKey] = {
+						enabled = true,
+						showStacks = true,
+						maxStacksDisplay = 5,
+					}
+					newCount = newCount + 1
+				end
+			end
+			
+			if configs.debugMode then
+				debug("CDM auto-added: " .. (spellName or catalogKey) .. " (spellID:" .. tostring(spellID) .. ", cdID:" .. cooldownID .. ")")
+			end
+		else
+			-- Update frame reference and spellID if not set
+			local entry = GCDI.buffCatalog[catalogKey]
+			entry.cdmFrame = frame
+			entry.cooldownID = cooldownID  -- Update in case it changed
+			if spellID and not entry.spellID then
+				entry.spellID = spellID
+			end
+			-- Update name/texture if we got better info
+			if spellName and entry.name:match("^Buff %d+$") then
+				entry.name = spellName
+			end
+			if texture and entry.texture == 134400 then
+				entry.texture = texture
+			end
+		end
+	end
+	
 	-- Method 1: Use itemFramePool if available (proper CDM way)
 	if viewer.itemFramePool then
 		for frame in viewer.itemFramePool:EnumerateActive() do
-			local cooldownID = frame.cooldownID
-			if cooldownID then
-				foundCount = foundCount + 1
-				cdmBuffFrames[cooldownID] = frame
-				foundThisScan[cooldownID] = true
-				
-				-- Try to get spell info from the frame
-				local spellName = nil
-				local texture = nil
-				
-				-- CDM frames often have Icon child
-				if frame.Icon then
-					texture = frame.Icon:GetTexture()
-				end
-				
-				-- Get name from tooltip or spell lookup
-				if frame.GetTooltipText then
-					spellName = frame:GetTooltipText()
-				end
-				
-				-- Store by cooldownID
-				if not GCDI.buffCatalog[cooldownID] then
-					GCDI.buffCatalog[cooldownID] = {
-						name = spellName or ("Buff " .. cooldownID),
-						texture = texture or 134400,  -- Default question mark
-						cooldownID = cooldownID,
-						cdmFrame = frame,
-						hasStacks = false,
-					}
-					
-					-- Save to settings
-					if settings then
-						if not settings.buffSettings then
-							settings.buffSettings = {}
-						end
-						if not settings.buffSettings[cooldownID] then
-							settings.buffSettings[cooldownID] = {
-								enabled = true,
-								showStacks = true,
-								maxStacksDisplay = 5,
-							}
-							newCount = newCount + 1
-						end
-					end
-					
-					if configs.debugMode then
-						debug("CDM auto-added: " .. (spellName or cooldownID) .. " (cdID:" .. cooldownID .. ")")
-					end
-				else
-					-- Update frame reference
-					GCDI.buffCatalog[cooldownID].cdmFrame = frame
-				end
-			end
+			processFrame(frame)
 		end
 	end
 	
@@ -1966,37 +2109,7 @@ local function scan_cdm_buff_frames()
 	if foundCount == 0 then
 		local children = {viewer:GetChildren()}
 		for _, frame in ipairs(children) do
-			local cooldownID = frame.cooldownID
-			if cooldownID then
-				foundCount = foundCount + 1
-				cdmBuffFrames[cooldownID] = frame
-				foundThisScan[cooldownID] = true
-				
-				if not GCDI.buffCatalog[cooldownID] then
-					local texture = frame.Icon and frame.Icon:GetTexture() or 134400
-					GCDI.buffCatalog[cooldownID] = {
-						name = "Buff " .. cooldownID,
-						texture = texture,
-						cooldownID = cooldownID,
-						cdmFrame = frame,
-						hasStacks = false,
-					}
-					
-					if settings then
-						if not settings.buffSettings then settings.buffSettings = {} end
-						if not settings.buffSettings[cooldownID] then
-							settings.buffSettings[cooldownID] = {
-								enabled = true,
-								showStacks = true,
-								maxStacksDisplay = 5,
-							}
-							newCount = newCount + 1
-						end
-					end
-				else
-					GCDI.buffCatalog[cooldownID].cdmFrame = frame
-				end
-			end
+			processFrame(frame)
 		end
 	end
 	
@@ -2045,6 +2158,28 @@ end
 
 -- Export for manual triggering
 GCDI.scan_cdm_buff_frames = scan_cdm_buff_frames
+
+-- Helper to get spellID from cooldownID (like ArcUI's SafeGetCDMInfo)
+-- Returns spellID if found, otherwise returns the original ID
+function GCDI.GetSpellIDFromCooldownID(cooldownID)
+	-- Check mapping table first
+	local spellID = cooldownToSpellID[cooldownID]
+	if spellID then return spellID end
+	
+	-- Check catalog entry
+	local entry = GCDI.buffCatalog[cooldownID]
+	if entry and entry.spellID then return entry.spellID end
+	
+	-- Return original if no mapping found
+	return cooldownID
+end
+
+-- Get CDM info for a cooldownID (wrapper for C_CooldownViewer API)
+function GCDI.GetCDMInfo(cooldownID)
+	if type(cooldownID) ~= "number" then return nil end
+	if not C_CooldownViewer or not C_CooldownViewer.GetCooldownViewerCooldownInfo then return nil end
+	return C_CooldownViewer.GetCooldownViewerCooldownInfo(cooldownID)
+end
 
 rebuild_buff_bars = function()
 	clear_buff_bars()
@@ -3138,45 +3273,68 @@ SlashCmdList["GCDOPT"] = function(msg)
 		local activeCount = 0
 		local frameCount = 0
 		
+		-- Helper to print frame info with spell ID from cooldownInfo (like ArcUI)
+		local function printFrameInfo(frame)
+			frameCount = frameCount + 1
+			local cooldownID = frame.cooldownID
+			if not cooldownID then
+				print("  [frame without cooldownID]")
+				return
+			end
+			
+			local auraInstanceID = frame.auraInstanceID
+			
+			-- Get spellID from cooldownInfo (like ArcUI does)
+			local spellID = nil
+			local spellName = nil
+			local cooldownInfo = frame.cooldownInfo
+			if cooldownInfo then
+				spellID = cooldownInfo.overrideSpellID or cooldownInfo.spellID
+			end
+			
+			-- Try CDM API as fallback
+			if not spellID and C_CooldownViewer and C_CooldownViewer.GetCooldownViewerCooldownInfo then
+				local cdInfo = C_CooldownViewer.GetCooldownViewerCooldownInfo(cooldownID)
+				if cdInfo then
+					spellID = cdInfo.overrideSpellID or cdInfo.spellID
+				end
+			end
+			
+			-- Get spell name
+			if spellID and C_Spell and C_Spell.GetSpellInfo then
+				local info = C_Spell.GetSpellInfo(spellID)
+				if info then spellName = info.name end
+			end
+			
+			-- Build status string
+			local activeStr = ""
+			if auraInstanceID and type(auraInstanceID) == "number" and auraInstanceID > 0 then
+				activeStr = "|cff00ff00ACTIVE|r (auraID: " .. auraInstanceID .. ")"
+				activeCount = activeCount + 1
+			else
+				activeStr = "|cff888888inactive|r"
+			end
+			
+			-- Print with spellID and name
+			local spellStr = spellID and ("|cff88ccffspell:" .. spellID .. "|r") or "|cffff8888no-spell|r"
+			local nameStr = spellName and (" |cffffffff\"" .. spellName .. "\"|r") or ""
+			print("  cdID: |cffffcc00" .. tostring(cooldownID) .. "|r " .. spellStr .. nameStr .. " - " .. activeStr)
+		end
+		
 		-- Try itemFramePool first
 		if viewer.itemFramePool then
 			print("Using itemFramePool:EnumerateActive()...")
 			for frame in viewer.itemFramePool:EnumerateActive() do
-				frameCount = frameCount + 1
-				local cooldownID = frame.cooldownID
-				local auraInstanceID = frame.auraInstanceID
-				-- Note: frame.isActive is SECRET - cannot read it!
-				
-				local texture = frame.Icon and frame.Icon:GetTexture() or "none"
-				local activeStr = ""
-				if auraInstanceID and type(auraInstanceID) == "number" and auraInstanceID > 0 then
-					activeStr = "|cff00ff00ACTIVE|r (auraID: " .. auraInstanceID .. ")"
-					activeCount = activeCount + 1
-				else
-					activeStr = "|cff888888inactive|r (auraID: " .. tostring(auraInstanceID) .. ")"
-				end
-				print("  cdID: |cffffcc00" .. tostring(cooldownID) .. "|r - " .. activeStr .. " (tex: " .. tostring(texture) .. ")")
+				printFrameInfo(frame)
 			end
-		else
-			-- Fallback to GetChildren
+		end
+		
+		-- Also check GetChildren if itemFramePool didn't find anything
+		if frameCount == 0 then
 			print("Using GetChildren()...")
 			local children = {viewer:GetChildren()}
 			for _, frame in ipairs(children) do
-				frameCount = frameCount + 1
-				local cooldownID = frame.cooldownID
-				if cooldownID then
-					local auraInstanceID = frame.auraInstanceID
-					local activeStr = ""
-					if auraInstanceID and type(auraInstanceID) == "number" and auraInstanceID > 0 then
-						activeStr = "|cff00ff00ACTIVE|r (auraID: " .. auraInstanceID .. ")"
-						activeCount = activeCount + 1
-					else
-						activeStr = "|cff888888inactive|r"
-					end
-					print("  cdID: |cffffcc00" .. tostring(cooldownID) .. "|r - " .. activeStr)
-				else
-					print("  [frame without cooldownID]")
-				end
+				printFrameInfo(frame)
 			end
 		end
 		

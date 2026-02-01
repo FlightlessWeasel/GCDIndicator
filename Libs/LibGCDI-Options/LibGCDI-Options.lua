@@ -1172,8 +1172,16 @@ local function refresh_buffs_tab()
 	maxStacksHeader:SetPoint("TOPLEFT", 220, yOffset)
 	maxStacksHeader:SetText("Max Stacks")
 	
+	local durationHeader = track(scrollChild:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall"))
+	durationHeader:SetPoint("TOPLEFT", 295, yOffset)
+	durationHeader:SetText("Dur")
+	
+	local thresholdHeader = track(scrollChild:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall"))
+	thresholdHeader:SetPoint("TOPLEFT", 325, yOffset)
+	thresholdHeader:SetText("Thr%")
+	
 	local orderHeader = track(scrollChild:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall"))
-	orderHeader:SetPoint("TOPLEFT", 350, yOffset)
+	orderHeader:SetPoint("TOPLEFT", 400, yOffset)
 	orderHeader:SetText("Order")
 	yOffset = yOffset - 20
 	
@@ -1313,10 +1321,53 @@ local function refresh_buffs_tab()
 		UIDropDownMenu_Initialize(maxStacksDropdown, initMaxStacksDropdown)
 		UIDropDownMenu_SetSelectedID(maxStacksDropdown, buffSettings.maxStacksDisplay or 5)
 		
+		-- Duration bar checkbox
+		local durationCb = CreateFrame("CheckButton", nil, row, "UICheckButtonTemplate")
+		durationCb:SetPoint("LEFT", 290, 0)
+		durationCb:SetSize(24, 24)
+		durationCb:SetChecked(buffSettings.showDurationBar == true)
+		durationCb:SetScript("OnClick", function(self)
+			if not GCDI.settings.buffSettings[spellID] then
+				GCDI.settings.buffSettings[spellID] = {}
+			end
+			GCDI.settings.buffSettings[spellID].showDurationBar = self:GetChecked()
+			GCDI.auto_save_to_profile()
+			GCDI.rebuild_buff_bars()
+			GCDI.reposition_all()
+		end)
+		
+		-- Threshold dropdown (5% increments)
+		local thresholdDropdown = CreateFrame("Frame", "GCDI_BuffThreshold_" .. spellID, row, "UIDropDownMenuTemplate")
+		thresholdDropdown:SetPoint("LEFT", 305, -3)
+		UIDropDownMenu_SetWidth(thresholdDropdown, 50)
+		
+		local function initThresholdDropdown(self, level)
+			local currentThreshold = buffSettings.durationThreshold or 30
+			for pct = 5, 95, 5 do
+				local info = UIDropDownMenu_CreateInfo()
+				info.text = pct .. "%"
+				info.value = pct
+				info.checked = (currentThreshold == pct)
+				info.func = function()
+					if not GCDI.settings.buffSettings[spellID] then
+						GCDI.settings.buffSettings[spellID] = {}
+					end
+					GCDI.settings.buffSettings[spellID].durationThreshold = pct
+					UIDropDownMenu_SetText(thresholdDropdown, pct .. "%")
+					GCDI.auto_save_to_profile()
+					GCDI.rebuild_buff_bars()
+					GCDI.reposition_all()
+				end
+				UIDropDownMenu_AddButton(info, level)
+			end
+		end
+		UIDropDownMenu_Initialize(thresholdDropdown, initThresholdDropdown)
+		UIDropDownMenu_SetText(thresholdDropdown, (buffSettings.durationThreshold or 30) .. "%")
+		
 		-- Reorder buttons
 		local upBtn = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
 		upBtn:SetSize(22, 18)
-		upBtn:SetPoint("LEFT", 345, 0)
+		upBtn:SetPoint("LEFT", 395, 0)
 		upBtn:SetText("Up")
 		upBtn:SetNormalFontObject("GameFontNormalSmall")
 		upBtn:SetHighlightFontObject("GameFontHighlightSmall")
