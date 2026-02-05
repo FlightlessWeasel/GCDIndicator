@@ -471,35 +471,52 @@ end
 -- SPELLS TAB
 -- ═══════════════════════════════════════════════════════════════════════════
 
+local spellsTabElements = {}  -- Track all UI elements created in spells tab
+
+local function clear_spells_tab_elements()
+	for _, element in pairs(spellsTabElements) do
+		if element.Hide then element:Hide() end
+		if element.SetParent then element:SetParent(nil) end
+	end
+	wipe(spellsTabElements)
+	for _, row in pairs(spellRows) do
+		row:Hide()
+		row:SetParent(nil)
+	end
+	wipe(spellRows)
+end
+
+-- Helper to track created elements
+local function track(element)
+	table.insert(spellsTabElements, element)
+	return element
+end
+
 local function refresh_spells_tab()
 	if not optionsFrame or not optionsFrame.spellsScrollChild then return end
 	
 	-- Always sync settings reference
 	settings = GCDI.settings
 	
-	-- Clear existing spell rows
-	for _, row in pairs(spellRows) do
-		row:Hide()
-		row:SetParent(nil)
-	end
-	wipe(spellRows)
+	-- Clear ALL existing elements (not just spell rows)
+	clear_spells_tab_elements()
 	
 	local scrollChild = optionsFrame.spellsScrollChild
 	local yOffset = -10
 	
 	-- Global range fallback
-	local globalLabel = scrollChild:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+	local globalLabel = track(scrollChild:CreateFontString(nil, "OVERLAY", "GameFontNormal"))
 	globalLabel:SetPoint("TOPLEFT", 10, yOffset)
 	globalLabel:SetText("Global Range:")
 	
-	local globalDropdown = create_range_dropdown(scrollChild, 130, settings.globalRangeFallback or 0, function(index)
+	local globalDropdown = track(create_range_dropdown(scrollChild, 130, settings.globalRangeFallback or 0, function(index)
 		settings.globalRangeFallback = index
 		GCDI.UpdateRangeIndicators()
-	end)
+	end))
 	globalDropdown:SetPoint("LEFT", globalLabel, "RIGHT", -5, -2)
 	
 	-- Rescan Spells button
-	local rescanSpellsBtn = CreateFrame("Button", nil, scrollChild, "UIPanelButtonTemplate")
+	local rescanSpellsBtn = track(CreateFrame("Button", nil, scrollChild, "UIPanelButtonTemplate"))
 	rescanSpellsBtn:SetSize(100, 22)
 	rescanSpellsBtn:SetPoint("LEFT", globalDropdown, "RIGHT", 100, 2)
 	rescanSpellsBtn:SetText("Rescan Spells")
@@ -519,31 +536,31 @@ local function refresh_spells_tab()
 	yOffset = yOffset - 35
 	
 	-- Column headers (row starts at x=10, so add 10 to row-relative positions)
-	local enabledHeader = scrollChild:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+	local enabledHeader = track(scrollChild:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall"))
 	enabledHeader:SetPoint("TOPLEFT", 14, yOffset)  -- checkbox at row LEFT 0, centered
 	enabledHeader:SetText("On")
 	
-	local selfCastHeader = scrollChild:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+	local selfCastHeader = track(scrollChild:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall"))
 	selfCastHeader:SetPoint("TOPLEFT", 40, yOffset)  -- checkbox at row LEFT 28, centered
 	selfCastHeader:SetText("Self")
 	
-	local iconTrackHeader = scrollChild:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+	local iconTrackHeader = track(scrollChild:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall"))
 	iconTrackHeader:SetPoint("TOPLEFT", 70, yOffset)  -- checkbox at row LEFT 56, centered
 	iconTrackHeader:SetText("Ico")
 	
-	local spellNameHeader = scrollChild:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+	local spellNameHeader = track(scrollChild:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall"))
 	spellNameHeader:SetPoint("TOPLEFT", 94, yOffset)  -- icon at row LEFT 84
 	spellNameHeader:SetText("Spell")
 	
-	local nativeHeader = scrollChild:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+	local nativeHeader = track(scrollChild:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall"))
 	nativeHeader:SetPoint("TOPLEFT", 210, yOffset)  -- indicator at row LEFT 200
 	nativeHeader:SetText("|cff00ff00N|r")
 	
-	local rangeHeader = scrollChild:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+	local rangeHeader = track(scrollChild:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall"))
 	rangeHeader:SetPoint("TOPLEFT", 240, yOffset)  -- dropdown at row LEFT 213 (+ dropdown padding)
 	rangeHeader:SetText("Range Override")
 	
-	local orderHeader = scrollChild:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+	local orderHeader = track(scrollChild:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall"))
 	orderHeader:SetPoint("TOPLEFT", 415, yOffset)  -- buttons at row LEFT 405
 	orderHeader:SetText("Order")
 	yOffset = yOffset - 20
@@ -571,13 +588,13 @@ local function refresh_spells_tab()
 		if not GCDI.is_spell_enabled(spellID) and not disabledSectionStarted then
 			disabledSectionStarted = true
 			yOffset = yOffset - 10
-			local disabledSep = scrollChild:CreateTexture(nil, "ARTWORK")
+			local disabledSep = track(scrollChild:CreateTexture(nil, "ARTWORK"))
 			disabledSep:SetColorTexture(0.4, 0.4, 0.4, 1)
 			disabledSep:SetSize(450, 1)
 			disabledSep:SetPoint("TOPLEFT", 10, yOffset)
 			yOffset = yOffset - 5
 			
-			local disabledLabel = scrollChild:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+			local disabledLabel = track(scrollChild:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall"))
 			disabledLabel:SetPoint("TOPLEFT", 10, yOffset)
 			disabledLabel:SetText("|cff888888— Disabled Spells —|r")
 			yOffset = yOffset - 18
@@ -1551,6 +1568,71 @@ StaticPopupDialogs["GCDI_DELETE_PROFILE_CONFIRM"] = {
 	preferredIndex = 3,
 }
 
+-- Save confirmation dialog
+StaticPopupDialogs["GCDI_SAVE_PROFILE_CONFIRM"] = {
+	text = "Overwrite profile '%s' with current settings?",
+	button1 = "Save",
+	button2 = "Cancel",
+	OnAccept = function(self, profileName)
+		if profileName and profileName ~= "" then
+			-- Perform the save (inline version of do_save_profile)
+			local s = GCDI.settings
+			if not s then return end
+			
+			s.profiles = s.profiles or {}
+			
+			local function deepcopy(orig, seen)
+				if type(orig) ~= 'table' then return orig end
+				seen = seen or {}
+				if seen[orig] then return seen[orig] end
+				local copy = {}
+				seen[orig] = copy
+				for k, v in pairs(orig) do
+					local vtype = type(v)
+					if vtype ~= 'function' and vtype ~= 'userdata' then
+						if vtype == 'table' and type(v.GetObjectType) == 'function' then
+							-- skip WoW frames
+						else
+							copy[k] = deepcopy(v, seen)
+						end
+					end
+				end
+				return copy
+			end
+			
+			s.profiles[profileName] = {
+				globalRangeFallback = s.globalRangeFallback,
+				spellSettings = deepcopy(s.spellSettings),
+				spellOrder = deepcopy(s.spellOrder),
+				itemSettings = deepcopy(s.itemSettings or {}),
+				itemOrder = deepcopy(s.itemOrder or {}),
+				buffSettings = deepcopy(s.buffSettings or {}),
+				buffOrder = deepcopy(s.buffOrder or {}),
+				resourceSettings = deepcopy(s.resourceSettings or {}),
+				gcdSettings = deepcopy(s.gcdSettings or {}),
+				spellCatalog = deepcopy(GCDI.spellCatalog),
+				itemCatalog = deepcopy(GCDI.itemCatalog),
+				buffCatalog = deepcopy(GCDI.buffCatalog),
+			}
+			s.currentProfile = profileName
+			
+			print("|cff00ff00GCDIndicator:|r Profile '" .. profileName .. "' saved!")
+			
+			GCDI.rebuild_spell_bars()
+			GCDI.rebuild_item_bars()
+			GCDI.rebuild_buff_bars()
+			GCDI.reposition_all()
+			if GCDI.refresh_options_frame then
+				GCDI.refresh_options_frame()
+			end
+		end
+	end,
+	timeout = 0,
+	whileDead = true,
+	hideOnEscape = true,
+	preferredIndex = 3,
+}
+
 -- Import profile name dialog
 StaticPopupDialogs["GCDI_IMPORT_PROFILE_NAME"] = {
 	text = "Enter a name for the imported profile:",
@@ -1907,12 +1989,8 @@ refresh_profiles_tab = function()
 	saveBtn:SetEnabled(hasCurrentProfile)
 	saveBtn:SetScript("OnClick", function()
 		if GCDI.settings.currentProfile then
-			do_save_profile(GCDI.settings.currentProfile)
-			GCDI.rebuild_spell_bars()
-			GCDI.rebuild_item_bars()
-			GCDI.rebuild_buff_bars()
-			GCDI.reposition_all()
-			refresh_profiles_tab()
+			local dialog = StaticPopup_Show("GCDI_SAVE_PROFILE_CONFIRM", GCDI.settings.currentProfile)
+			if dialog then dialog.data = GCDI.settings.currentProfile end
 		end
 	end)
 	saveBtn:SetScript("OnEnter", function(self)

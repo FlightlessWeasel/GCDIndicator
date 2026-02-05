@@ -2411,7 +2411,7 @@ local function on_event(self, event, arg1, arg2, ...)
 		update_all_spell_bars()  -- Update cooldown bars (charge spells show no cooldown when charges available)
 		
 	elseif event == "BAG_UPDATE" or event == "PLAYER_EQUIPMENT_CHANGED" then
-		schedule_scan(0.5)
+		-- Removed auto-scan: use /gcdopt scan to manually rescan
 		update_item_charge_indicators()  -- Update charge indicators immediately
 		
 	elseif event == "UNIT_HEALTH" then
@@ -2470,7 +2470,7 @@ local function on_event(self, event, arg1, arg2, ...)
 	elseif event == "PLAYER_ENTERING_WORLD" then
 		main_frame.combatbar:SetStatusBarColor(UnitAffectingCombat("player") and 1 or 0, 0, 0)
 		update_aggro_indicator()
-		schedule_scan(0.5)
+		-- Removed auto-scan: use /gcdopt scan to manually rescan
 		update_all_resources()
 		update_gcd()  -- Initialize GCD bar
 		-- Try to detect native range after a delay (in case player has a target)
@@ -2485,7 +2485,7 @@ local function on_event(self, event, arg1, arg2, ...)
 		update_runes_bar()
 		
 	elseif event == "PLAYER_SPECIALIZATION_CHANGED" then
-		schedule_scan(0.5)
+		-- Removed auto-scan: use /gcdopt scan to manually rescan
 		
 	elseif event == "PLAYER_TARGET_CHANGED" then
 		update_range_indicators()
@@ -2497,14 +2497,9 @@ local function on_event(self, event, arg1, arg2, ...)
 		
 	elseif event == "UNIT_AURA" then
 		if arg1 == "player" then
-			-- Rescan CDM frames (they update on aura changes)
-			local newBuffs = scan_cdm_buff_frames()
-			if newBuffs > 0 then
-				-- New buffs found, rebuild bars
-				rebuild_buff_bars()
-			else
-				update_all_buff_bars()
-			end
+			-- Removed auto-scan: use /gcdopt scan to manually rescan
+			-- Just update existing buff bars
+			update_all_buff_bars()
 		end
 		
 	elseif event == "UNIT_SPELLCAST_SUCCEEDED" then
@@ -2794,37 +2789,10 @@ local function init()
 	-- Initialize GCD bar immediately (don't wait for events)
 	update_gcd()
 	
-	schedule_scan(0.1)
-	C_Timer.After(1.0, function()
-		if #spellBars == 0 then
-			scan_action_bars()
-		end
-	end)
+	-- Removed auto-scan: use /gcdopt scan to manually rescan
+	-- Spells will only be scanned when you press the scan button
 	
-	-- Auto-ingest buffs from CDM after it loads
-	C_Timer.After(1.5, function()
-		local viewer = _G["BuffIconCooldownViewer"]
-		if not viewer then
-			print("|cff00ff00GCDIndicator:|r CDM BuffIconCooldownViewer not found - enable in Edit Mode")
-			return
-		end
-		local children = {viewer:GetChildren()}
-		local newBuffs = scan_cdm_buff_frames()
-		rebuild_buff_bars()
-		local totalBuffs = 0
-		for _ in pairs(GCDI.buffCatalog) do totalBuffs = totalBuffs + 1 end
-		if newBuffs > 0 or totalBuffs > 0 then
-			print("|cff00ff00GCDIndicator:|r CDM scan: " .. #children .. " frames, " .. newBuffs .. " new, " .. totalBuffs .. " total buffs")
-		end
-	end)
-	-- Second pass in case CDM loads slowly
-	C_Timer.After(4.0, function()
-		local newBuffs = scan_cdm_buff_frames()
-		if newBuffs > 0 then
-			rebuild_buff_bars()
-			print("|cff00ff00GCDIndicator:|r CDM late scan: found " .. newBuffs .. " additional buffs")
-		end
-	end)
+	-- Removed auto-ingest: use /gcdopt scan or /gcdopt cdmimport to manually import CDM buffs
 	
 	if settings.currentProfile and settings.profiles and settings.profiles[settings.currentProfile] then
 		C_Timer.After(0.5, function()
@@ -2866,7 +2834,7 @@ local function init()
 		animate_item_bars()
 		update_charge_indicators_tick()
 		update_range_indicators()
-		scan_cdm_buff_frames()
+		-- Removed scan_cdm_buff_frames() - use /gcdopt scan to manually rescan
 		update_all_buff_bars()
 		update_spell_icons()
 		update_item_charge_indicators()
