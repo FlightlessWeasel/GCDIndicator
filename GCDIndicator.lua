@@ -2524,6 +2524,18 @@ local function on_event(self, event, arg1, arg2, ...)
 			end
 		end
 		
+	elseif event == "UNIT_SPELLCAST_CHANNEL_START" then
+		-- Channel started - show casting indicator (yellow)
+		if arg1 == "player" and main_frame.castingbar then
+			main_frame.castingbar:SetStatusBarColor(1, 0.8, 0)  -- Yellow
+		end
+		
+	elseif event == "UNIT_SPELLCAST_CHANNEL_STOP" then
+		-- Channel ended - hide casting indicator (black)
+		if arg1 == "player" and main_frame.castingbar then
+			main_frame.castingbar:SetStatusBarColor(0, 0, 0)  -- Black
+		end
+		
 	-- Other events: don't rescan automatically
 	-- Spells should only change on profile change, spec change, or manual /gcdopt scan
 	end
@@ -2618,7 +2630,7 @@ local function init()
 	main_frame.anchor = anchor
 	
 	local sepSize = 2
-	local containerWidth = (configs.size * 4) + (sepSize * 3) + (pad * 2)  -- 4 indicators: stance, gcd, combat, aggro
+	local containerWidth = (configs.size * 5) + (sepSize * 4) + (pad * 2)  -- 5 indicators: stance, gcd, combat, aggro, casting
 	local gcdCombatContainer = CreateFrame("Frame", nil, main_frame)
 	gcdCombatContainer:SetSize(containerWidth, configs.size + pad * 2)
 	main_frame.gcdcontainer = gcdCombatContainer
@@ -2689,6 +2701,21 @@ local function init()
 	aggrobar:SetStatusBarColor(0.3, 0.3, 0.3)  -- Grey = no aggro
 	aggrobar:SetPoint("LEFT", sep3, "RIGHT", 0, 0)
 	main_frame.aggrobar = aggrobar
+	
+	local sep4 = gcdCombatContainer:CreateTexture(nil, "ARTWORK")
+	sep4:SetSize(sepSize, configs.size)
+	sep4:SetPoint("LEFT", aggrobar, "RIGHT", 0, 0)
+	sep4:SetColorTexture(0, 0, 0, 1)
+	
+	local castingbar = CreateFrame("StatusBar", nil, gcdCombatContainer)
+	castingbar:SetStatusBarTexture("Interface\\Buttons\\WHITE8X8")
+	castingbar:GetStatusBarTexture():SetHorizTile(false)
+	castingbar:SetMinMaxValues(0, 100)
+	castingbar:SetValue(100)
+	castingbar:SetSize(configs.size, configs.size)
+	castingbar:SetStatusBarColor(0, 0, 0)  -- Black = not channeling
+	castingbar:SetPoint("LEFT", sep4, "RIGHT", 0, 0)
+	main_frame.castingbar = castingbar
 	
 	GCDIndicator_Positions = GCDIndicator_Positions or {}
 	local libGCDI = LibStub and LibStub:GetLibrary("LibGCDI", true)
@@ -2780,6 +2807,8 @@ local function init()
 	main_frame:RegisterUnitEvent("UNIT_MAXPOWER", "player")
 	main_frame:RegisterUnitEvent("UNIT_AURA", "player")
 	main_frame:RegisterUnitEvent("UNIT_SPELLCAST_SUCCEEDED", "player")  -- For manual buff tracking
+	main_frame:RegisterUnitEvent("UNIT_SPELLCAST_CHANNEL_START", "player")  -- Channeling indicator
+	main_frame:RegisterUnitEvent("UNIT_SPELLCAST_CHANNEL_STOP", "player")  -- Channeling indicator
 	main_frame:SetScript("OnEvent", on_event)
 
 	if UnitAffectingCombat("player") then
@@ -3020,6 +3049,10 @@ function GCDI.toggle_preview_mode()
 		if main_frame.aggrobar then
 			main_frame.aggrobar:SetStatusBarColor(1, 0.5, 0)  -- Orange = has aggro
 			main_frame.aggrobar:SetValue(100)
+		end
+		if main_frame.castingbar then
+			main_frame.castingbar:SetStatusBarColor(1, 0.8, 0)  -- Yellow = channeling
+			main_frame.castingbar:SetValue(100)
 		end
 		if main_frame.stanceIndicator then
 			main_frame.stanceIndicator:SetColorTexture(0.5, 0.3, 0, 1)  -- Bear form color
