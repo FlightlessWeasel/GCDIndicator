@@ -90,6 +90,7 @@ local GCD_INDICATOR_OPTIONS = {
 	{ key = "showGcd", name = "Show GCD", desc = "Show the global cooldown bar", disabled = true },
 	{ key = "showCombat", name = "Show Combat", desc = "Show the combat status indicator", disabled = true },
 	{ key = "showAggro", name = "Show Aggro", desc = "Show the threat/aggro indicator", disabled = true },
+	{ key = "showMobCount", name = "Show Mob Count", desc = "Show the nearby mob count indicator" },
 }
 
 local function refresh_gcd_tab()
@@ -175,6 +176,103 @@ local function refresh_gcd_tab()
 	end
 	
 	yOffset = yOffset - 15
+	
+	-- ═══════════════════════════════════════════════════════════════════════════
+	-- MOB COUNT SETTINGS
+	-- ═══════════════════════════════════════════════════════════════════════════
+	
+	local mobSep = track(frame:CreateTexture(nil, "ARTWORK"))
+	mobSep:SetColorTexture(0.4, 0.4, 0.4, 1)
+	mobSep:SetSize(480, 1)
+	mobSep:SetPoint("TOPLEFT", 5, yOffset)
+	yOffset = yOffset - 20
+	
+	local mobTitle = track(frame:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge"))
+	mobTitle:SetPoint("TOPLEFT", 5, yOffset)
+	mobTitle:SetText("Mob Count Settings")
+	yOffset = yOffset - 25
+	
+	local mobDesc = track(frame:CreateFontString(nil, "OVERLAY", "GameFontHighlight"))
+	mobDesc:SetPoint("TOPLEFT", 5, yOffset)
+	mobDesc:SetText("Configure the nearby mob count indicator. White = at or above threshold, Black = below.")
+	mobDesc:SetTextColor(0.7, 0.7, 0.7)
+	yOffset = yOffset - 25
+	
+	-- Mob Count Range dropdown
+	local rangeLabel = track(frame:CreateFontString(nil, "OVERLAY", "GameFontNormal"))
+	rangeLabel:SetPoint("TOPLEFT", 10, yOffset)
+	rangeLabel:SetText("Detection Range:")
+	
+	local rangeDropdown = track(CreateFrame("Frame", nil, frame, "UIDropDownMenuTemplate"))
+	rangeDropdown:SetPoint("LEFT", rangeLabel, "RIGHT", -5, -2)
+	UIDropDownMenu_SetWidth(rangeDropdown, 100)
+	
+	local rangeOptions = { 5, 8, 10, 15, 20, 28, 40 }
+	local rangeLabels = { "5 yards (melee)", "8 yards", "10 yards", "15 yards", "20 yards", "28 yards", "40 yards" }
+	
+	local function initRangeDropdown(self, level)
+		local currentRange = settings.gcdSettings.mobCountRange or 8
+		for i, range in ipairs(rangeOptions) do
+			local info = UIDropDownMenu_CreateInfo()
+			info.text = rangeLabels[i]
+			info.value = range
+			info.checked = (currentRange == range)
+			info.func = function()
+				settings.gcdSettings.mobCountRange = range
+				UIDropDownMenu_SetText(rangeDropdown, rangeLabels[i])
+				GCDI.auto_save_to_profile()
+			end
+			UIDropDownMenu_AddButton(info, level)
+		end
+	end
+	UIDropDownMenu_Initialize(rangeDropdown, initRangeDropdown)
+	
+	-- Set initial text
+	local currentRange = settings.gcdSettings.mobCountRange or 8
+	for i, range in ipairs(rangeOptions) do
+		if range == currentRange then
+			UIDropDownMenu_SetText(rangeDropdown, rangeLabels[i])
+			break
+		end
+	end
+	yOffset = yOffset - 35
+	
+	-- Mob Count Threshold dropdown
+	local thresholdLabel = track(frame:CreateFontString(nil, "OVERLAY", "GameFontNormal"))
+	thresholdLabel:SetPoint("TOPLEFT", 10, yOffset)
+	thresholdLabel:SetText("Mob Threshold:")
+	
+	local thresholdDropdown = track(CreateFrame("Frame", nil, frame, "UIDropDownMenuTemplate"))
+	thresholdDropdown:SetPoint("LEFT", thresholdLabel, "RIGHT", 5, -2)
+	UIDropDownMenu_SetWidth(thresholdDropdown, 80)
+	
+	local function initThresholdDropdown(self, level)
+		local currentThreshold = settings.gcdSettings.mobCountThreshold or 3
+		for threshold = 1, 10 do
+			local info = UIDropDownMenu_CreateInfo()
+			info.text = tostring(threshold) .. (threshold == 1 and " mob" or " mobs")
+			info.value = threshold
+			info.checked = (currentThreshold == threshold)
+			info.func = function()
+				settings.gcdSettings.mobCountThreshold = threshold
+				UIDropDownMenu_SetText(thresholdDropdown, tostring(threshold) .. (threshold == 1 and " mob" or " mobs"))
+				GCDI.auto_save_to_profile()
+			end
+			UIDropDownMenu_AddButton(info, level)
+		end
+	end
+	UIDropDownMenu_Initialize(thresholdDropdown, initThresholdDropdown)
+	
+	local currentThreshold = settings.gcdSettings.mobCountThreshold or 3
+	UIDropDownMenu_SetText(thresholdDropdown, tostring(currentThreshold) .. (currentThreshold == 1 and " mob" or " mobs"))
+	yOffset = yOffset - 35
+	
+	-- Help text
+	local mobHelp = track(frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall"))
+	mobHelp:SetPoint("TOPLEFT", 15, yOffset)
+	mobHelp:SetText("Tip: Uses nameplates to count nearby hostile mobs. Indicator turns white when mob count >= threshold.")
+	mobHelp:SetTextColor(0.5, 0.5, 0.5)
+	yOffset = yOffset - 20
 	
 	-- ═══════════════════════════════════════════════════════════════════════════
 	-- STANCE/FORM COLORS

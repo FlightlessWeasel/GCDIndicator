@@ -153,6 +153,9 @@ local DEFAULT_SETTINGS = {
 		showGcd = true,
 		showCombat = true,
 		showAggro = true,
+		showMobCount = true,
+		mobCountRange = 8,     -- Default range in yards
+		mobCountThreshold = 3, -- Default threshold for white indicator
 	},
 }
 
@@ -1665,6 +1668,76 @@ local function update_aggro_indicator()
 	end
 end
 
+-- Range item IDs for mob counting (same as LibGCDI-Range)
+local MOB_RANGE_ITEMS = {
+	[5] = 37727,    -- 5 yards (melee)
+	[8] = 63427,    -- 8 yards
+	[10] = 34368,   -- 10 yards
+	[15] = 32321,   -- 15 yards
+	[20] = 21519,   -- 20 yards
+	[28] = 116139,  -- 25 yards (close to 28)
+	[40] = 41509,   -- 40 yards
+}
+
+-- Get the best range item for the given range
+local function get_range_item_for_distance(range)
+	if range <= 5 then return MOB_RANGE_ITEMS[5]
+	elseif range <= 8 then return MOB_RANGE_ITEMS[8]
+	elseif range <= 10 then return MOB_RANGE_ITEMS[10]
+	elseif range <= 15 then return MOB_RANGE_ITEMS[15]
+	elseif range <= 20 then return MOB_RANGE_ITEMS[20]
+	elseif range <= 28 then return MOB_RANGE_ITEMS[28]
+	else return MOB_RANGE_ITEMS[40]
+	end
+end
+
+-- Count nearby hostile mobs within range using nameplates
+local function count_nearby_mobs(range)
+	local count = 0
+	local nameplates = C_NamePlate.GetNamePlates()
+	local rangeItemID = get_range_item_for_distance(range)
+	
+	if not nameplates then return 0 end
+	
+	for _, nameplate in pairs(nameplates) do
+		-- Get unit token - can be either namePlateUnitToken or unitToken
+		local unit = nameplate.namePlateUnitToken or nameplate.unitToken
+		if unit and UnitExists(unit) then
+			-- Check if hostile and alive
+			local isHostile = UnitCanAttack("player", unit)
+			local isAlive = not UnitIsDead(unit)
+			
+			if isHostile and isAlive then
+				-- Use item-based range checking (works on hostile units)
+				local inRange = C_Item.IsItemInRange(rangeItemID, unit)
+				
+				if inRange == true then
+					count = count + 1
+				end
+			end
+		end
+	end
+	
+	return count
+end
+
+local function update_mob_count_indicator()
+	if previewMode then return end  -- Skip updates in preview mode
+	if not main_frame.mobcountbar then return end
+	
+	local gcdSettings = settings and settings.gcdSettings or {}
+	local range = gcdSettings.mobCountRange or 8
+	local threshold = gcdSettings.mobCountThreshold or 3
+	
+	local mobCount = count_nearby_mobs(range)
+	
+	if mobCount >= threshold then
+		main_frame.mobcountbar:SetStatusBarColor(1, 1, 1)  -- White = at or above threshold
+	else
+		main_frame.mobcountbar:SetStatusBarColor(0, 0, 0)  -- Black = below threshold
+	end
+end
+
 reposition_all = function()
 	local barSize = configs.barHeight
 	local spacing = configs.barSpacing
@@ -1709,6 +1782,9 @@ reposition_all = function()
 		end
 		if main_frame.aggrobar then
 			main_frame.aggrobar:SetShown(gcdSettings.showAggro ~= false)
+		end
+		if main_frame.mobcountbar then
+			main_frame.mobcountbar:SetShown(gcdSettings.showMobCount ~= false)
 		end
 		
 		yOffset = yOffset - gcdContainerHeight - spacing
@@ -2598,7 +2674,20 @@ local function init()
 			showGcd = true,
 			showCombat = true,
 			showAggro = true,
+			showMobCount = true,
+			mobCountRange = 8,
+			mobCountThreshold = 3,
 		}
+	end
+	-- Ensure new mob count settings exist for existing profiles
+	if settings.gcdSettings.showMobCount == nil then
+		settings.gcdSettings.showMobCount = true
+	end
+	if settings.gcdSettings.mobCountRange == nil then
+		settings.gcdSettings.mobCountRange = 8
+	end
+	if settings.gcdSettings.mobCountThreshold == nil then
+		settings.gcdSettings.mobCountThreshold = 3
 	end
 	
 	-- Initialize catalog managers now that settings are available
@@ -2618,7 +2707,7 @@ local function init()
 	main_frame.anchor = anchor
 	
 	local sepSize = 2
-	local containerWidth = (configs.size * 4) + (sepSize * 3) + (pad * 2)  -- 4 indicators: stance, gcd, combat, aggro
+	local containerWidth = (configs.size * 6) + (sepSize * 5) + (pad * 2)  -- 6 indicators: stance, gcd, combat, aggro, casting, mobcount
 	local gcdCombatContainer = CreateFrame("Frame", nil, main_frame)
 	gcdCombatContainer:SetSize(containerWidth, configs.size + pad * 2)
 	main_frame.gcdcontainer = gcdCombatContainer
@@ -2689,6 +2778,36 @@ local function init()
 	aggrobar:SetStatusBarColor(0.3, 0.3, 0.3)  -- Grey = no aggro
 	aggrobar:SetPoint("LEFT", sep3, "RIGHT", 0, 0)
 	main_frame.aggrobar = aggrobar
+	
+	local sep4 = gcdCombatContainer:CreateTexture(nil, "ARTWORK")
+	sep4:SetSize(sepSize, configs.size)
+	sep4:SetPoint("LEFT", aggrobar, "RIGHT", 0, 0)
+	sep4:SetColorTexture(0, 0, 0, 1)
+	
+	local castingbar = CreateFrame("StatusBar", nil, gcdCombatContainer)
+	castingbar:SetStatusBarTexture("Interface\\Buttons\\WHITE8X8")
+	castingbar:GetStatusBarTexture():SetHorizTile(false)
+	castingbar:SetMinMaxValues(0, 100)
+	castingbar:SetValue(100)
+	castingbar:SetSize(configs.size, configs.size)
+	castingbar:SetStatusBarColor(0, 0, 0)  -- Black = not channeling
+	castingbar:SetPoint("LEFT", sep4, "RIGHT", 0, 0)
+	main_frame.castingbar = castingbar
+	
+	local sep5 = gcdCombatContainer:CreateTexture(nil, "ARTWORK")
+	sep5:SetSize(sepSize, configs.size)
+	sep5:SetPoint("LEFT", castingbar, "RIGHT", 0, 0)
+	sep5:SetColorTexture(0, 0, 0, 1)
+	
+	local mobcountbar = CreateFrame("StatusBar", nil, gcdCombatContainer)
+	mobcountbar:SetStatusBarTexture("Interface\\Buttons\\WHITE8X8")
+	mobcountbar:GetStatusBarTexture():SetHorizTile(false)
+	mobcountbar:SetMinMaxValues(0, 100)
+	mobcountbar:SetValue(100)
+	mobcountbar:SetSize(configs.size, configs.size)
+	mobcountbar:SetStatusBarColor(0, 0, 0)  -- Black = below threshold
+	mobcountbar:SetPoint("LEFT", sep5, "RIGHT", 0, 0)
+	main_frame.mobcountbar = mobcountbar
 	
 	GCDIndicator_Positions = GCDIndicator_Positions or {}
 	local libGCDI = LibStub and LibStub:GetLibrary("LibGCDI", true)
@@ -2836,6 +2955,16 @@ local function init()
 		update_range_indicators()
 		-- Removed scan_cdm_buff_frames() - use /gcdopt scan to manually rescan
 		update_all_buff_bars()
+		
+		-- Every 10 ticks (~150ms): Update mob count (doesn't need to be every frame)
+		if tickCount % 10 == 0 then
+			update_mob_count_indicator()
+		end
+		
+		-- Every 2 seconds (133 ticks): Rescan CDM frames for fresh references
+		if tickCount % 133 == 0 then
+			scan_cdm_buff_frames()
+		end
 		update_spell_icons()
 		update_item_charge_indicators()
 		
