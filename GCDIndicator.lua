@@ -77,6 +77,7 @@ local trackedBuffs = {}
 local buffBars = {}
 local cdmBuffFrames = {}  -- cooldownID -> CDM frame reference
 local cooldownToSpellID = {}  -- Maps CDM cooldownID -> actual spellID (like ArcUI)
+local spellIDToCooldownID = {}  -- REVERSE: Maps spellID -> cooldownID for frame lookup
 
 local CONSUMABLE_ITEM_IDS = {
 	[5512] = "Healthstone",
@@ -1019,20 +1020,70 @@ local function update_buff_bar(buffID)
 	
 	-- Get fresh CDM frame reference from latest scan using cooldownID
 	local cdmFrame = cdmBuffFrames[cooldownID]
+	local lookupMethod = cdmFrame and "direct" or nil
+	
+	-- If not found by cooldownID, try reverse lookup (buffID might be spellID)
+	if not cdmFrame and spellIDToCooldownID[buffID] then
+		local mappedCooldownID = spellIDToCooldownID[buffID]
+		cdmFrame = cdmBuffFrames[mappedCooldownID]
+		if cdmFrame then
+			cooldownID = mappedCooldownID  -- Update for later use
+			lookupMethod = "reverse"
+		end
+	end
 	
 	-- Also check catalog for stored frame reference as fallback
 	if not cdmFrame and catalogEntry and catalogEntry.cdmFrame then
 		cdmFrame = catalogEntry.cdmFrame
+		lookupMethod = "catalog"
 	end
 	
+	-- Debug: show lookup status if frame not found
+	if not cdmFrame and configs.debugMode then
+		local hasCatalog = catalogEntry and "yes" or "no"
+		local hasReverseMap = spellIDToCooldownID[buffID] and tostring(spellIDToCooldownID[buffID]) or "no"
+		local totalFrames = 0
+		for _ in pairs(cdmBuffFrames) do totalFrames = totalFrames + 1 end
+		debug("LOOKUP FAIL for " .. buffID .. ": catalog=" .. hasCatalog .. " reverseMap=" .. hasReverseMap .. " totalCDMFrames=" .. totalFrames)
+	end
+	
+	-- Helper to auto-detect unit (like ArcUI's GetAuraDataAutoUnit)
+	local function GetAuraDataAutoUnit(auraInstanceID)
+		if not auraInstanceID then return nil, nil end
+		-- Try player first (most common for buffs)
+		local auraData = C_UnitAuras.GetAuraDataByAuraInstanceID("player", auraInstanceID)
+		if auraData then return auraData, "player" end
+		-- Try target (for debuffs like Rip)
+		auraData = C_UnitAuras.GetAuraDataByAuraInstanceID("target", auraInstanceID)
+		if auraData then return auraData, "target" end
+		return nil, nil
+	end
+	
+	local detectedUnit = nil
+	
 	if cdmFrame then
-		-- Check auraInstanceID - non-zero means buff is active
+		-- Check auraInstanceID - non-zero means buff/debuff is active
 		local auraID = cdmFrame.auraInstanceID
 		if auraID and type(auraID) == "number" and auraID > 0 then
 			isActive = true
 			
-			-- Get stacks using LibDetector to read secret applications value
-			local auraData = C_UnitAuras.GetAuraDataByAuraInstanceID("player", auraID)
+			-- Get stacks - try both player and target to auto-detect unit
+			-- Method 1: Use CDM's auraDataUnit property or category hint
+			local unit = cdmFrame.auraDataUnit
+			if not unit or unit == "" then
+				-- Category 3 = target debuffs in CDM
+				unit = (cdmFrame.category == 3) and "target" or "player"
+			end
+			
+			local auraData = C_UnitAuras.GetAuraDataByAuraInstanceID(unit, auraID)
+			
+			-- Method 2: Auto-detect if primary unit failed (like ArcUI)
+			if not auraData then
+				auraData, unit = GetAuraDataAutoUnit(auraID)
+			end
+			
+			detectedUnit = unit
+			
 			if auraData and data.stackDetectors then
 				stacks = LibDetector:CheckValue(data.stackDetectors, auraData.applications)
 			end
@@ -1054,9 +1105,14 @@ local function update_buff_bar(buffID)
 	-- Debug output
 	if configs.debugMode then
 		local buffName = data.name or "Unknown"
-		local frameInfo = cdmFrame and ("auraID:" .. tostring(cdmFrame.auraInstanceID)) or "no frame"
+		local auraIDStr = cdmFrame and tostring(cdmFrame.auraInstanceID) or "nil"
+		local unitStr = detectedUnit or "?"
+		local categoryStr = cdmFrame and tostring(cdmFrame.category) or "?"
+		local auraDataUnitStr = cdmFrame and tostring(cdmFrame.auraDataUnit) or "nil"
 		local stackInfo = stacks > 0 and (" stacks:" .. stacks) or ""
-		debug("Buff " .. buffName .. " (ID:" .. buffID .. ") " .. (isActive and "ACTIVE" or "INACTIVE") .. " " .. frameInfo .. stackInfo)
+		debug("Buff " .. buffName .. " (ID:" .. buffID .. ") " .. (isActive and "ACTIVE" or "INACTIVE") .. 
+			" auraID:" .. auraIDStr .. " unit:" .. unitStr .. " cat:" .. categoryStr .. 
+			" auraDataUnit:" .. auraDataUnitStr .. stackInfo)
 	end
 	
 	if isActive then
@@ -1091,10 +1147,26 @@ local function update_buff_bar(buffID)
 		-- Update duration bar using CDM frame methods
 		if data.durationBar and cdmFrame then
 			local auraID = cdmFrame.auraInstanceID
-			local unit = cdmFrame.GetAuraDataUnit and cdmFrame:GetAuraDataUnit() or "player"
 			
 			if auraID and type(auraID) == "number" and auraID > 0 then
+				-- Use detected unit from above, or auto-detect
+				local unit = detectedUnit
+				if not unit then
+					-- Fallback: try CDM properties
+					unit = cdmFrame.auraDataUnit
+					if not unit or unit == "" then
+						unit = (cdmFrame.category == 3) and "target" or "player"
+					end
+				end
+				
 				local durObj = C_UnitAuras.GetAuraDuration(unit, auraID)
+				-- Auto-detect fallback if primary unit failed
+				if not durObj and unit == "player" then
+					durObj = C_UnitAuras.GetAuraDuration("target", auraID)
+				elseif not durObj and unit == "target" then
+					durObj = C_UnitAuras.GetAuraDuration("player", auraID)
+				end
+				
 				if durObj then
 					data.durationBar.bar:SetMinMaxValues(0, 1)
 					data.durationBar.bar:SetTimerDuration(durObj, Enum.StatusBarInterpolation.ExponentialEaseOut, Enum.StatusBarTimerDirection.RemainingTime)
@@ -2013,25 +2085,32 @@ local function GetCDMSpellInfo(frame, cooldownID)
 	return spellID, spellName, texture, hasCharges
 end
 
--- Scan Blizzard's Cooldown Manager for buff frames
+-- CDM viewer names to scan (like ArcUI)
+-- BuffIconCooldownViewer: tracked buffs AND target debuffs (categories 2+3)
+-- BuffBarCooldownViewer: buff duration bars
+-- EssentialCooldownViewer: essential cooldowns (category 0) 
+-- UtilityCooldownViewer: utility cooldowns (category 1)
+local CDM_AURA_VIEWERS = {
+	"BuffIconCooldownViewer",
+	"BuffBarCooldownViewer",
+}
+
+-- Scan Blizzard's Cooldown Manager for buff/debuff frames
+-- Target debuffs (like Rip) are in BuffIconCooldownViewer with auraDataUnit = "target" or category = 3
 local function scan_cdm_buff_frames()
 	-- Don't wipe - update in place to preserve references
 	-- Mark all existing as not found, then update those we find
 	local foundThisScan = {}
 	
-	local viewer = _G["BuffIconCooldownViewer"]
-	if not viewer then
-		if configs.debugMode then
-			debug("CDM BuffIconCooldownViewer not found")
-		end
-		return 0
-	end
-	
 	local foundCount = 0
 	local newCount = 0
 	
+	if configs.debugMode then
+		debug("CDM scan starting...")
+	end
+	
 	-- Helper to process a CDM frame
-	local function processFrame(frame)
+	local function processFrame(frame, viewerName)
 		local cooldownID = frame.cooldownID
 		if not cooldownID then return end
 		
@@ -2046,10 +2125,26 @@ local function scan_cdm_buff_frames()
 		-- This ensures we use stable spell IDs rather than CDM internal IDs
 		local catalogKey = spellID or cooldownID
 		
-		-- Store mapping from cooldownID -> spellID for lookups
+		-- Store mapping from cooldownID -> spellID for lookups (both directions)
 		if spellID and spellID ~= cooldownID then
 			cooldownToSpellID[cooldownID] = spellID
+			spellIDToCooldownID[spellID] = cooldownID  -- REVERSE mapping for frame lookup
 		end
+		
+		-- Debug: show each frame found
+		if configs.debugMode then
+			local catStr = frame.category and tostring(frame.category) or "nil"
+			local unitStr = frame.auraDataUnit or "nil"
+			debug("  Found: " .. (spellName or "?") .. " spellID:" .. tostring(spellID) .. " cdID:" .. tostring(cooldownID) .. " cat:" .. catStr .. " unit:" .. unitStr)
+		end
+		
+		-- Detect if this is a target debuff vs player buff
+		-- Use auraDataUnit property OR category (3 = target debuff)
+		local unit = frame.auraDataUnit or "player"
+		if unit == "player" and frame.category == 3 then
+			unit = "target"
+		end
+		local isTargetDebuff = (unit == "target")
 		
 		if not GCDI.buffCatalog[catalogKey] then
 			GCDI.buffCatalog[catalogKey] = {
@@ -2060,6 +2155,9 @@ local function scan_cdm_buff_frames()
 				cdmFrame = frame,
 				hasStacks = false,
 				hasCharges = hasCharges,
+				unit = unit,  -- Store unit for proper aura lookups
+				isTargetDebuff = isTargetDebuff,
+				viewerName = viewerName,
 			}
 			
 			-- Save to settings using spellID if available (more stable)
@@ -2078,13 +2176,16 @@ local function scan_cdm_buff_frames()
 			end
 			
 			if configs.debugMode then
-				debug("CDM auto-added: " .. (spellName or catalogKey) .. " (spellID:" .. tostring(spellID) .. ", cdID:" .. cooldownID .. ")")
+				local debuffInfo = isTargetDebuff and " [TARGET]" or ""
+				debug("CDM auto-added: " .. (spellName or catalogKey) .. " (spellID:" .. tostring(spellID) .. ", cdID:" .. cooldownID .. ")" .. debuffInfo)
 			end
 		else
 			-- Update frame reference and spellID if not set
 			local entry = GCDI.buffCatalog[catalogKey]
 			entry.cdmFrame = frame
 			entry.cooldownID = cooldownID  -- Update in case it changed
+			entry.unit = unit  -- Update unit in case it changed
+			entry.isTargetDebuff = isTargetDebuff
 			if spellID and not entry.spellID then
 				entry.spellID = spellID
 			end
@@ -2098,19 +2199,40 @@ local function scan_cdm_buff_frames()
 		end
 	end
 	
-	-- Method 1: Use itemFramePool if available (proper CDM way)
-	if viewer.itemFramePool then
-		for frame in viewer.itemFramePool:EnumerateActive() do
-			processFrame(frame)
+	-- Helper to scan a viewer
+	local function scanViewer(viewerName)
+		local viewer = _G[viewerName]
+		if not viewer then
+			if configs.debugMode then
+				debug("CDM " .. viewerName .. " not found")
+			end
+			return
+		end
+		
+		local viewerFoundCount = 0
+		
+		-- Method 1: Use itemFramePool if available (proper CDM way)
+		if viewer.itemFramePool then
+			for frame in viewer.itemFramePool:EnumerateActive() do
+				processFrame(frame, viewerName)
+				viewerFoundCount = viewerFoundCount + 1
+			end
+		end
+		
+		-- Method 2: Fallback to GetChildren if itemFramePool not available or empty
+		if viewerFoundCount == 0 then
+			local children = {viewer:GetChildren()}
+			for _, frame in ipairs(children) do
+				if frame.cooldownID then
+					processFrame(frame, viewerName)
+				end
+			end
 		end
 	end
 	
-	-- Method 2: Fallback to GetChildren if itemFramePool not available or empty
-	if foundCount == 0 then
-		local children = {viewer:GetChildren()}
-		for _, frame in ipairs(children) do
-			processFrame(frame)
-		end
+	-- Scan all aura viewers (buffs AND debuffs)
+	for _, viewerName in ipairs(CDM_AURA_VIEWERS) do
+		scanViewer(viewerName)
 	end
 	
 	-- Clean up stale frame references (but keep catalog entries)
@@ -2524,6 +2646,18 @@ local function on_event(self, event, arg1, arg2, ...)
 			end
 		end
 		
+	elseif event == "UNIT_SPELLCAST_CHANNEL_START" then
+		-- Channel started - show casting indicator (yellow)
+		if arg1 == "player" and main_frame.castingbar then
+			main_frame.castingbar:SetStatusBarColor(1, 0.8, 0)  -- Yellow
+		end
+		
+	elseif event == "UNIT_SPELLCAST_CHANNEL_STOP" then
+		-- Channel ended - hide casting indicator (black)
+		if arg1 == "player" and main_frame.castingbar then
+			main_frame.castingbar:SetStatusBarColor(0, 0, 0)  -- Black
+		end
+		
 	-- Other events: don't rescan automatically
 	-- Spells should only change on profile change, spec change, or manual /gcdopt scan
 	end
@@ -2618,7 +2752,7 @@ local function init()
 	main_frame.anchor = anchor
 	
 	local sepSize = 2
-	local containerWidth = (configs.size * 4) + (sepSize * 3) + (pad * 2)  -- 4 indicators: stance, gcd, combat, aggro
+	local containerWidth = (configs.size * 5) + (sepSize * 4) + (pad * 2)  -- 5 indicators: stance, gcd, combat, aggro, casting
 	local gcdCombatContainer = CreateFrame("Frame", nil, main_frame)
 	gcdCombatContainer:SetSize(containerWidth, configs.size + pad * 2)
 	main_frame.gcdcontainer = gcdCombatContainer
@@ -2689,6 +2823,21 @@ local function init()
 	aggrobar:SetStatusBarColor(0.3, 0.3, 0.3)  -- Grey = no aggro
 	aggrobar:SetPoint("LEFT", sep3, "RIGHT", 0, 0)
 	main_frame.aggrobar = aggrobar
+	
+	local sep4 = gcdCombatContainer:CreateTexture(nil, "ARTWORK")
+	sep4:SetSize(sepSize, configs.size)
+	sep4:SetPoint("LEFT", aggrobar, "RIGHT", 0, 0)
+	sep4:SetColorTexture(0, 0, 0, 1)
+	
+	local castingbar = CreateFrame("StatusBar", nil, gcdCombatContainer)
+	castingbar:SetStatusBarTexture("Interface\\Buttons\\WHITE8X8")
+	castingbar:GetStatusBarTexture():SetHorizTile(false)
+	castingbar:SetMinMaxValues(0, 100)
+	castingbar:SetValue(100)
+	castingbar:SetSize(configs.size, configs.size)
+	castingbar:SetStatusBarColor(0, 0, 0)  -- Black = not channeling
+	castingbar:SetPoint("LEFT", sep4, "RIGHT", 0, 0)
+	main_frame.castingbar = castingbar
 	
 	GCDIndicator_Positions = GCDIndicator_Positions or {}
 	local libGCDI = LibStub and LibStub:GetLibrary("LibGCDI", true)
@@ -2780,6 +2929,8 @@ local function init()
 	main_frame:RegisterUnitEvent("UNIT_MAXPOWER", "player")
 	main_frame:RegisterUnitEvent("UNIT_AURA", "player")
 	main_frame:RegisterUnitEvent("UNIT_SPELLCAST_SUCCEEDED", "player")  -- For manual buff tracking
+	main_frame:RegisterUnitEvent("UNIT_SPELLCAST_CHANNEL_START", "player")  -- Channeling indicator
+	main_frame:RegisterUnitEvent("UNIT_SPELLCAST_CHANNEL_STOP", "player")  -- Channeling indicator
 	main_frame:SetScript("OnEvent", on_event)
 
 	if UnitAffectingCombat("player") then
@@ -2819,6 +2970,13 @@ local function init()
 			
 			rebuild_spell_bars()
 			rebuild_buff_bars()
+			
+			-- Scan CDM frames AFTER profile load to get live frame references
+			-- This populates cdmBuffFrames and spellIDToCooldownID mappings
+			C_Timer.After(1.0, function()
+				scan_cdm_buff_frames()
+			end)
+			
 			print("|cff00ff00GCDIndicator:|r Profile '" .. settings.currentProfile .. "' loaded")
 		end)
 	end
@@ -2834,8 +2992,12 @@ local function init()
 		animate_item_bars()
 		update_charge_indicators_tick()
 		update_range_indicators()
-		-- Removed scan_cdm_buff_frames() - use /gcdopt scan to manually rescan
 		update_all_buff_bars()
+		
+		-- Every 2 seconds (133 ticks): Rescan CDM frames for fresh references
+		if tickCount % 133 == 0 then
+			scan_cdm_buff_frames()
+		end
 		update_spell_icons()
 		update_item_charge_indicators()
 		
@@ -3020,6 +3182,10 @@ function GCDI.toggle_preview_mode()
 		if main_frame.aggrobar then
 			main_frame.aggrobar:SetStatusBarColor(1, 0.5, 0)  -- Orange = has aggro
 			main_frame.aggrobar:SetValue(100)
+		end
+		if main_frame.castingbar then
+			main_frame.castingbar:SetStatusBarColor(1, 0.8, 0)  -- Yellow = channeling
+			main_frame.castingbar:SetValue(100)
 		end
 		if main_frame.stanceIndicator then
 			main_frame.stanceIndicator:SetColorTexture(0.5, 0.3, 0, 1)  -- Bear form color
