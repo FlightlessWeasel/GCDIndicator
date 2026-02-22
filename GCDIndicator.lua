@@ -70,12 +70,13 @@ local TRACKED_ITEM_TYPES = {
 }
 
 -- Buff tracking via Cooldown Manager integration
--- Blizzard's CDM frames have non-secret properties we can read:
--- frame.cooldownID, frame.auraInstanceID (isActive is SECRET - don't use!)
+-- Blizzard's CDM frames: cooldownID is readable; auraInstanceID and isActive may be SECRET.
+-- Only pass auraInstanceID to APIs (e.g. GetAuraDataByAuraInstanceID); do not read or compare it.
 GCDI.buffCatalog = {}
 local trackedBuffs = {}
 local buffBars = {}
 local cdmBuffFrames = {}  -- cooldownID -> CDM frame reference
+local lastBuffDebugState = {}  -- buffID -> { isActive, stacks } for debug-on-change only
 local cooldownToSpellID = {}  -- Maps CDM cooldownID -> actual spellID (like ArcUI)
 local spellIDToCooldownID = {}  -- REVERSE: Maps spellID -> cooldownID for frame lookup
 
@@ -154,6 +155,9 @@ local DEFAULT_SETTINGS = {
 		showGcd = true,
 		showCombat = true,
 		showAggro = true,
+		showMobCount = true,
+		mobCountRange = 8,     -- Default range in yards
+		mobCountThreshold = 3, -- Default threshold for white indicator
 	},
 }
 
@@ -1010,7 +1014,7 @@ local function update_buff_bar(buffID)
 	if not data then return end
 	
 	-- Use Cooldown Manager integration (like ArcUI)
-	-- CDM frames: cooldownID and auraInstanceID are readable, isActive is SECRET
+	-- CDM frames: cooldownID readable; auraInstanceID may be secret - pass only to APIs
 	local isActive = false
 	local stacks = 0
 	
@@ -1062,30 +1066,30 @@ local function update_buff_bar(buffID)
 	local detectedUnit = nil
 	
 	if cdmFrame then
-		-- Check auraInstanceID - non-zero means buff/debuff is active
-		local auraID = cdmFrame.auraInstanceID
-		if auraID and type(auraID) == "number" and auraID > 0 then
-			isActive = true
-			
-			-- Get stacks - try both player and target to auto-detect unit
-			-- Method 1: Use CDM's auraDataUnit property or category hint
-			local unit = cdmFrame.auraDataUnit
-			if not unit or unit == "" then
-				-- Category 3 = target debuffs in CDM
-				unit = (cdmFrame.category == 3) and "target" or "player"
+		-- auraInstanceID may be secret; API errors if passed nil. Only call when present.
+		local auraInstanceID = cdmFrame.auraInstanceID
+		if auraInstanceID ~= nil then
+			-- CDM can show auras on player (buffs) or target (debuffs). Use frame unit if available, else try player then target (like ArcUI).
+			local unit = (cdmFrame.GetAuraDataUnit and cdmFrame:GetAuraDataUnit()) or nil
+			local auraData
+			if unit then
+				auraData = C_UnitAuras.GetAuraDataByAuraInstanceID(unit, auraInstanceID)
 			end
-			
-			local auraData = C_UnitAuras.GetAuraDataByAuraInstanceID(unit, auraID)
-			
-			-- Method 2: Auto-detect if primary unit failed (like ArcUI)
 			if not auraData then
-				auraData, unit = GetAuraDataAutoUnit(auraID)
+				auraData = C_UnitAuras.GetAuraDataByAuraInstanceID("player", auraInstanceID)
+				if auraData then unit = "player" end
 			end
-			
-			detectedUnit = unit
-			
-			if auraData and data.stackDetectors then
-				stacks = LibDetector:CheckValue(data.stackDetectors, auraData.applications)
+			if not auraData then
+				auraData = C_UnitAuras.GetAuraDataByAuraInstanceID("target", auraInstanceID)
+				if auraData then unit = "target" end
+			end
+			if auraData then
+				isActive = true
+				if data.stackDetectors then
+					stacks = LibDetector:CheckValue(data.stackDetectors, auraData.applications)
+				end
+				-- Use resolved unit for duration bar below (so target debuffs get correct duration)
+				data._lastAuraUnit = unit
 			end
 		end
 	end
@@ -1102,17 +1106,17 @@ local function update_buff_bar(buffID)
 		end
 	end
 	
-	-- Debug output
+	-- Debug output only when state changes (do not read auraInstanceID - it may be secret)
 	if configs.debugMode then
-		local buffName = data.name or "Unknown"
-		local auraIDStr = cdmFrame and tostring(cdmFrame.auraInstanceID) or "nil"
-		local unitStr = detectedUnit or "?"
-		local categoryStr = cdmFrame and tostring(cdmFrame.category) or "?"
-		local auraDataUnitStr = cdmFrame and tostring(cdmFrame.auraDataUnit) or "nil"
-		local stackInfo = stacks > 0 and (" stacks:" .. stacks) or ""
-		debug("Buff " .. buffName .. " (ID:" .. buffID .. ") " .. (isActive and "ACTIVE" or "INACTIVE") .. 
-			" auraID:" .. auraIDStr .. " unit:" .. unitStr .. " cat:" .. categoryStr .. 
-			" auraDataUnit:" .. auraDataUnitStr .. stackInfo)
+		local last = lastBuffDebugState[buffID]
+		local changed = not last or last.isActive ~= isActive or last.stacks ~= stacks
+		if changed then
+			lastBuffDebugState[buffID] = { isActive = isActive, stacks = stacks }
+			local buffName = data.name or "Unknown"
+			local frameInfo = cdmFrame and ("frame:yes hasAura:" .. (isActive and "yes" or "no")) or "no frame"
+			local stackInfo = stacks > 0 and (" stacks:" .. stacks) or ""
+			debug("Buff " .. buffName .. " (ID:" .. buffID .. ") " .. (isActive and "ACTIVE" or "INACTIVE") .. " " .. frameInfo .. stackInfo)
+		end
 	end
 	
 	if isActive then
@@ -1144,33 +1148,13 @@ local function update_buff_bar(buffID)
 			end
 		end
 		
-		-- Update duration bar using CDM frame methods
-		if data.durationBar and cdmFrame then
-			local auraID = cdmFrame.auraInstanceID
-			
-			if auraID and type(auraID) == "number" and auraID > 0 then
-				-- Use detected unit from above, or auto-detect
-				local unit = detectedUnit
-				if not unit then
-					-- Fallback: try CDM properties
-					unit = cdmFrame.auraDataUnit
-					if not unit or unit == "" then
-						unit = (cdmFrame.category == 3) and "target" or "player"
-					end
-				end
-				
-				local durObj = C_UnitAuras.GetAuraDuration(unit, auraID)
-				-- Auto-detect fallback if primary unit failed
-				if not durObj and unit == "player" then
-					durObj = C_UnitAuras.GetAuraDuration("target", auraID)
-				elseif not durObj and unit == "target" then
-					durObj = C_UnitAuras.GetAuraDuration("player", auraID)
-				end
-				
-				if durObj then
-					data.durationBar.bar:SetMinMaxValues(0, 1)
-					data.durationBar.bar:SetTimerDuration(durObj, Enum.StatusBarInterpolation.ExponentialEaseOut, Enum.StatusBarTimerDirection.RemainingTime)
-				end
+		-- Update duration bar using CDM frame (pass auraInstanceID only when non-nil)
+		if data.durationBar and cdmFrame and cdmFrame.auraInstanceID ~= nil then
+			local unit = (cdmFrame.GetAuraDataUnit and cdmFrame:GetAuraDataUnit()) or data._lastAuraUnit or "player"
+			local durObj = C_UnitAuras.GetAuraDuration(unit, cdmFrame.auraInstanceID)
+			if durObj then
+				data.durationBar.bar:SetMinMaxValues(0, 1)
+				data.durationBar.bar:SetTimerDuration(durObj, Enum.StatusBarInterpolation.ExponentialEaseOut, Enum.StatusBarTimerDirection.RemainingTime)
 			end
 		end
 	else
@@ -1200,19 +1184,19 @@ local function update_all_buff_bars()
 	end
 end
 
-local function create_buff_bar(spellID, spellName, texture)
+local function create_buff_bar(buffKey, spellName, texture, tooltipSpellID)
 	local barIndex = #buffBars + 1
 	local barSize = configs.barHeight
 	local pad = configs.bgPadding
 	
 	-- Check if we should show stacks for this buff
-	local showStacks = GCDI.should_show_buff_stacks(spellID)
-	local maxStacks = GCDI.get_buff_max_stacks_display(spellID)  -- Max stacks setting (e.g., 10)
+	local showStacks = GCDI.should_show_buff_stacks(buffKey)
+	local maxStacks = GCDI.get_buff_max_stacks_display(buffKey)  -- Max stacks setting (e.g., 10)
 	-- Each indicator represents 2 stacks, so calculate indicator count
 	local indicatorCount = math.ceil(maxStacks / 2)  -- e.g., 10 stacks = 5 indicators
 	
 	-- Check if we should show duration bar for this buff
-	local showDurationBar = GCDI.should_show_duration_bar(spellID)
+	local showDurationBar = GCDI.should_show_duration_bar(buffKey)
 	
 	-- Layout: [Icon][Active Indicator][Stacks?][Duration Bar?]
 	-- Active indicator is a single square that shows green when buff is active
@@ -1280,7 +1264,7 @@ local function create_buff_bar(spellID, spellName, texture)
 	-- Duration bar (10k wide, clipped to 8x8, offset based on threshold)
 	local durationBar = nil
 	if showDurationBar then
-		local threshold = GCDI.get_duration_threshold(spellID)
+		local threshold = GCDI.get_duration_threshold(buffKey)
 		local barWidth = 10000
 		local offset = -(threshold / 100) * barWidth  -- e.g., 30% = -3000px
 		
@@ -1310,7 +1294,7 @@ local function create_buff_bar(spellID, spellName, texture)
 		}
 	end
 	
-	trackedBuffs[spellID] = {
+	trackedBuffs[buffKey] = {
 		container = container,
 		activeIndicator = activeIndicator,
 		stackIndicators = stackIndicators,
@@ -1319,8 +1303,21 @@ local function create_buff_bar(spellID, spellName, texture)
 		active = false,
 		name = spellName,
 		icon = texture,
+		tooltipSpellID = tooltipSpellID,  -- for tooltip (overrideTooltipSpellID; matches CDM)
 	}
-	buffBars[barIndex] = spellID
+	buffBars[barIndex] = buffKey
+	-- Tooltip: use tooltipSpellID so it matches CDM (overrideTooltipSpellID)
+	if tooltipSpellID and tooltipSpellID > 0 then
+		container:SetScript("OnEnter", function(self)
+			local data = trackedBuffs[buffKey]
+			if data and data.tooltipSpellID then
+				GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+				GameTooltip:SetSpellByID(data.tooltipSpellID)
+				GameTooltip:Show()
+			end
+		end)
+		container:SetScript("OnLeave", function() GameTooltip:Hide() end)
+	end
 	container:Show()
 end
 
@@ -1714,26 +1711,97 @@ local function update_aggro_indicator()
 	if previewMode then return end  -- Skip updates in preview mode
 	if not main_frame.aggrobar then return end
 	
-	-- Check if target is a valid hostile in combat
-	local validTarget = UnitExists("target") and 
-	                    UnitCanAttack("player", "target") and 
-	                    UnitAffectingCombat("target")
-	
-	if not validTarget then
-		-- No target, friendly target, or target not in combat = white
-		main_frame.aggrobar:SetStatusBarColor(1, 1, 1)
+	-- White only when no target
+	if not UnitExists("target") then
+		main_frame.aggrobar:SetStatusBarColor(1, 1, 1)  -- White = no target
 		return
 	end
 	
-	-- Check threat situation on current target
+	-- Have target: grey (no aggro) or orange (has aggro). Only show grey when target is in combat and we don't have aggro.
+	local hasAttackableTarget = UnitCanAttack("player", "target")
+	local targetInCombat = UnitAffectingCombat("target")
 	local threatStatus = UnitThreatSituation("player", "target")
-	-- 3 = tanking and highest threat (has aggro)
-	local hasAggro = threatStatus and threatStatus >= 3
+	local hasAggro = threatStatus and threatStatus >= 2
+	if not hasAggro and UnitExists("targettarget") and UnitIsUnit("targettarget", "player") then
+		hasAggro = true
+	end
 	
 	if hasAggro then
 		main_frame.aggrobar:SetStatusBarColor(1, 0.5, 0)  -- Orange = has aggro
+	elseif hasAttackableTarget and targetInCombat then
+		main_frame.aggrobar:SetStatusBarColor(0.3, 0.3, 0.3)  -- Grey = in combat, no aggro
 	else
-		main_frame.aggrobar:SetStatusBarColor(0.3, 0.3, 0.3)  -- Grey = no aggro
+		main_frame.aggrobar:SetStatusBarColor(0.3, 0.3, 0.3)  -- Grey = target not attackable or not in combat
+	end
+end
+
+-- Range item IDs for mob counting (same as LibGCDI-Range)
+local MOB_RANGE_ITEMS = {
+	[5] = 37727,    -- 5 yards (melee)
+	[8] = 63427,    -- 8 yards
+	[10] = 34368,   -- 10 yards
+	[15] = 32321,   -- 15 yards
+	[20] = 21519,   -- 20 yards
+	[28] = 116139,  -- 25 yards (close to 28)
+	[40] = 41509,   -- 40 yards
+}
+
+-- Get the best range item for the given range
+local function get_range_item_for_distance(range)
+	if range <= 5 then return MOB_RANGE_ITEMS[5]
+	elseif range <= 8 then return MOB_RANGE_ITEMS[8]
+	elseif range <= 10 then return MOB_RANGE_ITEMS[10]
+	elseif range <= 15 then return MOB_RANGE_ITEMS[15]
+	elseif range <= 20 then return MOB_RANGE_ITEMS[20]
+	elseif range <= 28 then return MOB_RANGE_ITEMS[28]
+	else return MOB_RANGE_ITEMS[40]
+	end
+end
+
+-- Count nearby hostile mobs within range using nameplates
+local function count_nearby_mobs(range)
+	local count = 0
+	local nameplates = C_NamePlate.GetNamePlates()
+	local rangeItemID = get_range_item_for_distance(range)
+	
+	if not nameplates then return 0 end
+	
+	for _, nameplate in pairs(nameplates) do
+		-- Get unit token - can be either namePlateUnitToken or unitToken
+		local unit = nameplate.namePlateUnitToken or nameplate.unitToken
+		if unit and UnitExists(unit) then
+			-- Check if hostile and alive
+			local isHostile = UnitCanAttack("player", unit)
+			local isAlive = not UnitIsDead(unit)
+			
+			if isHostile and isAlive then
+				-- Use item-based range checking (works on hostile units)
+				local inRange = C_Item.IsItemInRange(rangeItemID, unit)
+				
+				if inRange == true then
+					count = count + 1
+				end
+			end
+		end
+	end
+	
+	return count
+end
+
+local function update_mob_count_indicator()
+	if previewMode then return end  -- Skip updates in preview mode
+	if not main_frame.mobcountbar then return end
+	
+	local gcdSettings = settings and settings.gcdSettings or {}
+	local range = gcdSettings.mobCountRange or 8
+	local threshold = gcdSettings.mobCountThreshold or 3
+	
+	local mobCount = count_nearby_mobs(range)
+	
+	if mobCount >= threshold then
+		main_frame.mobcountbar:SetStatusBarColor(1, 1, 1)  -- White = at or above threshold
+	else
+		main_frame.mobcountbar:SetStatusBarColor(0, 0, 0)  -- Black = below threshold
 	end
 end
 
@@ -1781,6 +1849,9 @@ reposition_all = function()
 		end
 		if main_frame.aggrobar then
 			main_frame.aggrobar:SetShown(gcdSettings.showAggro ~= false)
+		end
+		if main_frame.mobcountbar then
+			main_frame.mobcountbar:SetShown(gcdSettings.showMobCount ~= false)
 		end
 		
 		yOffset = yOffset - gcdContainerHeight - spacing
@@ -2035,97 +2106,117 @@ local function scan_action_bars_for_items()
 end
 
 -- ═══════════════════════════════════════════════════════════════════════════
--- CDM SPELL INFO HELPER (like ArcUI)
--- Gets actual spellID from CDM frame or API
--- Priority: frame.cooldownInfo > C_CooldownViewer API
+-- CDM SPELL INFO HELPER (match ArcUI: icon/tooltip from overrideTooltipSpellID)
+-- CDM uses internal cooldownIDs; GetCooldownViewerCooldownInfo returns:
+--   .spellID (base), .overrideSpellID (override), .overrideTooltipSpellID (display/tooltip).
+-- ArcUI: "For auras, CDM often uses overrideTooltipSpellID for display" - icon and tooltip.
+-- Priority: frame.cooldownInfo > C_CooldownViewer API; icon: frame texture > overrideTooltipSpellID > spellID.
 -- ═══════════════════════════════════════════════════════════════════════════
 local function GetCDMSpellInfo(frame, cooldownID)
 	local spellID = nil
+	local overrideSpellID = nil
+	local overrideTooltipSpellID = nil
 	local spellName = nil
 	local texture = nil
 	local hasCharges = false
-	
-	-- Method 1: Read from frame.cooldownInfo (like ArcUI does)
+
 	local cooldownInfo = frame and frame.cooldownInfo
+	if not cooldownInfo and cooldownID and C_CooldownViewer and C_CooldownViewer.GetCooldownViewerCooldownInfo then
+		cooldownInfo = C_CooldownViewer.GetCooldownViewerCooldownInfo(cooldownID)
+	end
 	if cooldownInfo then
-		spellID = cooldownInfo.overrideSpellID or cooldownInfo.spellID
+		spellID = cooldownInfo.spellID
+		overrideSpellID = cooldownInfo.overrideSpellID
+		overrideTooltipSpellID = cooldownInfo.overrideTooltipSpellID
 		hasCharges = cooldownInfo.hasCharges or false
 	end
-	
-	-- Method 2: Fallback to CDM API
-	if not spellID and cooldownID and C_CooldownViewer and C_CooldownViewer.GetCooldownViewerCooldownInfo then
-		local cdInfo = C_CooldownViewer.GetCooldownViewerCooldownInfo(cooldownID)
-		if cdInfo then
-			spellID = cdInfo.overrideSpellID or cdInfo.spellID
-			hasCharges = cdInfo.hasCharges or false
-		end
-	end
-	
-	-- Get spell name and texture from spell API
-	if spellID then
-		if C_Spell and C_Spell.GetSpellInfo then
-			local info = C_Spell.GetSpellInfo(spellID)
-			if info then
-				spellName = info.name
+	local displaySpellID = overrideSpellID or spellID  -- for name/APIs
+
+	-- 1) Icon: try frame's Icon first (what CDM actually shows)
+	if frame and frame.Icon then
+		local iconTex = frame.Icon
+		if iconTex.GetTexture then
+			local tex = iconTex:GetTexture()
+			if tex and (not issecretvalue or not issecretvalue(tex)) and tex ~= 0 and tex ~= "" then
+				texture = tex
 			end
 		end
-		if C_Spell and C_Spell.GetSpellTexture then
-			texture = C_Spell.GetSpellTexture(spellID)
+		if not texture and iconTex.GetTextureFileID then
+			local texID = iconTex:GetTextureFileID()
+			if texID and (not issecretvalue or not issecretvalue(texID)) and texID > 0 then
+				texture = texID
+			end
+		end
+		-- Bar viewer: frame.Icon.Icon
+		if not texture and iconTex.Icon then
+			local inner = iconTex.Icon
+			if inner.GetTexture then
+				local tex = inner:GetTexture()
+				if tex and (not issecretvalue or not issecretvalue(tex)) and tex ~= 0 and tex ~= "" then
+					texture = tex
+				end
+			end
+			if not texture and inner.GetTextureFileID then
+				local texID = inner:GetTextureFileID()
+				if texID and (not issecretvalue or not issecretvalue(texID)) and texID > 0 then
+					texture = texID
+				end
+			end
 		end
 	end
-	
-	-- Fallback: try frame icon
-	if not texture and frame and frame.Icon then
-		local frameTexture = frame.Icon:GetTexture()
-		if frameTexture and not issecretvalue(frameTexture) then
-			texture = frameTexture
-		end
+	-- 2) Auras: overrideTooltipSpellID is what CDM uses for display (ArcUI)
+	if not texture and overrideTooltipSpellID and overrideTooltipSpellID > 0 and C_Spell and C_Spell.GetSpellTexture then
+		texture = C_Spell.GetSpellTexture(overrideTooltipSpellID)
 	end
-	
-	return spellID, spellName, texture, hasCharges
+	if not texture and displaySpellID and C_Spell and C_Spell.GetSpellTexture then
+		texture = C_Spell.GetSpellTexture(displaySpellID)
+	end
+	if not texture and spellID and spellID > 0 and C_Spell and C_Spell.GetSpellTexture then
+		texture = C_Spell.GetSpellTexture(spellID)
+	end
+	if not texture then texture = 134400 end
+
+	-- Name from same spell as tooltip (overrideTooltipSpellID first) so name matches what tooltip shows
+	if overrideTooltipSpellID and overrideTooltipSpellID > 0 and C_Spell and C_Spell.GetSpellInfo then
+		local info = C_Spell.GetSpellInfo(overrideTooltipSpellID)
+		if info and info.name then spellName = info.name end
+	end
+	if not spellName and displaySpellID and C_Spell and C_Spell.GetSpellInfo then
+		local info = C_Spell.GetSpellInfo(displaySpellID)
+		if info and info.name then spellName = info.name end
+	end
+	if not spellName and spellID and spellID > 0 and C_Spell and C_Spell.GetSpellInfo then
+		local info = C_Spell.GetSpellInfo(spellID)
+		if info and info.name then spellName = info.name end
+	end
+
+	return displaySpellID or spellID, spellName, texture, hasCharges, overrideTooltipSpellID or displaySpellID or spellID
 end
 
--- CDM viewer names to scan (like ArcUI)
--- BuffIconCooldownViewer: tracked buffs AND target debuffs (categories 2+3)
--- BuffBarCooldownViewer: buff duration bars
--- EssentialCooldownViewer: essential cooldowns (category 0) 
--- UtilityCooldownViewer: utility cooldowns (category 1)
-local CDM_AURA_VIEWERS = {
-	"BuffIconCooldownViewer",
-	"BuffBarCooldownViewer",
-}
-
--- Scan Blizzard's Cooldown Manager for buff/debuff frames
--- Target debuffs (like Rip) are in BuffIconCooldownViewer with auraDataUnit = "target" or category = 3
+-- Scan Blizzard's Cooldown Manager for buff frames
+-- Buffs are discovered in two ways:
+-- 1) From CDM data provider: full list of buffs you have selected in CDM (TrackedBuff category).
+--    This gives all 5 (or N) buffs even when only some have visible frames.
+-- 2) From BuffIconCooldownViewer's itemFramePool: only frames that are currently active.
+--    We use these for frame references (auraInstanceID, etc.); pool may have fewer than selected.
 local function scan_cdm_buff_frames()
 	-- Don't wipe - update in place to preserve references
-	-- Mark all existing as not found, then update those we find
 	local foundThisScan = {}
-	
 	local foundCount = 0
 	local newCount = 0
-	
-	if configs.debugMode then
-		debug("CDM scan starting...")
-	end
-	
-	-- Helper to process a CDM frame
-	local function processFrame(frame, viewerName)
-		local cooldownID = frame.cooldownID
+
+	-- Helper: add/update catalog from cooldownID; optional frame for refs and frame-based spell info
+	local function processCooldownID(cooldownID, frame)
 		if not cooldownID then return end
-		
-		foundCount = foundCount + 1
-		cdmBuffFrames[cooldownID] = frame
-		foundThisScan[cooldownID] = true
-		
-		-- Get spell info from CDM (like ArcUI)
-		local spellID, spellName, texture, hasCharges = GetCDMSpellInfo(frame, cooldownID)
-		
-		-- Use spellID as the catalog key if available, otherwise cooldownID
-		-- This ensures we use stable spell IDs rather than CDM internal IDs
-		local catalogKey = spellID or cooldownID
-		
-		-- Store mapping from cooldownID -> spellID for lookups (both directions)
+		if frame then
+			foundCount = foundCount + 1
+			cdmBuffFrames[cooldownID] = frame
+			foundThisScan[cooldownID] = true
+		end
+		-- Get spell info (icon/tooltip match ArcUI: frame texture > overrideTooltipSpellID > spellID)
+		local spellID, spellName, texture, hasCharges, tooltipSpellID = GetCDMSpellInfo(frame, cooldownID)
+		-- Key by cooldownID so we get one bar per CDM slot (same spell can have multiple cdIDs, e.g. different sources)
+		local catalogKey = cooldownID
 		if spellID and spellID ~= cooldownID then
 			cooldownToSpellID[cooldownID] = spellID
 			spellIDToCooldownID[spellID] = cooldownID  -- REVERSE mapping for frame lookup
@@ -2144,14 +2235,13 @@ local function scan_cdm_buff_frames()
 		if unit == "player" and frame.category == 3 then
 			unit = "target"
 		end
-		local isTargetDebuff = (unit == "target")
-		
 		if not GCDI.buffCatalog[catalogKey] then
 			GCDI.buffCatalog[catalogKey] = {
 				name = spellName or ("Buff " .. catalogKey),
-				texture = texture or 134400,  -- Default question mark
+				texture = texture or 134400,
 				cooldownID = cooldownID,
-				spellID = spellID,  -- Store actual spellID for spell lookups
+				spellID = spellID,
+				tooltipSpellID = tooltipSpellID,  -- for tooltip (overrideTooltipSpellID; matches CDM)
 				cdmFrame = frame,
 				hasStacks = false,
 				hasCharges = hasCharges,
@@ -2159,113 +2249,119 @@ local function scan_cdm_buff_frames()
 				isTargetDebuff = isTargetDebuff,
 				viewerName = viewerName,
 			}
-			
-			-- Save to settings using spellID if available (more stable)
 			if settings then
-				if not settings.buffSettings then
-					settings.buffSettings = {}
-				end
+				if not settings.buffSettings then settings.buffSettings = {} end
 				if not settings.buffSettings[catalogKey] then
-					settings.buffSettings[catalogKey] = {
-						enabled = true,
-						showStacks = true,
-						maxStacksDisplay = 5,
-					}
+					settings.buffSettings[catalogKey] = { enabled = true, showStacks = true, maxStacksDisplay = 5 }
 					newCount = newCount + 1
 				end
+				-- Append to buffOrder so the buff shows up in the ordered list
+				if not settings.buffOrder then settings.buffOrder = {} end
+				local inOrder = false
+				for _, id in ipairs(settings.buffOrder) do
+					if id == catalogKey then inOrder = true break end
+				end
+				if not inOrder then
+					table.insert(settings.buffOrder, catalogKey)
+				end
 			end
-			
 			if configs.debugMode then
 				local debuffInfo = isTargetDebuff and " [TARGET]" or ""
 				debug("CDM auto-added: " .. (spellName or catalogKey) .. " (spellID:" .. tostring(spellID) .. ", cdID:" .. cooldownID .. ")" .. debuffInfo)
 			end
 		else
-			-- Update frame reference and spellID if not set
 			local entry = GCDI.buffCatalog[catalogKey]
-			entry.cdmFrame = frame
-			entry.cooldownID = cooldownID  -- Update in case it changed
-			entry.unit = unit  -- Update unit in case it changed
-			entry.isTargetDebuff = isTargetDebuff
-			if spellID and not entry.spellID then
-				entry.spellID = spellID
+			entry.cdmFrame = frame or entry.cdmFrame
+			entry.cooldownID = cooldownID
+			if spellID and not entry.spellID then entry.spellID = spellID end
+			if tooltipSpellID then entry.tooltipSpellID = tooltipSpellID end
+			if spellName and entry.name:match("^Buff %d+$") then entry.name = spellName end
+			if texture and entry.texture == 134400 then entry.texture = texture end
+		end
+	end
+
+	-- Step 1: Get full list of buffs in CDM TrackedBuff (same sources as ArcUI: API + viewer).
+	-- ArcUI Placeholders use C_CooldownViewer.GetCooldownViewerCategorySet(categoryNum, true) - no panel, taint-free.
+	-- Categories: 0=Essential, 1=Utility, 2=TrackedBuff, 3=TrackedBar. Prefer viewer/data provider (user's exact list) then API.
+	local TRACKED_BUFF_CATEGORY = 2
+	local viewer = _G["BuffIconCooldownViewer"]
+	local orderedIDs = nil
+	if viewer and viewer.GetCooldownIDs then
+		local ok, ids = pcall(function() return viewer:GetCooldownIDs() end)
+		if ok and ids and #ids > 0 then orderedIDs = ids end
+	end
+	if (not orderedIDs or #orderedIDs == 0) and Enum and Enum.CooldownViewerCategory and Enum.CooldownViewerCategory.TrackedBuff then
+		local settingsFrame = _G["CooldownViewerSettings"]
+		if settingsFrame and settingsFrame.GetDataProvider then
+			local provider = settingsFrame:GetDataProvider()
+			if provider and provider.GetOrderedCooldownIDsForCategory then
+				local ok, ids = pcall(function() return provider:GetOrderedCooldownIDsForCategory(Enum.CooldownViewerCategory.TrackedBuff) end)
+				if ok and ids and #ids > 0 then orderedIDs = ids end
 			end
-			-- Update name/texture if we got better info
-			if spellName and entry.name:match("^Buff %d+$") then
-				entry.name = spellName
-			end
-			if texture and entry.texture == 134400 then
-				entry.texture = texture
+		end
+		if (not orderedIDs or #orderedIDs == 0) and C_CooldownViewer and C_CooldownViewer.GetCooldownViewerCategorySet then
+			local ok, ids = pcall(function() return C_CooldownViewer.GetCooldownViewerCategorySet(TRACKED_BUFF_CATEGORY, true) end)
+			if ok and ids and #ids > 0 then orderedIDs = ids end
+		end
+	end
+	if orderedIDs and #orderedIDs > 0 then
+		for _, cooldownID in ipairs(orderedIDs) do
+			if type(cooldownID) == "number" then
+				processCooldownID(cooldownID, nil)
 			end
 		end
 	end
-	
-	-- Helper to scan a viewer
-	local function scanViewer(viewerName)
-		local viewer = _G[viewerName]
-		if not viewer then
-			if configs.debugMode then
-				debug("CDM " .. viewerName .. " not found")
-			end
-			return
-		end
-		
-		local viewerFoundCount = 0
-		
-		-- Method 1: Use itemFramePool if available (proper CDM way)
+
+	-- Step 2: Scan viewer frames for frame references (and any we might have missed)
+	if viewer then
 		if viewer.itemFramePool then
 			for frame in viewer.itemFramePool:EnumerateActive() do
-				processFrame(frame, viewerName)
-				viewerFoundCount = viewerFoundCount + 1
+				processCooldownID(frame.cooldownID, frame)
 			end
 		end
-		
-		-- Method 2: Fallback to GetChildren if itemFramePool not available or empty
-		if viewerFoundCount == 0 then
+		if foundCount == 0 then
 			local children = {viewer:GetChildren()}
 			for _, frame in ipairs(children) do
-				if frame.cooldownID then
-					processFrame(frame, viewerName)
+				if frame and frame.cooldownID then
+					processCooldownID(frame.cooldownID, frame)
 				end
 			end
 		end
 	end
-	
-	-- Scan all aura viewers (buffs AND debuffs)
-	for _, viewerName in ipairs(CDM_AURA_VIEWERS) do
-		scanViewer(viewerName)
-	end
-	
-	-- Clean up stale frame references (but keep catalog entries)
+
+	-- Clean up stale frame references (keep catalog entries)
 	for buffID, frame in pairs(cdmBuffFrames) do
 		if not foundThisScan[buffID] then
-			cdmBuffFrames[buffID] = nil  -- Remove stale frame reference
-			-- Keep catalog entry so bar stays visible
+			cdmBuffFrames[buffID] = nil
 		end
 	end
-	
+
 	if configs.debugMode and (foundCount > 0 or newCount > 0) then
 		debug("CDM scan: " .. foundCount .. " frames, " .. newCount .. " new")
 	end
-	
+
 	return newCount
 end
 
 local function scan_buffs()
-	-- Rebuild buffCatalog from saved settings
+	-- Rebuild buffCatalog from saved settings (only for keys that are real spell IDs, not CDM cooldownIDs)
 	if settings and settings.buffSettings then
 		for key, _ in pairs(settings.buffSettings) do
-			-- Handle both number and string keys (SavedVariables can store either)
-			local spellID = tonumber(key)
-			if spellID and spellID > 0 then
-				-- Add to catalog if not already there
-				if not GCDI.buffCatalog[spellID] then
-					local spellName = C_Spell.GetSpellName(spellID)
-					local texture = C_Spell.GetSpellTexture(spellID)
+			local numKey = tonumber(key)
+			if numKey and numKey > 0 then
+				-- Skip if this key is a CDM cooldownID (we'll get correct name/icon from scan_cdm_buff_frames)
+				local isCDM = C_CooldownViewer and C_CooldownViewer.GetCooldownViewerCooldownInfo and C_CooldownViewer.GetCooldownViewerCooldownInfo(numKey)
+				if isCDM then
+					-- Leave to scan_cdm_buff_frames to add/refresh with correct CDM data
+				elseif not GCDI.buffCatalog[numKey] then
+					local spellName = C_Spell.GetSpellName(numKey)
+					local texture = C_Spell.GetSpellTexture(numKey)
 					if spellName and texture then
-						GCDI.buffCatalog[spellID] = {
+						GCDI.buffCatalog[numKey] = {
 							name = spellName,
 							texture = texture,
-							spellID = spellID,
+							spellID = numKey,
+							tooltipSpellID = numKey,
 							hasStacks = false,
 						}
 					end
@@ -2273,8 +2369,8 @@ local function scan_buffs()
 			end
 		end
 	end
-	
-	-- Also scan CDM viewer for buff frames
+
+	-- Scan CDM and refresh all buff entries (name/texture/tooltipSpellID from CDM; overwrites stale saved data)
 	scan_cdm_buff_frames()
 end
 
@@ -2308,10 +2404,11 @@ rebuild_buff_bars = function()
 	
 	local orderedBuffs = GCDI.get_ordered_buffs()
 	
-	for _, spellID in ipairs(orderedBuffs) do
-		local catalogEntry = GCDI.buffCatalog[spellID]
+	for _, buffKey in ipairs(orderedBuffs) do
+		local catalogEntry = GCDI.buffCatalog[buffKey]
 		if catalogEntry then
-			create_buff_bar(spellID, catalogEntry.name, catalogEntry.texture)
+			local tooltipSpellID = catalogEntry.tooltipSpellID or catalogEntry.spellID
+			create_buff_bar(buffKey, catalogEntry.name, catalogEntry.texture, tooltipSpellID)
 		end
 	end
 	
@@ -2483,11 +2580,10 @@ end
 
 GCDI.rebuild_spell_bars = rebuild_spell_bars
 
+-- Rebuilds all bars from current catalogs; does not scan. Use options buttons to rescan.
 local function scan_action_bars()
-	scan_spellbook()
-	scan_items()
-	scan_buffs()
 	rebuild_spell_bars()
+	rebuild_item_bars()
 	rebuild_buff_bars()
 end
 
@@ -2617,6 +2713,11 @@ local function on_event(self, event, arg1, arg2, ...)
 	elseif event == "UNIT_THREAT_SITUATION_UPDATE" then
 		update_aggro_indicator()
 		
+	elseif event == "UNIT_TARGET" then
+		if arg1 == "target" then
+			update_aggro_indicator()  -- Target's target changed (e.g. mob switched to you)
+		end
+		
 	elseif event == "UNIT_AURA" then
 		if arg1 == "player" then
 			-- Removed auto-scan: use /gcdopt scan to manually rescan
@@ -2732,7 +2833,20 @@ local function init()
 			showGcd = true,
 			showCombat = true,
 			showAggro = true,
+			showMobCount = true,
+			mobCountRange = 8,
+			mobCountThreshold = 3,
 		}
+	end
+	-- Ensure new mob count settings exist for existing profiles
+	if settings.gcdSettings.showMobCount == nil then
+		settings.gcdSettings.showMobCount = true
+	end
+	if settings.gcdSettings.mobCountRange == nil then
+		settings.gcdSettings.mobCountRange = 8
+	end
+	if settings.gcdSettings.mobCountThreshold == nil then
+		settings.gcdSettings.mobCountThreshold = 3
 	end
 	
 	-- Initialize catalog managers now that settings are available
@@ -2752,7 +2866,7 @@ local function init()
 	main_frame.anchor = anchor
 	
 	local sepSize = 2
-	local containerWidth = (configs.size * 5) + (sepSize * 4) + (pad * 2)  -- 5 indicators: stance, gcd, combat, aggro, casting
+	local containerWidth = (configs.size * 6) + (sepSize * 5) + (pad * 2)  -- 6 indicators: stance, gcd, combat, aggro, casting, mobcount
 	local gcdCombatContainer = CreateFrame("Frame", nil, main_frame)
 	gcdCombatContainer:SetSize(containerWidth, configs.size + pad * 2)
 	main_frame.gcdcontainer = gcdCombatContainer
@@ -2838,6 +2952,21 @@ local function init()
 	castingbar:SetStatusBarColor(0, 0, 0)  -- Black = not channeling
 	castingbar:SetPoint("LEFT", sep4, "RIGHT", 0, 0)
 	main_frame.castingbar = castingbar
+	
+	local sep5 = gcdCombatContainer:CreateTexture(nil, "ARTWORK")
+	sep5:SetSize(sepSize, configs.size)
+	sep5:SetPoint("LEFT", castingbar, "RIGHT", 0, 0)
+	sep5:SetColorTexture(0, 0, 0, 1)
+	
+	local mobcountbar = CreateFrame("StatusBar", nil, gcdCombatContainer)
+	mobcountbar:SetStatusBarTexture("Interface\\Buttons\\WHITE8X8")
+	mobcountbar:GetStatusBarTexture():SetHorizTile(false)
+	mobcountbar:SetMinMaxValues(0, 100)
+	mobcountbar:SetValue(100)
+	mobcountbar:SetSize(configs.size, configs.size)
+	mobcountbar:SetStatusBarColor(0, 0, 0)  -- Black = below threshold
+	mobcountbar:SetPoint("LEFT", sep5, "RIGHT", 0, 0)
+	main_frame.mobcountbar = mobcountbar
 	
 	GCDIndicator_Positions = GCDIndicator_Positions or {}
 	local libGCDI = LibStub and LibStub:GetLibrary("LibGCDI", true)
@@ -2929,8 +3058,7 @@ local function init()
 	main_frame:RegisterUnitEvent("UNIT_MAXPOWER", "player")
 	main_frame:RegisterUnitEvent("UNIT_AURA", "player")
 	main_frame:RegisterUnitEvent("UNIT_SPELLCAST_SUCCEEDED", "player")  -- For manual buff tracking
-	main_frame:RegisterUnitEvent("UNIT_SPELLCAST_CHANNEL_START", "player")  -- Channeling indicator
-	main_frame:RegisterUnitEvent("UNIT_SPELLCAST_CHANNEL_STOP", "player")  -- Channeling indicator
+	main_frame:RegisterUnitEvent("UNIT_TARGET", "target")  -- So aggro indicator updates when target's target changes
 	main_frame:SetScript("OnEvent", on_event)
 
 	if UnitAffectingCombat("player") then
@@ -2994,10 +3122,12 @@ local function init()
 		update_range_indicators()
 		update_all_buff_bars()
 		
-		-- Every 2 seconds (133 ticks): Rescan CDM frames for fresh references
-		if tickCount % 133 == 0 then
-			scan_cdm_buff_frames()
+		-- Every 10 ticks (~150ms): Update mob count (doesn't need to be every frame)
+		if tickCount % 10 == 0 then
+			update_mob_count_indicator()
 		end
+		
+		-- Buff scan only on "Rescan Buffs" button (no periodic scan)
 		update_spell_icons()
 		update_item_charge_indicators()
 		
@@ -3416,8 +3546,6 @@ SlashCmdList["GCDOPT"] = function(msg)
 				return
 			end
 			
-			local auraInstanceID = frame.auraInstanceID
-			
 			-- Get spellID from cooldownInfo (like ArcUI does)
 			local spellID = nil
 			local spellName = nil
@@ -3440,14 +3568,10 @@ SlashCmdList["GCDOPT"] = function(msg)
 				if info then spellName = info.name end
 			end
 			
-			-- Build status string
-			local activeStr = ""
-			if auraInstanceID and type(auraInstanceID) == "number" and auraInstanceID > 0 then
-				activeStr = "|cff00ff00ACTIVE|r (auraID: " .. auraInstanceID .. ")"
-				activeCount = activeCount + 1
-			else
-				activeStr = "|cff888888inactive|r"
-			end
+			-- Active state: pass auraInstanceID only to API when non-nil (API errors on nil)
+			local auraData = (frame.auraInstanceID ~= nil) and C_UnitAuras.GetAuraDataByAuraInstanceID("player", frame.auraInstanceID) or nil
+			local activeStr = auraData and "|cff00ff00ACTIVE|r" or "|cff888888inactive|r"
+			if auraData then activeCount = activeCount + 1 end
 			
 			-- Print with spellID and name
 			local spellStr = spellID and ("|cff88ccffspell:" .. spellID .. "|r") or "|cffff8888no-spell|r"
