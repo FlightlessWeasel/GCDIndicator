@@ -201,7 +201,16 @@ end
 -- CDM BUFF SCANNING
 -- ═══════════════════════════════════════════════════════════════════════════
 
--- Scan Blizzard's Cooldown Manager for buff frames
+-- CDM viewer names to scan (like ArcUI)
+-- BuffIconCooldownViewer: tracked buffs AND target debuffs (categories 2+3)
+-- BuffBarCooldownViewer: buff duration bars
+local CDM_AURA_VIEWERS = {
+	"BuffIconCooldownViewer",
+	"BuffBarCooldownViewer",
+}
+
+-- Scan Blizzard's Cooldown Manager for buff/debuff frames
+-- Target debuffs (like Rip) are in BuffIconCooldownViewer with auraDataUnit = "target" or category = 3
 -- @param catalog: Buff catalog to populate
 -- @param cdmFrames: Table to store CDM frame references
 -- @param settings: Settings table for saving buff settings
@@ -209,107 +218,108 @@ end
 -- @return number: Count of new buffs found
 function lib:ScanCDMBuffFrames(catalog, cdmFrames, settings, debugFn)
 	local foundThisScan = {}
-	
-	local viewer = _G["BuffIconCooldownViewer"]
-	if not viewer then
-		if debugFn then
-			debugFn("CDM BuffIconCooldownViewer not found")
-		end
-		return 0
-	end
-	
 	local foundCount = 0
 	local newCount = 0
 	
-	-- Method 1: Use itemFramePool if available
-	if viewer.itemFramePool then
-		for frame in viewer.itemFramePool:EnumerateActive() do
-			local cooldownID = frame.cooldownID
-			if cooldownID then
-				foundCount = foundCount + 1
-				cdmFrames[cooldownID] = frame
-				foundThisScan[cooldownID] = true
-				
-				local spellName = nil
-				local texture = nil
-				
-				if frame.Icon then
-					texture = frame.Icon:GetTexture()
+	-- Helper to process a CDM frame
+	local function processFrame(frame, viewerName)
+		local cooldownID = frame.cooldownID
+		if not cooldownID then return end
+		
+		foundCount = foundCount + 1
+		cdmFrames[cooldownID] = frame
+		foundThisScan[cooldownID] = true
+		
+		local spellName = nil
+		local texture = nil
+		
+		if frame.Icon then
+			texture = frame.Icon:GetTexture()
+		end
+		
+		if frame.GetTooltipText then
+			spellName = frame:GetTooltipText()
+		end
+		
+		-- Detect if this is a target debuff vs player buff
+		-- Use auraDataUnit property OR category (3 = target debuff)
+		local unit = frame.auraDataUnit or "player"
+		if unit == "player" and frame.category == 3 then
+			unit = "target"
+		end
+		local isTargetDebuff = (unit == "target")
+		
+		if not catalog[cooldownID] then
+			catalog[cooldownID] = {
+				name = spellName or ("Buff " .. cooldownID),
+				texture = texture or 134400,
+				cooldownID = cooldownID,
+				cdmFrame = frame,
+				hasStacks = false,
+				unit = unit,
+				isTargetDebuff = isTargetDebuff,
+				viewerName = viewerName,
+			}
+			
+			if settings then
+				if not settings.buffSettings then
+					settings.buffSettings = {}
 				end
-				
-				if frame.GetTooltipText then
-					spellName = frame:GetTooltipText()
-				end
-				
-				if not catalog[cooldownID] then
-					catalog[cooldownID] = {
-						name = spellName or ("Buff " .. cooldownID),
-						texture = texture or 134400,
-						cooldownID = cooldownID,
-						cdmFrame = frame,
-						hasStacks = false,
+				if not settings.buffSettings[cooldownID] then
+					settings.buffSettings[cooldownID] = {
+						enabled = true,
+						showStacks = true,
+						maxStacksDisplay = 5,
 					}
-					
-					if settings then
-						if not settings.buffSettings then
-							settings.buffSettings = {}
-						end
-						if not settings.buffSettings[cooldownID] then
-							settings.buffSettings[cooldownID] = {
-								enabled = true,
-								showStacks = true,
-								maxStacksDisplay = 5,
-							}
-							newCount = newCount + 1
-						end
-					end
-					
-					if debugFn then
-						debugFn("CDM auto-added: " .. (spellName or cooldownID) .. " (cdID:" .. cooldownID .. ")")
-					end
-				else
-					catalog[cooldownID].cdmFrame = frame
+					newCount = newCount + 1
+				end
+			end
+			
+			if debugFn then
+				local debuffInfo = isTargetDebuff and " [TARGET]" or ""
+				debugFn("CDM auto-added: " .. (spellName or cooldownID) .. " (cdID:" .. cooldownID .. ")" .. debuffInfo)
+			end
+		else
+			catalog[cooldownID].cdmFrame = frame
+			catalog[cooldownID].unit = unit
+			catalog[cooldownID].isTargetDebuff = isTargetDebuff
+		end
+	end
+	
+	-- Helper to scan a viewer
+	local function scanViewer(viewerName)
+		local viewer = _G[viewerName]
+		if not viewer then
+			if debugFn then
+				debugFn("CDM " .. viewerName .. " not found")
+			end
+			return
+		end
+		
+		local viewerFoundCount = 0
+		
+		-- Method 1: Use itemFramePool if available (proper CDM way)
+		if viewer.itemFramePool then
+			for frame in viewer.itemFramePool:EnumerateActive() do
+				processFrame(frame, viewerName)
+				viewerFoundCount = viewerFoundCount + 1
+			end
+		end
+		
+		-- Method 2: Fallback to GetChildren if itemFramePool not available or empty
+		if viewerFoundCount == 0 then
+			local children = {viewer:GetChildren()}
+			for _, frame in ipairs(children) do
+				if frame.cooldownID then
+					processFrame(frame, viewerName)
 				end
 			end
 		end
 	end
 	
-	-- Method 2: Fallback to GetChildren
-	if foundCount == 0 then
-		local children = {viewer:GetChildren()}
-		for _, frame in ipairs(children) do
-			local cooldownID = frame.cooldownID
-			if cooldownID then
-				foundCount = foundCount + 1
-				cdmFrames[cooldownID] = frame
-				foundThisScan[cooldownID] = true
-				
-				if not catalog[cooldownID] then
-					local texture = frame.Icon and frame.Icon:GetTexture() or 134400
-					catalog[cooldownID] = {
-						name = "Buff " .. cooldownID,
-						texture = texture,
-						cooldownID = cooldownID,
-						cdmFrame = frame,
-						hasStacks = false,
-					}
-					
-					if settings then
-						if not settings.buffSettings then settings.buffSettings = {} end
-						if not settings.buffSettings[cooldownID] then
-							settings.buffSettings[cooldownID] = {
-								enabled = true,
-								showStacks = true,
-								maxStacksDisplay = 5,
-							}
-							newCount = newCount + 1
-						end
-					end
-				else
-					catalog[cooldownID].cdmFrame = frame
-				end
-			end
-		end
+	-- Scan all aura viewers (buffs AND debuffs)
+	for _, viewerName in ipairs(CDM_AURA_VIEWERS) do
+		scanViewer(viewerName)
 	end
 	
 	-- Clean up stale frame references

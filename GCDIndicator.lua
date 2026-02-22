@@ -78,6 +78,7 @@ local buffBars = {}
 local cdmBuffFrames = {}  -- cooldownID -> CDM frame reference
 local lastBuffDebugState = {}  -- buffID -> { isActive, stacks } for debug-on-change only
 local cooldownToSpellID = {}  -- Maps CDM cooldownID -> actual spellID (like ArcUI)
+local spellIDToCooldownID = {}  -- REVERSE: Maps spellID -> cooldownID for frame lookup
 
 local CONSUMABLE_ITEM_IDS = {
 	[5512] = "Healthstone",
@@ -1023,11 +1024,46 @@ local function update_buff_bar(buffID)
 	
 	-- Get fresh CDM frame reference from latest scan using cooldownID
 	local cdmFrame = cdmBuffFrames[cooldownID]
+	local lookupMethod = cdmFrame and "direct" or nil
+	
+	-- If not found by cooldownID, try reverse lookup (buffID might be spellID)
+	if not cdmFrame and spellIDToCooldownID[buffID] then
+		local mappedCooldownID = spellIDToCooldownID[buffID]
+		cdmFrame = cdmBuffFrames[mappedCooldownID]
+		if cdmFrame then
+			cooldownID = mappedCooldownID  -- Update for later use
+			lookupMethod = "reverse"
+		end
+	end
 	
 	-- Also check catalog for stored frame reference as fallback
 	if not cdmFrame and catalogEntry and catalogEntry.cdmFrame then
 		cdmFrame = catalogEntry.cdmFrame
+		lookupMethod = "catalog"
 	end
+	
+	-- Debug: show lookup status if frame not found
+	if not cdmFrame and configs.debugMode then
+		local hasCatalog = catalogEntry and "yes" or "no"
+		local hasReverseMap = spellIDToCooldownID[buffID] and tostring(spellIDToCooldownID[buffID]) or "no"
+		local totalFrames = 0
+		for _ in pairs(cdmBuffFrames) do totalFrames = totalFrames + 1 end
+		debug("LOOKUP FAIL for " .. buffID .. ": catalog=" .. hasCatalog .. " reverseMap=" .. hasReverseMap .. " totalCDMFrames=" .. totalFrames)
+	end
+	
+	-- Helper to auto-detect unit (like ArcUI's GetAuraDataAutoUnit)
+	local function GetAuraDataAutoUnit(auraInstanceID)
+		if not auraInstanceID then return nil, nil end
+		-- Try player first (most common for buffs)
+		local auraData = C_UnitAuras.GetAuraDataByAuraInstanceID("player", auraInstanceID)
+		if auraData then return auraData, "player" end
+		-- Try target (for debuffs like Rip)
+		auraData = C_UnitAuras.GetAuraDataByAuraInstanceID("target", auraInstanceID)
+		if auraData then return auraData, "target" end
+		return nil, nil
+	end
+	
+	local detectedUnit = nil
 	
 	if cdmFrame then
 		-- auraInstanceID may be secret; API errors if passed nil. Only call when present.
@@ -2183,6 +2219,21 @@ local function scan_cdm_buff_frames()
 		local catalogKey = cooldownID
 		if spellID and spellID ~= cooldownID then
 			cooldownToSpellID[cooldownID] = spellID
+			spellIDToCooldownID[spellID] = cooldownID  -- REVERSE mapping for frame lookup
+		end
+		
+		-- Debug: show each frame found
+		if configs.debugMode then
+			local catStr = frame.category and tostring(frame.category) or "nil"
+			local unitStr = frame.auraDataUnit or "nil"
+			debug("  Found: " .. (spellName or "?") .. " spellID:" .. tostring(spellID) .. " cdID:" .. tostring(cooldownID) .. " cat:" .. catStr .. " unit:" .. unitStr)
+		end
+		
+		-- Detect if this is a target debuff vs player buff
+		-- Use auraDataUnit property OR category (3 = target debuff)
+		local unit = frame.auraDataUnit or "player"
+		if unit == "player" and frame.category == 3 then
+			unit = "target"
 		end
 		if not GCDI.buffCatalog[catalogKey] then
 			GCDI.buffCatalog[catalogKey] = {
@@ -2194,6 +2245,9 @@ local function scan_cdm_buff_frames()
 				cdmFrame = frame,
 				hasStacks = false,
 				hasCharges = hasCharges,
+				unit = unit,  -- Store unit for proper aura lookups
+				isTargetDebuff = isTargetDebuff,
+				viewerName = viewerName,
 			}
 			if settings then
 				if not settings.buffSettings then settings.buffSettings = {} end
@@ -2212,7 +2266,8 @@ local function scan_cdm_buff_frames()
 				end
 			end
 			if configs.debugMode then
-				debug("CDM auto-added: " .. (spellName or catalogKey) .. " (spellID:" .. tostring(spellID) .. ", cdID:" .. cooldownID .. ")")
+				local debuffInfo = isTargetDebuff and " [TARGET]" or ""
+				debug("CDM auto-added: " .. (spellName or catalogKey) .. " (spellID:" .. tostring(spellID) .. ", cdID:" .. cooldownID .. ")" .. debuffInfo)
 			end
 		else
 			local entry = GCDI.buffCatalog[catalogKey]
@@ -2692,6 +2747,18 @@ local function on_event(self, event, arg1, arg2, ...)
 			end
 		end
 		
+	elseif event == "UNIT_SPELLCAST_CHANNEL_START" then
+		-- Channel started - show casting indicator (yellow)
+		if arg1 == "player" and main_frame.castingbar then
+			main_frame.castingbar:SetStatusBarColor(1, 0.8, 0)  -- Yellow
+		end
+		
+	elseif event == "UNIT_SPELLCAST_CHANNEL_STOP" then
+		-- Channel ended - hide casting indicator (black)
+		if arg1 == "player" and main_frame.castingbar then
+			main_frame.castingbar:SetStatusBarColor(0, 0, 0)  -- Black
+		end
+		
 	-- Other events: don't rescan automatically
 	-- Spells should only change on profile change, spec change, or manual /gcdopt scan
 	end
@@ -3031,6 +3098,13 @@ local function init()
 			
 			rebuild_spell_bars()
 			rebuild_buff_bars()
+			
+			-- Scan CDM frames AFTER profile load to get live frame references
+			-- This populates cdmBuffFrames and spellIDToCooldownID mappings
+			C_Timer.After(1.0, function()
+				scan_cdm_buff_frames()
+			end)
+			
 			print("|cff00ff00GCDIndicator:|r Profile '" .. settings.currentProfile .. "' loaded")
 		end)
 	end
@@ -3046,7 +3120,6 @@ local function init()
 		animate_item_bars()
 		update_charge_indicators_tick()
 		update_range_indicators()
-		-- Removed scan_cdm_buff_frames() - use /gcdopt scan to manually rescan
 		update_all_buff_bars()
 		
 		-- Every 10 ticks (~150ms): Update mob count (doesn't need to be every frame)
@@ -3239,6 +3312,10 @@ function GCDI.toggle_preview_mode()
 		if main_frame.aggrobar then
 			main_frame.aggrobar:SetStatusBarColor(1, 0.5, 0)  -- Orange = has aggro
 			main_frame.aggrobar:SetValue(100)
+		end
+		if main_frame.castingbar then
+			main_frame.castingbar:SetStatusBarColor(1, 0.8, 0)  -- Yellow = channeling
+			main_frame.castingbar:SetValue(100)
 		end
 		if main_frame.stanceIndicator then
 			main_frame.stanceIndicator:SetColorTexture(0.5, 0.3, 0, 1)  -- Bear form color
