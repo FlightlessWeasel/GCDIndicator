@@ -787,6 +787,16 @@ local function refresh_spells_tab()
 		icon:SetPoint("LEFT", 84, 0)
 		icon:SetTexture(texture)
 		icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+		local iconTip = CreateFrame("Frame", nil, row)
+		iconTip:SetSize(20, 20)
+		iconTip:SetPoint("LEFT", 84, 0)
+		iconTip:EnableMouse(true)
+		iconTip:SetScript("OnEnter", function(self)
+			GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+			GameTooltip:SetSpellByID(spellID)
+			GameTooltip:Show()
+		end)
+		iconTip:SetScript("OnLeave", function() GameTooltip:Hide() end)
 		
 		-- Spell name
 		local nameText = row:CreateFontString(nil, "OVERLAY", "GameFontNormal")
@@ -1110,6 +1120,20 @@ local function refresh_items_tab()
 		icon:SetPoint("LEFT", 56, 0)
 		icon:SetTexture(texture)
 		icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+		local iconTip = CreateFrame("Frame", nil, row)
+		iconTip:SetSize(20, 20)
+		iconTip:SetPoint("LEFT", 56, 0)
+		iconTip:EnableMouse(true)
+		iconTip:SetScript("OnEnter", function(self)
+			GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+			if catalogEntry.slot then
+				GameTooltip:SetInventoryItem("player", catalogEntry.slot)
+			elseif catalogEntry.itemID then
+				GameTooltip:SetItemByID(catalogEntry.itemID)
+			end
+			GameTooltip:Show()
+		end)
+		iconTip:SetScript("OnLeave", function() GameTooltip:Hide() end)
 		
 		-- Item name
 		local nameText = row:CreateFontString(nil, "OVERLAY", "GameFontNormal")
@@ -1316,24 +1340,26 @@ local function refresh_buffs_tab()
 		yOffset = yOffset - 25
 	end
 	
-	for i, spellID in ipairs(orderedBuffs) do
-		local catalogEntry = GCDI.buffCatalog[spellID]
+	for i, buffKey in ipairs(orderedBuffs) do
+		local catalogEntry = GCDI.buffCatalog[buffKey]
 		if not catalogEntry then
 			break
 		end
 		
 		local buffName = catalogEntry.name
 		local texture = catalogEntry.texture
+		-- buffKey is cooldownID for CDM entries; show spellID when present (matches CDM/spell IDs)
+		local displayID = catalogEntry.spellID or buffKey
 		
-		local buffSettings = settings.buffSettings and settings.buffSettings[spellID]
+		local buffSettings = settings.buffSettings and settings.buffSettings[buffKey]
 		if not buffSettings then
 			if not settings.buffSettings then settings.buffSettings = {} end
-			settings.buffSettings[spellID] = { enabled = true, showStacks = true, maxStacksDisplay = 5 }
-			buffSettings = settings.buffSettings[spellID]
+			settings.buffSettings[buffKey] = { enabled = true, showStacks = true, maxStacksDisplay = 5 }
+			buffSettings = settings.buffSettings[buffKey]
 		end
 		
 		-- Separator before disabled buffs
-		if not GCDI.is_buff_enabled(spellID) and not disabledSectionStarted then
+		if not GCDI.is_buff_enabled(buffKey) and not disabledSectionStarted then
 			disabledSectionStarted = true
 			yOffset = yOffset - 10
 			local disabledSep = track(scrollChild:CreateTexture(nil, "ARTWORK"))
@@ -1361,10 +1387,10 @@ local function refresh_buffs_tab()
 			if not GCDI.settings.buffSettings then
 				GCDI.settings.buffSettings = {}
 			end
-			if not GCDI.settings.buffSettings[spellID] then
-				GCDI.settings.buffSettings[spellID] = {}
+			if not GCDI.settings.buffSettings[buffKey] then
+				GCDI.settings.buffSettings[buffKey] = {}
 			end
-			GCDI.settings.buffSettings[spellID].enabled = self:GetChecked()
+			GCDI.settings.buffSettings[buffKey].enabled = self:GetChecked()
 			GCDI.auto_save_to_profile()
 			GCDI.rebuild_buff_bars()
 			GCDI.reposition_all()
@@ -1377,10 +1403,10 @@ local function refresh_buffs_tab()
 		stacksCheckbox:SetPoint("LEFT", 28, 0)
 		stacksCheckbox:SetChecked(buffSettings.showStacks ~= false)
 		stacksCheckbox:SetScript("OnClick", function(self)
-			if not GCDI.settings.buffSettings[spellID] then
-				GCDI.settings.buffSettings[spellID] = {}
+			if not GCDI.settings.buffSettings[buffKey] then
+				GCDI.settings.buffSettings[buffKey] = {}
 			end
-			GCDI.settings.buffSettings[spellID].showStacks = self:GetChecked()
+			GCDI.settings.buffSettings[buffKey].showStacks = self:GetChecked()
 			GCDI.auto_save_to_profile()
 			GCDI.rebuild_buff_bars()
 			GCDI.reposition_all()
@@ -1400,13 +1426,30 @@ local function refresh_buffs_tab()
 		icon:SetPoint("LEFT", 56, 0)
 		icon:SetTexture(texture)
 		icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+		local buffTooltipSpellID = catalogEntry.tooltipSpellID or catalogEntry.spellID or buffKey
+		local iconTip = CreateFrame("Frame", nil, row)
+		iconTip:SetSize(20, 20)
+		iconTip:SetPoint("LEFT", 56, 0)
+		iconTip:EnableMouse(true)
+		iconTip:SetScript("OnEnter", function(self)
+			if buffTooltipSpellID and buffTooltipSpellID > 0 then
+				GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+				GameTooltip:SetSpellByID(buffTooltipSpellID)
+				GameTooltip:Show()
+			end
+		end)
+		iconTip:SetScript("OnLeave", function() GameTooltip:Hide() end)
 		
-		-- Buff name with spell ID
+		-- Buff name with spell ID (displayID = spell ID when from CDM; matches CDM/spell IDs)
 		local nameText = row:CreateFontString(nil, "OVERLAY", "GameFontNormal")
 		nameText:SetPoint("LEFT", 80, 0)
 		nameText:SetWidth(130)
 		nameText:SetJustifyH("LEFT")
-		nameText:SetText(buffName .. " |cff888888(" .. spellID .. ")|r")
+		nameText:SetText(buffName .. " |cff888888(" .. displayID .. ")|r")
+		if catalogEntry.spellID and buffKey ~= catalogEntry.spellID then
+			nameText:SetScript("OnEnter", function(self) GameTooltip:SetOwner(self, "ANCHOR_RIGHT"); GameTooltip:SetText("Spell: " .. catalogEntry.spellID); GameTooltip:AddLine("CDM cooldownID: " .. buffKey, 0.7, 0.7, 0.7, true); GameTooltip:Show() end)
+			nameText:SetScript("OnLeave", function() GameTooltip:Hide() end)
+		end
 		
 		-- Max stacks dropdown
 		local maxStacksDropdown = CreateFrame("Frame", nil, row, "UIDropDownMenuTemplate")
@@ -1414,17 +1457,17 @@ local function refresh_buffs_tab()
 		UIDropDownMenu_SetWidth(maxStacksDropdown, 60)
 		
 		local function initMaxStacksDropdown(self, level)
-			local currentBuffSettings = GCDI.settings.buffSettings and GCDI.settings.buffSettings[spellID] or {}
+			local currentBuffSettings = GCDI.settings.buffSettings and GCDI.settings.buffSettings[buffKey] or {}
 			for stacks = 1, 10 do
 				local info = UIDropDownMenu_CreateInfo()
 				info.text = tostring(stacks)
 				info.value = stacks
 				info.checked = (currentBuffSettings.maxStacksDisplay == stacks)
 				info.func = function()
-					if not GCDI.settings.buffSettings[spellID] then
-						GCDI.settings.buffSettings[spellID] = {}
+					if not GCDI.settings.buffSettings[buffKey] then
+						GCDI.settings.buffSettings[buffKey] = {}
 					end
-					GCDI.settings.buffSettings[spellID].maxStacksDisplay = stacks
+					GCDI.settings.buffSettings[buffKey].maxStacksDisplay = stacks
 					UIDropDownMenu_SetSelectedID(maxStacksDropdown, stacks)
 					GCDI.auto_save_to_profile()
 					GCDI.rebuild_buff_bars()
@@ -1442,17 +1485,17 @@ local function refresh_buffs_tab()
 		durationCb:SetSize(24, 24)
 		durationCb:SetChecked(buffSettings.showDurationBar == true)
 		durationCb:SetScript("OnClick", function(self)
-			if not GCDI.settings.buffSettings[spellID] then
-				GCDI.settings.buffSettings[spellID] = {}
+			if not GCDI.settings.buffSettings[buffKey] then
+				GCDI.settings.buffSettings[buffKey] = {}
 			end
-			GCDI.settings.buffSettings[spellID].showDurationBar = self:GetChecked()
+			GCDI.settings.buffSettings[buffKey].showDurationBar = self:GetChecked()
 			GCDI.auto_save_to_profile()
 			GCDI.rebuild_buff_bars()
 			GCDI.reposition_all()
 		end)
 		
 		-- Threshold dropdown (5% increments)
-		local thresholdDropdown = CreateFrame("Frame", "GCDI_BuffThreshold_" .. spellID, row, "UIDropDownMenuTemplate")
+		local thresholdDropdown = CreateFrame("Frame", "GCDI_BuffThreshold_" .. buffKey, row, "UIDropDownMenuTemplate")
 		thresholdDropdown:SetPoint("LEFT", 305, -3)
 		UIDropDownMenu_SetWidth(thresholdDropdown, 50)
 		
@@ -1464,10 +1507,10 @@ local function refresh_buffs_tab()
 				info.value = pct
 				info.checked = (currentThreshold == pct)
 				info.func = function()
-					if not GCDI.settings.buffSettings[spellID] then
-						GCDI.settings.buffSettings[spellID] = {}
+					if not GCDI.settings.buffSettings[buffKey] then
+						GCDI.settings.buffSettings[buffKey] = {}
 					end
-					GCDI.settings.buffSettings[spellID].durationThreshold = pct
+					GCDI.settings.buffSettings[buffKey].durationThreshold = pct
 					UIDropDownMenu_SetText(thresholdDropdown, pct .. "%")
 					GCDI.auto_save_to_profile()
 					GCDI.rebuild_buff_bars()
@@ -1488,7 +1531,7 @@ local function refresh_buffs_tab()
 		upBtn:SetHighlightFontObject("GameFontHighlightSmall")
 		upBtn:SetEnabled(i > 1)
 		upBtn:SetScript("OnClick", function()
-			GCDI.move_buff_in_order(spellID, -1)
+			GCDI.move_buff_in_order(buffKey, -1)
 			GCDI.refresh_options_frame()
 		end)
 		
@@ -1500,7 +1543,7 @@ local function refresh_buffs_tab()
 		downBtn:SetHighlightFontObject("GameFontHighlightSmall")
 		downBtn:SetEnabled(i < #orderedBuffs)
 		downBtn:SetScript("OnClick", function()
-			GCDI.move_buff_in_order(spellID, 1)
+			GCDI.move_buff_in_order(buffKey, 1)
 			GCDI.refresh_options_frame()
 		end)
 		
@@ -1511,7 +1554,7 @@ local function refresh_buffs_tab()
 		removeBtn:SetNormalFontObject("GameFontNormalSmall")
 		removeBtn:SetHighlightFontObject("GameFontHighlightSmall")
 		removeBtn:SetScript("OnClick", function()
-			GCDI.remove_buff_from_catalog(spellID)
+			GCDI.remove_buff_from_catalog(buffKey)
 			GCDI.refresh_options_frame()
 		end)
 		removeBtn:SetScript("OnEnter", function(self)
