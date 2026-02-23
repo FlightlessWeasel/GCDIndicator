@@ -1714,13 +1714,11 @@ local function update_aggro_indicator()
 	if previewMode then return end  -- Skip updates in preview mode
 	if not main_frame.aggrobar then return end
 	
-	-- Check if target is a valid hostile in combat
-	local validTarget = UnitExists("target") and 
-	                    UnitCanAttack("player", "target") and 
-	                    UnitAffectingCombat("target")
+	-- Check if target exists and is attackable (hostile). Don't require combat—pre-pull we show grey.
+	local validTarget = UnitExists("target") and UnitCanAttack("player", "target")
 	
 	if not validTarget then
-		-- No target, friendly target, or target not in combat = white
+		-- No target or friendly target = white
 		main_frame.aggrobar:SetStatusBarColor(1, 1, 1)
 		return
 	end
