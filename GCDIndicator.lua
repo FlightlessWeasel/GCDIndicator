@@ -2227,17 +2227,18 @@ local function scan_cdm_buff_frames()
 		
 		-- Debug: show each frame found
 		if configs.debugMode then
-			local catStr = frame.category and tostring(frame.category) or "nil"
-			local unitStr = frame.auraDataUnit or "nil"
+			local catStr = (frame and frame.category) and tostring(frame.category) or "nil"
+			local unitStr = (frame and frame.auraDataUnit) or "nil"
 			debug("  Found: " .. (spellName or "?") .. " spellID:" .. tostring(spellID) .. " cdID:" .. tostring(cooldownID) .. " cat:" .. catStr .. " unit:" .. unitStr)
 		end
 		
-		-- Detect if this is a target debuff vs player buff
+		-- Detect if this is a target debuff vs player buff (only when we have a frame; otherwise assume player buff)
 		-- Use auraDataUnit property OR category (3 = target debuff)
-		local unit = frame.auraDataUnit or "player"
-		if unit == "player" and frame.category == 3 then
+		local unit = (frame and frame.auraDataUnit) or "player"
+		if unit == "player" and frame and frame.category == 3 then
 			unit = "target"
 		end
+		local isTargetDebuff = (unit == "target")
 		if not GCDI.buffCatalog[catalogKey] then
 			GCDI.buffCatalog[catalogKey] = {
 				name = spellName or ("Buff " .. catalogKey),
@@ -2250,7 +2251,6 @@ local function scan_cdm_buff_frames()
 				hasCharges = hasCharges,
 				unit = unit,  -- Store unit for proper aura lookups
 				isTargetDebuff = isTargetDebuff,
-				viewerName = viewerName,
 			}
 			if settings then
 				if not settings.buffSettings then settings.buffSettings = {} end
