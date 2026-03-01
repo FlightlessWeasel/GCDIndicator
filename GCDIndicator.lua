@@ -117,10 +117,18 @@ local RESOURCE_COLORS = {
 -- Use range colors and items from library
 local RANGE_COLORS = LibRange.RANGE_COLORS
 GCDI.RANGE_ITEMS = LibRange.RANGE_ITEMS
+GCDI.RANGE_YARDS_ORDER = LibRange.RANGE_YARDS_ORDER
+GCDI.LEGACY_INDEX_TO_YARDS = LibRange.LEGACY_INDEX_TO_YARDS
 local RANGE_ITEMS = GCDI.RANGE_ITEMS
+local RANGE_YARDS_ORDER = GCDI.RANGE_YARDS_ORDER
 
 local DEFAULT_SETTINGS = {
-	globalRangeFallback = 1,  -- Default to melee (5 yards) for range detection
+	globalRangeFallbackYards = 5,  -- Default melee (5 yards); keyed by yards, not index
+	rangeProxySpells = {},        -- [yards] = spellID for in-combat range; set in options
+	-- Legacy (migrated on load):
+	globalRangeFallback = nil,
+	meleeRangeProxySpellID = nil,
+	rangeProxySpellIDs = nil,
 	spellSettings = {},
 	spellOrder = {},
 	itemSettings = {},
@@ -1738,69 +1746,42 @@ local function update_aggro_indicator()
 	end
 end
 
--- Range item IDs for mob counting (same as LibGCDI-Range)
-local MOB_RANGE_ITEMS = {
-	[5] = 37727,    -- 5 yards (melee)
-	[8] = 63427,    -- 8 yards
-	[10] = 34368,   -- 10 yards
-	[15] = 32321,   -- 15 yards
-	[20] = 21519,   -- 20 yards
-	[28] = 116139,  -- 25 yards (close to 28)
-	[40] = 41509,   -- 40 yards
-}
-
--- Get the best range item for the given range
-local function get_range_item_for_distance(range)
-	if range <= 5 then return MOB_RANGE_ITEMS[5]
-	elseif range <= 8 then return MOB_RANGE_ITEMS[8]
-	elseif range <= 10 then return MOB_RANGE_ITEMS[10]
-	elseif range <= 15 then return MOB_RANGE_ITEMS[15]
-	elseif range <= 20 then return MOB_RANGE_ITEMS[20]
-	elseif range <= 28 then return MOB_RANGE_ITEMS[28]
-	else return MOB_RANGE_ITEMS[40]
-	end
-end
-
--- Count nearby hostile mobs within range using nameplates
+-- Count nearby hostile mobs within range using nameplates and the range proxy spell for that bracket
 local function count_nearby_mobs(range)
 	local count = 0
-	local nameplates = C_NamePlate.GetNamePlates()
-	local rangeItemID = get_range_item_for_distance(range)
-	
-	if not nameplates then return 0 end
-	
+	if not settings or not settings.rangeProxySpells then return 0 end
+	local proxySpellID = settings.rangeProxySpells[range]
+	if not proxySpellID or type(proxySpellID) ~= "number" then return 0 end
+	if not C_Spell or not C_Spell.SpellHasRange(proxySpellID) then
+		return 0  -- No proxy spell for this range; set one on GCD tab Range spells (in combat)
+	end
+
+	local nameplates = C_NamePlate and C_NamePlate.GetNamePlates and C_NamePlate.GetNamePlates()
+	if not nameplates or type(nameplates) ~= "table" then return 0 end
+
 	for _, nameplate in pairs(nameplates) do
-		-- Get unit token - can be either namePlateUnitToken or unitToken
-		local unit = nameplate.namePlateUnitToken or nameplate.unitToken
-		if unit and UnitExists(unit) then
-			-- Check if hostile and alive
-			local isHostile = UnitCanAttack("player", unit)
-			local isAlive = not UnitIsDead(unit)
-			
-			if isHostile and isAlive then
-				-- Use item-based range checking (works on hostile units)
-				local inRange = C_Item.IsItemInRange(rangeItemID, unit)
-				
-				if inRange == true then
-					count = count + 1
+		if type(nameplate) == "table" then
+			local unit = (type(nameplate.GetUnit) == "function" and nameplate:GetUnit()) or nameplate.unitToken or nameplate.namePlateUnitToken
+			if unit and UnitExists(unit) then
+				if UnitCanAttack("player", unit) and not UnitIsDead(unit) then
+					local inRange = C_Spell.IsSpellInRange(proxySpellID, unit)
+					if inRange == true then
+						count = count + 1
+					end
 				end
 			end
 		end
 	end
-	
 	return count
 end
 
 local function update_mob_count_indicator()
-	if previewMode then return end  -- Skip updates in preview mode
-	if not main_frame.mobcountbar then return end
-	
+	if previewMode then return end
+	if not main_frame or not main_frame.mobcountbar then return end
 	local gcdSettings = settings and settings.gcdSettings or {}
 	local range = gcdSettings.mobCountRange or 8
 	local threshold = gcdSettings.mobCountThreshold or 3
-	
 	local mobCount = count_nearby_mobs(range)
-	
 	if mobCount >= threshold then
 		main_frame.mobcountbar:SetStatusBarColor(1, 1, 1)  -- White = at or above threshold
 	else
@@ -2720,6 +2701,9 @@ local function on_event(self, event, arg1, arg2, ...)
 		if arg1 == "target" then
 			update_aggro_indicator()  -- Target's target changed (e.g. mob switched to you)
 		end
+
+	elseif event == "NAME_PLATE_UNIT_ADDED" or event == "NAME_PLATE_UNIT_REMOVED" then
+		update_mob_count_indicator()  -- Nameplate appeared or disappeared
 		
 	elseif event == "UNIT_AURA" then
 		if arg1 == "player" then
@@ -2781,8 +2765,26 @@ local function init()
 	settings = GCDIndicator_Settings
 	GCDI.settings = settings
 	
-	if settings.globalRangeFallback == nil then
-		settings.globalRangeFallback = DEFAULT_SETTINGS.globalRangeFallback
+	-- Range: use yards-keyed; migrate from legacy index/proxyIDs
+	if not settings.rangeProxySpells or type(settings.rangeProxySpells) ~= "table" then
+		settings.rangeProxySpells = {}
+	end
+	if settings.globalRangeFallbackYards == nil then
+		if settings.globalRangeFallback ~= nil and LibRange.LEGACY_INDEX_TO_YARDS[settings.globalRangeFallback] ~= nil then
+			settings.globalRangeFallbackYards = LibRange.LEGACY_INDEX_TO_YARDS[settings.globalRangeFallback]
+		else
+			settings.globalRangeFallbackYards = DEFAULT_SETTINGS.globalRangeFallbackYards or 5
+		end
+	end
+	if settings.rangeProxySpellIDs and type(settings.rangeProxySpellIDs) == "table" then
+		for idx, yards in pairs(LibRange.LEGACY_INDEX_TO_YARDS) do
+			if settings.rangeProxySpellIDs[idx] and not settings.rangeProxySpells[yards] then
+				settings.rangeProxySpells[yards] = settings.rangeProxySpellIDs[idx]
+			end
+		end
+	end
+	if settings.meleeRangeProxySpellID and not settings.rangeProxySpells[5] then
+		settings.rangeProxySpells[5] = settings.meleeRangeProxySpellID
 	end
 	if not settings.spellSettings then
 		settings.spellSettings = {}
@@ -2847,6 +2849,10 @@ local function init()
 	end
 	if settings.gcdSettings.mobCountRange == nil then
 		settings.gcdSettings.mobCountRange = 8
+	end
+	-- Legacy: 28 was an item bracket; we now use proxy spells (no 28 yd bracket)
+	if settings.gcdSettings.mobCountRange == 28 then
+		settings.gcdSettings.mobCountRange = 30
 	end
 	if settings.gcdSettings.mobCountThreshold == nil then
 		settings.gcdSettings.mobCountThreshold = 3
@@ -3051,6 +3057,8 @@ local function init()
 		"RUNE_POWER_UPDATE",
 		"PLAYER_TARGET_CHANGED",
 		"UNIT_THREAT_SITUATION_UPDATE",
+		"NAME_PLATE_UNIT_ADDED",
+		"NAME_PLATE_UNIT_REMOVED",
 	}
 	for _, event in ipairs(events) do
 		main_frame:RegisterEvent(event)
@@ -3080,7 +3088,24 @@ local function init()
 		C_Timer.After(0.5, function()
 			local profile = settings.profiles[settings.currentProfile]
 			
-			settings.globalRangeFallback = profile.globalRangeFallback or 0
+			settings.globalRangeFallbackYards = profile.globalRangeFallbackYards or 5
+			settings.rangeProxySpells = profile.rangeProxySpells and deepcopy(profile.rangeProxySpells) or {}
+			-- Legacy profile: migrate if only old keys present
+			if profile.globalRangeFallbackYards == nil and profile.globalRangeFallback ~= nil and LibRange and LibRange.LEGACY_INDEX_TO_YARDS and LibRange.LEGACY_INDEX_TO_YARDS[profile.globalRangeFallback] then
+				settings.globalRangeFallbackYards = LibRange.LEGACY_INDEX_TO_YARDS[profile.globalRangeFallback]
+			end
+			if profile.rangeProxySpellIDs and type(profile.rangeProxySpellIDs) == "table" and LibRange and LibRange.LEGACY_INDEX_TO_YARDS then
+				for idx, yards in pairs(LibRange.LEGACY_INDEX_TO_YARDS) do
+					if profile.rangeProxySpellIDs[idx] and not (settings.rangeProxySpells and settings.rangeProxySpells[yards]) then
+						settings.rangeProxySpells = settings.rangeProxySpells or {}
+						settings.rangeProxySpells[yards] = profile.rangeProxySpellIDs[idx]
+					end
+				end
+			end
+			if profile.meleeRangeProxySpellID and not (settings.rangeProxySpells and settings.rangeProxySpells[5]) then
+				settings.rangeProxySpells = settings.rangeProxySpells or {}
+				settings.rangeProxySpells[5] = profile.meleeRangeProxySpellID
+			end
 			settings.spellSettings = deepcopy(profile.spellSettings or {})
 			settings.spellOrder = deepcopy(profile.spellOrder or {})
 			settings.itemSettings = deepcopy(profile.itemSettings or {})
@@ -3125,9 +3150,12 @@ local function init()
 		update_range_indicators()
 		update_all_buff_bars()
 		
-		-- Every 10 ticks (~150ms): Update mob count (doesn't need to be every frame)
-		if tickCount % 10 == 0 then
-			update_mob_count_indicator()
+		-- Every 5 ticks (~75ms): Update mob count
+		if tickCount % 5 == 0 then
+			local ok, err = pcall(update_mob_count_indicator)
+			if not ok and err then
+				-- Don't spam; ticker keeps running
+			end
 		end
 		
 		-- Buff scan only on "Rescan Buffs" button (no periodic scan)
@@ -3140,7 +3168,10 @@ local function init()
 			tickCount = 0  -- Reset to prevent overflow
 		end
 	end)
-	
+
+	-- Initial mob count update (nameplates may not be ready at load)
+	C_Timer.After(1, update_mob_count_indicator)
+
 	-- Create minimap button
 	create_minimap_button()
 end
@@ -3442,7 +3473,8 @@ SlashCmdList["GCDOPT"] = function(msg)
 	elseif msg == "range" then
 		-- Debug range detection for all tracked spells
 		print("|cff00ff00GCDIndicator:|r --- Range Detection Debug ---")
-		print("|cff888888Global Range Fallback: " .. tostring(settings.globalRangeFallback) .. " (" .. (LibRange.RANGE_ITEMS[settings.globalRangeFallback or 0].name or "Unknown") .. ")|r")
+		local globalYards = settings.globalRangeFallbackYards or 5
+		print("|cff888888Global Range Fallback: " .. tostring(globalYards) .. " yd (" .. (LibRange.RANGE_ITEMS[globalYards] and LibRange.RANGE_ITEMS[globalYards].name or "Unknown") .. ")|r")
 		print("|cff888888Target: " .. (UnitExists("target") and UnitName("target") or "None") .. "|r")
 		print("")
 		
@@ -3452,11 +3484,15 @@ SlashCmdList["GCDOPT"] = function(msg)
 			local actionSlot = data.actionSlot
 			local spellSettings = settings.spellSettings and settings.spellSettings[spellID] or {}
 			
-			local rangeMethod = "Fallback Item"
+			local rangeMethod = "Global fallback (proxy)"
 			if spellSettings.selfCast then
 				rangeMethod = "Self-Cast (hidden)"
-			elseif spellSettings.rangeFallback then
-				rangeMethod = "Override: " .. LibRange.RANGE_ITEMS[spellSettings.rangeFallback].name
+			elseif spellSettings.rangeFallbackYards ~= nil or spellSettings.rangeFallback ~= nil then
+				local yards = spellSettings.rangeFallbackYards
+				if yards == nil and spellSettings.rangeFallback ~= nil and LibRange.LEGACY_INDEX_TO_YARDS[spellSettings.rangeFallback] then
+					yards = LibRange.LEGACY_INDEX_TO_YARDS[spellSettings.rangeFallback]
+				end
+				rangeMethod = "Override: " .. (yards and LibRange.RANGE_ITEMS[yards] and LibRange.RANGE_ITEMS[yards].name or tostring(yards) .. " yd")
 			elseif spellSettings.hasNativeRange and actionSlot then
 				rangeMethod = "Native (IsActionInRange)"
 			elseif actionSlot then

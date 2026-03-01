@@ -42,6 +42,19 @@ end
 
 lib.deepcopy = deepcopy
 
+-- Copy spell settings for save/export; strips legacy rangeFallback (index) so only rangeFallbackYards is persisted
+local function spell_settings_for_save(ss)
+	if not ss or type(ss) ~= "table" then return {} end
+	local out = {}
+	for spellID, opts in pairs(ss) do
+		local copy = deepcopy(opts)
+		copy.rangeFallback = nil
+		out[spellID] = copy
+	end
+	return out
+end
+lib.SpellSettingsForSave = spell_settings_for_save
+
 -- ═══════════════════════════════════════════════════════════════════════════
 -- SERIALIZATION
 -- ═══════════════════════════════════════════════════════════════════════════
@@ -106,8 +119,9 @@ function lib:SaveProfile(settings, name, catalogs)
 	
 	settings.profiles = settings.profiles or {}
 	settings.profiles[name] = {
-		globalRangeFallback = settings.globalRangeFallback,
-		spellSettings = deepcopy(settings.spellSettings),
+		globalRangeFallbackYards = settings.globalRangeFallbackYards,
+		rangeProxySpells = settings.rangeProxySpells and deepcopy(settings.rangeProxySpells) or {},
+		spellSettings = spell_settings_for_save(settings.spellSettings),
 		spellOrder = deepcopy(settings.spellOrder),
 		itemSettings = deepcopy(settings.itemSettings or {}),
 		itemOrder = deepcopy(settings.itemOrder or {}),
@@ -146,7 +160,25 @@ function lib:LoadProfile(settings, name, catalogs)
 	end
 	
 	local profile = settings.profiles[name]
-	settings.globalRangeFallback = profile.globalRangeFallback or 0
+	settings.globalRangeFallbackYards = profile.globalRangeFallbackYards or 5
+	settings.rangeProxySpells = profile.rangeProxySpells and deepcopy(profile.rangeProxySpells) or {}
+	-- Legacy profile compat
+	if profile.globalRangeFallbackYards == nil and profile.globalRangeFallback ~= nil then
+		local leg = LibStub("LibGCDI-Range", true)
+		if leg and leg.LEGACY_INDEX_TO_YARDS and leg.LEGACY_INDEX_TO_YARDS[profile.globalRangeFallback] then
+			settings.globalRangeFallbackYards = leg.LEGACY_INDEX_TO_YARDS[profile.globalRangeFallback]
+		end
+	end
+	if profile.rangeProxySpellIDs and type(profile.rangeProxySpellIDs) == "table" then
+		local leg = LibStub("LibGCDI-Range", true)
+		if leg and leg.LEGACY_INDEX_TO_YARDS then
+			for idx, yards in pairs(leg.LEGACY_INDEX_TO_YARDS) do
+				if profile.rangeProxySpellIDs[idx] and not settings.rangeProxySpells[yards] then
+					settings.rangeProxySpells[yards] = profile.rangeProxySpellIDs[idx]
+				end
+			end
+		end
+	end
 	settings.spellSettings = deepcopy(profile.spellSettings or {})
 	settings.spellOrder = deepcopy(profile.spellOrder or {})
 	settings.itemSettings = deepcopy(profile.itemSettings or {})
@@ -231,8 +263,9 @@ end
 function lib:ExportSettings(settings)
 	local exportData = {
 		v = 1,
-		g = settings.globalRangeFallback,
-		ss = settings.spellSettings or {},
+		gy = settings.globalRangeFallbackYards,
+		rp = settings.rangeProxySpells,
+		ss = spell_settings_for_save(settings.spellSettings or {}),
 		so = settings.spellOrder or {},
 		is = settings.itemSettings or {},
 		io = settings.itemOrder or {},
