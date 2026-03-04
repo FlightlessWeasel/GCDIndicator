@@ -1837,6 +1837,8 @@ reposition_all = function()
 		if main_frame.mobcountbar then
 			main_frame.mobcountbar:SetShown(gcdSettings.showMobCount ~= false)
 		end
+		-- Refresh mob count bar so AOE detection is correct as soon as the row is visible
+		update_mob_count_indicator()
 		
 		yOffset = yOffset - gcdContainerHeight - spacing
 	else
@@ -3069,6 +3071,8 @@ local function init()
 	main_frame:RegisterUnitEvent("UNIT_MAXPOWER", "player")
 	main_frame:RegisterUnitEvent("UNIT_AURA", "player")
 	main_frame:RegisterUnitEvent("UNIT_SPELLCAST_SUCCEEDED", "player")  -- For manual buff tracking
+	main_frame:RegisterUnitEvent("UNIT_SPELLCAST_CHANNEL_START", "player")  -- Casting bar yellow while channeling
+	main_frame:RegisterUnitEvent("UNIT_SPELLCAST_CHANNEL_STOP", "player")   -- Casting bar black when done
 	main_frame:RegisterUnitEvent("UNIT_TARGET", "target")  -- So aggro indicator updates when target's target changes
 	main_frame:SetScript("OnEvent", on_event)
 
