@@ -10,7 +10,8 @@ if not lib then return end
 local UnitExists = UnitExists
 local UnitCanAttack = UnitCanAttack
 local IsActionInRange = IsActionInRange
-local C_Item = C_Item
+local InCombatLockdown = InCombatLockdown
+local C_Spell = C_Spell
 local pairs = pairs
 local ipairs = ipairs
 
@@ -25,21 +26,29 @@ lib.RANGE_COLORS = {
 }
 
 -- ═══════════════════════════════════════════════════════════════════════════
--- RANGE ITEMS (for fallback range detection)
+-- RANGE BRACKETS keyed by yards (display names only; range checked via proxy spells in combat)
 -- ═══════════════════════════════════════════════════════════════════════════
 
 lib.RANGE_ITEMS = {
-	[0] = { id = nil, name = "No Range (Grey)", yards = 0 },
-	[1] = { id = 37727,  name = "Melee (5 yards)", yards = 5 },
-	[2] = { id = 63427,  name = "Close (8 yards)", yards = 8 },
-	[3] = { id = 34368,  name = "Short (10 yards)", yards = 10 },
-	[4] = { id = 32321,  name = "Medium (15 yards)", yards = 15 },
-	[5] = { id = 21519,  name = "Mid-Range (20 yards)", yards = 20 },
-	[6] = { id = 116139, name = "Long (25 yards)", yards = 25 },
-	[7] = { id = 33069,  name = "Ranged (30 yards)", yards = 30 },
-	[8] = { id = 35278,  name = "Far (35 yards)", yards = 35 },
-	[9] = { id = 41509,  name = "Max Range (40 yards)", yards = 40 },
+	[0]  = { name = "No Range (Grey)", yards = 0 },
+	[5]  = { name = "Melee (5 yards)", yards = 5 },
+	[8]  = { name = "8 yards", yards = 8 },
+	[10] = { name = "10 yards", yards = 10 },
+	[12] = { name = "12 yards", yards = 12 },
+	[13] = { name = "13 yards", yards = 13 },
+	[15] = { name = "15 yards", yards = 15 },
+	[20] = { name = "20 yards", yards = 20 },
+	[25] = { name = "25 yards", yards = 25 },
+	[30] = { name = "30 yards", yards = 30 },
+	[35] = { name = "35 yards", yards = 35 },
+	[40] = { name = "40 yards", yards = 40 },
 }
+
+-- Display order (pairs iteration order not guaranteed)
+lib.RANGE_YARDS_ORDER = { 0, 5, 8, 10, 12, 13, 15, 20, 25, 30, 35, 40 }
+
+-- Legacy: convert old index (0-11) to yards for migration
+lib.LEGACY_INDEX_TO_YARDS = { [0]=0, [1]=5, [2]=8, [3]=10, [4]=12, [5]=13, [6]=15, [7]=20, [8]=25, [9]=30, [10]=35, [11]=40 }
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- INTERNAL STATE
@@ -91,37 +100,35 @@ end
 -- RANGE HELPER FUNCTIONS
 -- ═══════════════════════════════════════════════════════════════════════════
 
--- Get range fallback index for a spell
+-- Get range fallback yards for a spell (stable key; no index)
 -- @param spellID: The spell ID
--- @return number: Range item index (0-9)
-function lib:GetRangeFallbackIndex(spellID)
+-- @return number: Yards (0, 5, 8, 10, ... 40); nil means use global
+function lib:GetRangeFallbackYards(spellID)
 	local getSettings = lib.callbacks.getSettings
-	if not getSettings then return 0 end
+	if not getSettings then return 5 end
 	
 	local settings = getSettings()
-	if not settings then return 0 end
+	if not settings then return 5 end
 	
 	local spellSettings = settings.spellSettings and settings.spellSettings[spellID]
-	if spellSettings and spellSettings.rangeFallback ~= nil then
-		return spellSettings.rangeFallback
+	if spellSettings then
+		if spellSettings.rangeFallbackYards ~= nil then
+			return spellSettings.rangeFallbackYards
+		end
+		-- Legacy: index -> yards
+		if spellSettings.rangeFallback ~= nil and lib.LEGACY_INDEX_TO_YARDS[spellSettings.rangeFallback] ~= nil then
+			return lib.LEGACY_INDEX_TO_YARDS[spellSettings.rangeFallback]
+		end
 	end
 	
-	return settings.globalRangeFallback or 0
-end
-
--- Check if target is in fallback range for a spell
--- @param spellID: The spell ID
--- @return boolean or nil: true if in range, false if out, nil if no check possible
-function lib:IsInFallbackRange(spellID)
-	local rangeIndex = lib:GetRangeFallbackIndex(spellID)
-	local item = lib.RANGE_ITEMS[rangeIndex]
-	
-	if not item or not item.id then
-		return nil
+	if settings.globalRangeFallbackYards ~= nil then
+		return settings.globalRangeFallbackYards
 	end
-	
-	local result = C_Item.IsItemInRange(item.id, "target")
-	return result == true
+	-- Legacy
+	if settings.globalRangeFallback ~= nil and lib.LEGACY_INDEX_TO_YARDS[settings.globalRangeFallback] ~= nil then
+		return lib.LEGACY_INDEX_TO_YARDS[settings.globalRangeFallback]
+	end
+	return 5
 end
 
 -- Check if spell is self-cast (no target needed)
@@ -185,7 +192,10 @@ function lib:HasRangeOverride(spellID)
 	if not settings then return false end
 	
 	local spellSettings = settings.spellSettings and settings.spellSettings[spellID]
-	return spellSettings and spellSettings.rangeFallback ~= nil
+	if not spellSettings then return false end
+	if spellSettings.rangeFallbackYards ~= nil then return true end
+	-- Legacy
+	return spellSettings.rangeFallback ~= nil
 end
 
 -- Check if spell has native range setting detected
@@ -286,15 +296,46 @@ function lib:UpdateRangeIndicators()
 				else
 					local useOverride = lib:HasRangeOverride(spellID)
 					local inRange = nil
+					local inCombat = InCombatLockdown()
 					
-					if useOverride then
-						-- User has explicitly set a range fallback for this spell
-						local fallbackResult = lib:IsInFallbackRange(spellID)
-						if fallbackResult ~= nil then
-							inRange = fallbackResult
+					-- Only use spell's native range when user has NOT set a range override
+					if not useOverride and C_Spell.SpellHasRange(spellID) then
+						local spellInRange = C_Spell.IsSpellInRange(spellID, "target")
+						if spellInRange ~= nil then
+							inRange = spellInRange
 						end
-					elseif actionSlot then
-						-- Try native range detection first if we have an action slot
+					end
+					
+					-- User chose a range override: proxy spell only, then cache
+					if inRange == nil and useOverride then
+						local rangeYards = lib:GetRangeFallbackYards(spellID)
+						local getSettings = lib.callbacks.getSettings
+						local settings = getSettings and getSettings()
+						local proxySpells = settings and settings.rangeProxySpells
+						local proxyID = proxySpells and proxySpells[rangeYards]
+						-- Legacy: fall back to rangeProxySpellIDs[index]
+						if not proxyID and settings and settings.rangeProxySpellIDs then
+							for idx, yards in pairs(lib.LEGACY_INDEX_TO_YARDS) do
+								if yards == rangeYards then
+									proxyID = settings.rangeProxySpellIDs[idx]
+									break
+								end
+							end
+						end
+						if proxyID and rangeYards and rangeYards > 0 and C_Spell.SpellHasRange(proxyID) then
+							local proxyInRange = C_Spell.IsSpellInRange(proxyID, "target")
+							if proxyInRange ~= nil then
+								inRange = proxyInRange
+								spellData.cachedFallbackInRange = proxyInRange
+							end
+						end
+						if inRange == nil and spellData.cachedFallbackInRange ~= nil then
+							inRange = spellData.cachedFallbackInRange
+						end
+					end
+					
+					if inRange == nil and actionSlot and not inCombat then
+						-- IsActionInRange is protected in combat; use only when safe
 						local nativeRange = IsActionInRange(actionSlot)
 						if nativeRange ~= nil then
 							inRange = nativeRange
@@ -313,14 +354,6 @@ function lib:UpdateRangeIndicators()
 								overlay:Hide()
 								inRange = "selfcast"
 							end
-						end
-					end
-					
-					-- Fallback to item-based range if native didn't work
-					if inRange == nil then
-						local fallbackResult = lib:IsInFallbackRange(spellID)
-						if fallbackResult ~= nil then
-							inRange = fallbackResult
 						end
 					end
 					

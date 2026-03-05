@@ -15,6 +15,7 @@ local LibProfiles = LibStub("LibGCDI-Profiles")
 local settings = nil  -- Set during init
 local configs = GCDI.configs
 local RANGE_ITEMS = GCDI.RANGE_ITEMS
+local RANGE_YARDS_ORDER = GCDI.RANGE_YARDS_ORDER or { 0, 5, 8, 10, 12, 13, 15, 20, 25, 30, 35, 40 }
 
 -- Local state for options frame
 local optionsFrame = nil
@@ -35,34 +36,54 @@ local refresh_profiles_tab
 -- UTILITY FUNCTIONS
 -- ═══════════════════════════════════════════════════════════════════════════
 
--- Build ordered list of range options for dropdowns
-local function get_range_options_list()
+-- Build ordered list of range options (keyed by yards, not index)
+-- settings: if provided, appends " (in combat)" for ranges that have a proxy spell
+local function get_range_options_list(settings)
 	local list = {}
-	for i = 0, 9 do
-		if RANGE_ITEMS[i] then
-			table.insert(list, { index = i, name = RANGE_ITEMS[i].name })
+	local proxySpells = settings and settings.rangeProxySpells
+	for _, yards in ipairs(RANGE_YARDS_ORDER) do
+		local item = RANGE_ITEMS[yards]
+		if item then
+			local name = item.name
+			if proxySpells and proxySpells[yards] then
+				name = name .. " (in combat)"
+			end
+			table.insert(list, { yards = yards, name = name })
 		end
 	end
 	return list
 end
 
-local function create_range_dropdown(parent, width, selectedIndex, onChange)
+-- Only ranges that have a "Range spell (in combat)" set on GCD tab
+local function get_range_options_list_proxy_only(settings)
+	local list = {}
+	local proxySpells = settings and settings.rangeProxySpells
+	if not proxySpells then return list end
+	for _, yards in ipairs(RANGE_YARDS_ORDER) do
+		if yards > 0 and proxySpells[yards] and RANGE_ITEMS[yards] then
+			table.insert(list, { yards = yards, name = RANGE_ITEMS[yards].name })
+		end
+	end
+	return list
+end
+
+local function create_range_dropdown(parent, width, selectedYards, onChange)
 	local dropdown = CreateFrame("Frame", nil, parent, "UIDropDownMenuTemplate")
 	dropdown:SetPoint("LEFT")
 	UIDropDownMenu_SetWidth(dropdown, width)
 	
-	local options = get_range_options_list()
+	local options = get_range_options_list(settings)
 	
 	local function initialize(self, level)
 		for listIdx, opt in ipairs(options) do
 			local info = UIDropDownMenu_CreateInfo()
 			info.text = opt.name
-			info.value = opt.index
-			info.checked = (opt.index == selectedIndex)
+			info.value = opt.yards
+			info.checked = (opt.yards == selectedYards)
 			info.func = function()
-				selectedIndex = opt.index
+				selectedYards = opt.yards
 				UIDropDownMenu_SetSelectedID(dropdown, listIdx)
-				if onChange then onChange(opt.index) end
+				if onChange then onChange(opt.yards) end
 			end
 			UIDropDownMenu_AddButton(info, level)
 		end
@@ -71,7 +92,7 @@ local function create_range_dropdown(parent, width, selectedIndex, onChange)
 	UIDropDownMenu_Initialize(dropdown, initialize)
 	
 	for listIdx, opt in ipairs(options) do
-		if opt.index == selectedIndex then
+		if opt.yards == selectedYards then
 			UIDropDownMenu_SetSelectedID(dropdown, listIdx)
 			break
 		end
@@ -207,33 +228,61 @@ local function refresh_gcd_tab()
 	rangeDropdown:SetPoint("LEFT", rangeLabel, "RIGHT", -5, -2)
 	UIDropDownMenu_SetWidth(rangeDropdown, 100)
 	
-	local rangeOptions = { 5, 8, 10, 15, 20, 28, 40 }
-	local rangeLabels = { "5 yards (melee)", "8 yards", "10 yards", "15 yards", "20 yards", "28 yards", "40 yards" }
-	
-	local function initRangeDropdown(self, level)
-		local currentRange = settings.gcdSettings.mobCountRange or 8
-		for i, range in ipairs(rangeOptions) do
-			local info = UIDropDownMenu_CreateInfo()
-			info.text = rangeLabels[i]
-			info.value = range
-			info.checked = (currentRange == range)
-			info.func = function()
-				settings.gcdSettings.mobCountRange = range
-				UIDropDownMenu_SetText(rangeDropdown, rangeLabels[i])
-				GCDI.auto_save_to_profile()
+	-- Only ranges that have a "Range spell (in combat)" set (mob count uses that proxy)
+	local function getMobRangeOptions()
+		local list = {}
+		local proxySpells = settings and settings.rangeProxySpells
+		if proxySpells then
+			for _, yards in ipairs(RANGE_YARDS_ORDER) do
+				if yards > 0 and proxySpells[yards] and RANGE_ITEMS[yards] then
+					table.insert(list, yards)
+				end
 			end
+		end
+		return list
+	end
+	local function getMobRangeLabel(yards)
+		return RANGE_ITEMS[yards] and RANGE_ITEMS[yards].name or (tostring(yards) .. " yards")
+	end
+	local function initRangeDropdown(self, level)
+		local mobRangeOptions = getMobRangeOptions()
+		local currentRange = settings.gcdSettings.mobCountRange or 8
+		if #mobRangeOptions == 0 then
+			local info = UIDropDownMenu_CreateInfo()
+			info.text = "Set range spells below"
+			info.value = nil
+			info.checked = true
+			info.func = function() end
 			UIDropDownMenu_AddButton(info, level)
+		else
+			for _, range in ipairs(mobRangeOptions) do
+				local info = UIDropDownMenu_CreateInfo()
+				info.text = getMobRangeLabel(range)
+				info.value = range
+				info.checked = (currentRange == range)
+				info.func = function()
+					settings.gcdSettings.mobCountRange = range
+					UIDropDownMenu_SetText(rangeDropdown, getMobRangeLabel(range))
+					GCDI.auto_save_to_profile()
+				end
+				UIDropDownMenu_AddButton(info, level)
+			end
 		end
 	end
 	UIDropDownMenu_Initialize(rangeDropdown, initRangeDropdown)
-	
 	-- Set initial text
 	local currentRange = settings.gcdSettings.mobCountRange or 8
-	for i, range in ipairs(rangeOptions) do
-		if range == currentRange then
-			UIDropDownMenu_SetText(rangeDropdown, rangeLabels[i])
-			break
-		end
+	local mobRangeOptions = getMobRangeOptions()
+	local inList = false
+	for _, r in ipairs(mobRangeOptions) do
+		if r == currentRange then inList = true break end
+	end
+	if inList and RANGE_ITEMS[currentRange] then
+		UIDropDownMenu_SetText(rangeDropdown, getMobRangeLabel(currentRange))
+	elseif #mobRangeOptions > 0 then
+		UIDropDownMenu_SetText(rangeDropdown, getMobRangeLabel(mobRangeOptions[1]))
+	else
+		UIDropDownMenu_SetText(rangeDropdown, "Set range spells below")
 	end
 	yOffset = yOffset - 35
 	
@@ -270,9 +319,111 @@ local function refresh_gcd_tab()
 	-- Help text
 	local mobHelp = track(frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall"))
 	mobHelp:SetPoint("TOPLEFT", 15, yOffset)
-	mobHelp:SetText("Tip: Uses nameplates to count nearby hostile mobs. Indicator turns white when mob count >= threshold.")
+	mobHelp:SetText("Tip: Counts hostiles in range using the Range spell set for this bracket (GCD tab). Indicator turns white when count >= threshold.")
 	mobHelp:SetTextColor(0.5, 0.5, 0.5)
 	yOffset = yOffset - 20
+	
+	-- ═══════════════════════════════════════════════════════════════════════════
+	-- RANGE SETTINGS
+	-- ═══════════════════════════════════════════════════════════════════════════
+	
+	local rangeSep = track(frame:CreateTexture(nil, "ARTWORK"))
+	rangeSep:SetColorTexture(0.4, 0.4, 0.4, 1)
+	rangeSep:SetSize(480, 1)
+	rangeSep:SetPoint("TOPLEFT", 5, yOffset)
+	yOffset = yOffset - 20
+	
+	local rangeTitle = track(frame:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge"))
+	rangeTitle:SetPoint("TOPLEFT", 5, yOffset)
+	rangeTitle:SetText("Range Settings")
+	yOffset = yOffset - 25
+	
+	local rangeDesc = track(frame:CreateFontString(nil, "OVERLAY", "GameFontHighlight"))
+	rangeDesc:SetPoint("TOPLEFT", 5, yOffset)
+	rangeDesc:SetText("Default range for spells without built-in range. Set a spell per range for in-combat checking (assign overrides in Spells tab).")
+	rangeDesc:SetTextColor(0.7, 0.7, 0.7)
+	yOffset = yOffset - 25
+	
+	-- Global range fallback (dropdown left edge aligned with range spell dropdowns below)
+	local RANGE_DROPDOWN_LEFT = 150
+	local globalLabel = track(frame:CreateFontString(nil, "OVERLAY", "GameFontNormal"))
+	globalLabel:SetPoint("TOPLEFT", 10, yOffset)
+	globalLabel:SetText("Global Range:")
+	
+	local globalDropdown = track(create_range_dropdown(frame, 130, settings.globalRangeFallbackYards or 5, function(yards)
+		settings.globalRangeFallbackYards = yards
+		GCDI.UpdateRangeIndicators()
+	end))
+	globalDropdown:SetPoint("TOPLEFT", frame, "TOPLEFT", RANGE_DROPDOWN_LEFT, yOffset - 2)
+	yOffset = yOffset - 28
+	
+	-- Range spells (in combat): one spell per range (keyed by yards)
+	local rangeSpellsHeader = track(frame:CreateFontString(nil, "OVERLAY", "GameFontNormal"))
+	rangeSpellsHeader:SetPoint("TOPLEFT", 10, yOffset)
+	rangeSpellsHeader:SetText("Range spells (in combat):")
+	rangeSpellsHeader:SetScript("OnEnter", function(self)
+		GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+		GameTooltip:SetText("Range spells (in combat)")
+		GameTooltip:AddLine("Set one spell per range. In the Spells tab, assign a range override per spell; ranges with a spell here will work in combat.", 1, 1, 1, true)
+		GameTooltip:Show()
+	end)
+	rangeSpellsHeader:SetScript("OnLeave", function() GameTooltip:Hide() end)
+	yOffset = yOffset - 22
+	
+	-- Build spell list for proxy dropdowns (spells that have range)
+	local spellOptionsForRange = { { value = nil, name = "-- None --" } }
+	do
+		local orderedSpells = GCDI.get_all_catalog_spells_ordered()
+		for _, spellID in ipairs(orderedSpells) do
+			local entry = GCDI.spellCatalog and GCDI.spellCatalog[spellID]
+			if entry and C_Spell and C_Spell.SpellHasRange and C_Spell.SpellHasRange(spellID) then
+				table.insert(spellOptionsForRange, { value = spellID, name = entry.name or tostring(spellID) })
+			end
+		end
+	end
+	
+	settings.rangeProxySpells = settings.rangeProxySpells or {}
+	local rangeRowCount = 0
+	for _, yards in ipairs(RANGE_YARDS_ORDER) do
+		if yards > 0 then
+			rangeRowCount = rangeRowCount + 1
+			local rowY = yOffset - (rangeRowCount - 1) * 20
+			local item = RANGE_ITEMS[yards]
+			local label = track(frame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall"))
+			label:SetPoint("TOPLEFT", 14, rowY)
+			label:SetText((item and item.name or tostring(yards) .. " yd") .. ":")
+			local dropdown = track(CreateFrame("Frame", nil, frame, "UIDropDownMenuTemplate"))
+			dropdown:SetPoint("TOPLEFT", frame, "TOPLEFT", RANGE_DROPDOWN_LEFT, rowY - 2)
+			UIDropDownMenu_SetWidth(dropdown, 165)
+			do
+				local y = yards
+				local currentProxy = settings.rangeProxySpells[y]
+				local function init(self, level)
+					for _, opt in ipairs(spellOptionsForRange) do
+						local info = UIDropDownMenu_CreateInfo()
+						info.text = opt.name
+						info.value = opt.value
+						info.checked = (opt.value == currentProxy)
+						info.func = function()
+							settings.rangeProxySpells[y] = opt.value
+							currentProxy = opt.value
+							UIDropDownMenu_SetText(dropdown, opt.name)
+							GCDI.UpdateRangeIndicators()
+							if GCDI.refresh_options_frame then GCDI.refresh_options_frame() end
+						end
+						UIDropDownMenu_AddButton(info, level)
+					end
+				end
+				UIDropDownMenu_Initialize(dropdown, init)
+				local displayName = "-- None --"
+				for _, opt in ipairs(spellOptionsForRange) do
+					if opt.value == currentProxy then displayName = opt.name break end
+				end
+				UIDropDownMenu_SetText(dropdown, displayName)
+			end
+		end
+	end
+	yOffset = yOffset - rangeRowCount * 20 - 15
 	
 	-- ═══════════════════════════════════════════════════════════════════════════
 	-- STANCE/FORM COLORS
@@ -602,21 +753,10 @@ local function refresh_spells_tab()
 	local scrollChild = optionsFrame.spellsScrollChild
 	local yOffset = -10
 	
-	-- Global range fallback
-	local globalLabel = track(scrollChild:CreateFontString(nil, "OVERLAY", "GameFontNormal"))
-	globalLabel:SetPoint("TOPLEFT", 10, yOffset)
-	globalLabel:SetText("Global Range:")
-	
-	local globalDropdown = track(create_range_dropdown(scrollChild, 130, settings.globalRangeFallback or 0, function(index)
-		settings.globalRangeFallback = index
-		GCDI.UpdateRangeIndicators()
-	end))
-	globalDropdown:SetPoint("LEFT", globalLabel, "RIGHT", -5, -2)
-	
 	-- Rescan Spells button
 	local rescanSpellsBtn = track(CreateFrame("Button", nil, scrollChild, "UIPanelButtonTemplate"))
 	rescanSpellsBtn:SetSize(100, 22)
-	rescanSpellsBtn:SetPoint("LEFT", globalDropdown, "RIGHT", 100, 2)
+	rescanSpellsBtn:SetPoint("TOPLEFT", 10, yOffset)
 	rescanSpellsBtn:SetText("Rescan Spells")
 	rescanSpellsBtn:SetScript("OnClick", function()
 		GCDI.scan_spells()
@@ -678,7 +818,7 @@ local function refresh_spells_tab()
 		
 		-- Ensure spell has settings entry
 		if not settings.spellSettings[spellID] then
-			settings.spellSettings[spellID] = { enabled = true, rangeFallback = nil, selfCast = false, hasNativeRange = nil, trackIcon = false }
+			settings.spellSettings[spellID] = { enabled = true, rangeFallbackYards = nil, selfCast = false, hasNativeRange = nil, trackIcon = false }
 		end
 		local spellSettings = settings.spellSettings[spellID]
 		
@@ -840,15 +980,18 @@ local function refresh_spells_tab()
 		local function initSpellRangeDropdown(self, level)
 			local info = UIDropDownMenu_CreateInfo()
 			local currentSpellSettings = GCDI.settings.spellSettings and GCDI.settings.spellSettings[spellID] or {}
+			-- Only ranges that have a proxy spell set (work in combat)
+			local rangeOptions = get_range_options_list_proxy_only(GCDI.settings)
 			
 			if currentSpellSettings.hasNativeRange then
 				info.text = "|cff00ff00Native|r"
 				info.value = -1
-				info.checked = (currentSpellSettings.rangeFallback == nil)
+				info.checked = (currentSpellSettings.rangeFallbackYards == nil and currentSpellSettings.rangeFallback == nil)
 				info.func = function()
 					if not GCDI.settings.spellSettings[spellID] then
 						GCDI.settings.spellSettings[spellID] = {}
 					end
+					GCDI.settings.spellSettings[spellID].rangeFallbackYards = nil
 					GCDI.settings.spellSettings[spellID].rangeFallback = nil
 					UIDropDownMenu_SetSelectedID(rangeDropdown, 1)
 					GCDI.auto_save_to_profile()
@@ -858,11 +1001,12 @@ local function refresh_spells_tab()
 			else
 				info.text = "Use Global"
 				info.value = -1
-				info.checked = (currentSpellSettings.rangeFallback == nil)
+				info.checked = (currentSpellSettings.rangeFallbackYards == nil and currentSpellSettings.rangeFallback == nil)
 				info.func = function()
 					if not GCDI.settings.spellSettings[spellID] then
 						GCDI.settings.spellSettings[spellID] = {}
 					end
+					GCDI.settings.spellSettings[spellID].rangeFallbackYards = nil
 					GCDI.settings.spellSettings[spellID].rangeFallback = nil
 					UIDropDownMenu_SetSelectedID(rangeDropdown, 1)
 					GCDI.auto_save_to_profile()
@@ -871,17 +1015,20 @@ local function refresh_spells_tab()
 				UIDropDownMenu_AddButton(info, level)
 			end
 			
-			local options = get_range_options_list()
-			for listIdx, opt in ipairs(options) do
+			for listIdx, opt in ipairs(rangeOptions) do
 				info = UIDropDownMenu_CreateInfo()
 				info.text = opt.name
-				info.value = opt.index
-				info.checked = (currentSpellSettings.rangeFallback == opt.index)
+				info.value = opt.yards
+				local currentYards = currentSpellSettings.rangeFallbackYards
+				if currentYards == nil and currentSpellSettings.rangeFallback ~= nil and GCDI.LEGACY_INDEX_TO_YARDS then
+					currentYards = GCDI.LEGACY_INDEX_TO_YARDS[currentSpellSettings.rangeFallback]
+				end
+				info.checked = (currentYards == opt.yards)
 				info.func = function()
 					if not GCDI.settings.spellSettings[spellID] then
 						GCDI.settings.spellSettings[spellID] = {}
 					end
-					GCDI.settings.spellSettings[spellID].rangeFallback = opt.index
+					GCDI.settings.spellSettings[spellID].rangeFallbackYards = opt.yards
 					UIDropDownMenu_SetSelectedID(rangeDropdown, listIdx + 1)
 					GCDI.auto_save_to_profile()
 					GCDI.UpdateRangeIndicators()
@@ -892,15 +1039,25 @@ local function refresh_spells_tab()
 		
 		UIDropDownMenu_Initialize(rangeDropdown, initSpellRangeDropdown)
 		
-		if spellSettings.rangeFallback == nil then
+		-- Set selected: 1 = Use Global/Native; 2+ = range option by yards (proxy-only)
+		local currentYards = spellSettings.rangeFallbackYards
+		if currentYards == nil and spellSettings.rangeFallback ~= nil and GCDI.LEGACY_INDEX_TO_YARDS then
+			currentYards = GCDI.LEGACY_INDEX_TO_YARDS[spellSettings.rangeFallback]
+		end
+		local rangeOptions = get_range_options_list_proxy_only(GCDI.settings)
+		if currentYards == nil then
 			UIDropDownMenu_SetSelectedID(rangeDropdown, 1)
 		else
-			local options = get_range_options_list()
-			for listIdx, opt in ipairs(options) do
-				if opt.index == spellSettings.rangeFallback then
+			local found = false
+			for listIdx, opt in ipairs(rangeOptions) do
+				if opt.yards == currentYards then
 					UIDropDownMenu_SetSelectedID(rangeDropdown, listIdx + 1)
+					found = true
 					break
 				end
+			end
+			if not found then
+				UIDropDownMenu_SetSelectedID(rangeDropdown, 1)  -- Current range has no proxy; show Use Global
 			end
 		end
 		
@@ -1742,8 +1899,9 @@ StaticPopupDialogs["GCDI_SAVE_PROFILE_CONFIRM"] = {
 			end
 			
 			s.profiles[profileName] = {
-				globalRangeFallback = s.globalRangeFallback,
-				spellSettings = deepcopy(s.spellSettings),
+				globalRangeFallbackYards = s.globalRangeFallbackYards,
+				rangeProxySpells = s.rangeProxySpells and deepcopy(s.rangeProxySpells) or {},
+				spellSettings = LibProfiles.SpellSettingsForSave(s.spellSettings),
 				spellOrder = deepcopy(s.spellOrder),
 				itemSettings = deepcopy(s.itemSettings or {}),
 				itemOrder = deepcopy(s.itemOrder or {}),
@@ -1804,7 +1962,16 @@ StaticPopupDialogs["GCDI_IMPORT_PROFILE_NAME"] = {
 		
 		-- Apply the imported settings
 		local s = GCDI.settings
-		if data.g ~= nil then s.globalRangeFallback = data.g end
+		if data.gy ~= nil then s.globalRangeFallbackYards = data.gy end
+		if data.rp ~= nil then s.rangeProxySpells = data.rp end
+		-- Legacy import
+		if data.g ~= nil and GCDI.LEGACY_INDEX_TO_YARDS and GCDI.LEGACY_INDEX_TO_YARDS[data.g] ~= nil then
+			s.globalRangeFallbackYards = GCDI.LEGACY_INDEX_TO_YARDS[data.g]
+		end
+		if data.m ~= nil and not (s.rangeProxySpells and s.rangeProxySpells[5]) then
+			s.rangeProxySpells = s.rangeProxySpells or {}
+			s.rangeProxySpells[5] = data.m
+		end
 		if data.ss then s.spellSettings = data.ss end
 		if data.so then s.spellOrder = data.so end
 		if data.is then s.itemSettings = data.is end
@@ -1817,8 +1984,9 @@ StaticPopupDialogs["GCDI_IMPORT_PROFILE_NAME"] = {
 		-- Save as new profile
 		s.profiles = s.profiles or {}
 		s.profiles[name] = {
-			globalRangeFallback = s.globalRangeFallback,
-			spellSettings = s.spellSettings,
+			globalRangeFallbackYards = s.globalRangeFallbackYards,
+			rangeProxySpells = s.rangeProxySpells and deepcopy(s.rangeProxySpells) or {},
+			spellSettings = LibProfiles.SpellSettingsForSave(s.spellSettings),
 			spellOrder = s.spellOrder,
 			itemSettings = s.itemSettings or {},
 			itemOrder = s.itemOrder or {},
@@ -1888,9 +2056,10 @@ local function do_save_profile(name)
 		return copy
 	end
 	
-	s.profiles[name] = {
-		globalRangeFallback = s.globalRangeFallback,
-		spellSettings = deepcopy(s.spellSettings),
+		s.profiles[name] = {
+		globalRangeFallbackYards = s.globalRangeFallbackYards,
+		rangeProxySpells = s.rangeProxySpells and deepcopy(s.rangeProxySpells) or {},
+		spellSettings = LibProfiles.SpellSettingsForSave(s.spellSettings),
 		spellOrder = deepcopy(s.spellOrder),
 		itemSettings = deepcopy(s.itemSettings or {}),
 		itemOrder = deepcopy(s.itemOrder or {}),
@@ -2230,8 +2399,9 @@ refresh_profiles_tab = function()
 	exportBtn:SetScript("OnClick", function()
 		local exportData = {
 			v = 1,
-			g = settings.globalRangeFallback,
-			ss = settings.spellSettings or {},
+			gy = settings.globalRangeFallbackYards,
+			rp = settings.rangeProxySpells,
+			ss = LibProfiles.SpellSettingsForSave(settings.spellSettings or {}),
 			so = settings.spellOrder or {},
 			is = settings.itemSettings or {},
 			io = settings.itemOrder or {},
