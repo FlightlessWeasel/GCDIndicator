@@ -112,6 +112,7 @@ local GCD_INDICATOR_OPTIONS = {
 	{ key = "showCombat", name = "Show Combat", desc = "Show the combat status indicator", disabled = true },
 	{ key = "showAggro", name = "Show Aggro", desc = "Show the threat/aggro indicator", disabled = true },
 	{ key = "showMobCount", name = "Show Mob Count", desc = "Show the nearby mob count indicator" },
+	{ key = "showDispel", name = "Show Dispel", desc = "Show when you have a dispellable debuff (purple = dispel needed)" },
 }
 
 local function refresh_gcd_tab()
@@ -156,6 +157,8 @@ local function refresh_gcd_tab()
 			showGcd = true,
 			showCombat = true,
 			showAggro = true,
+			showMobCount = true,
+			showDispel = true,
 		}
 	end
 	

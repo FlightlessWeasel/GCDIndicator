@@ -164,6 +164,7 @@ local DEFAULT_SETTINGS = {
 		showCombat = true,
 		showAggro = true,
 		showMobCount = true,
+		showDispel = true,     -- Player has dispellable debuff
 		mobCountRange = 8,     -- Default range in yards
 		mobCountThreshold = 3, -- Default threshold for white indicator
 	},
@@ -1789,6 +1790,22 @@ local function update_mob_count_indicator()
 	end
 end
 
+-- Player has a dispellable debuff. Use RAID_PLAYER_DISPELLABLE filter so we never read secret fields.
+local function update_dispel_indicator()
+	if previewMode then return end
+	if not main_frame or not main_frame.dispelbar then return end
+	local hasDispellable = false
+	local ok, auras = pcall(C_UnitAuras.GetUnitAuras, "player", "HARMFUL|RAID_PLAYER_DISPELLABLE")
+	if ok and auras and #auras > 0 then
+		hasDispellable = true
+	end
+	if hasDispellable then
+		main_frame.dispelbar:SetStatusBarColor(0.6, 0.2, 0.8, 1)  -- Purple = dispellable debuff on you
+	else
+		main_frame.dispelbar:SetStatusBarColor(0, 0, 0, 1)  -- Black = none
+	end
+end
+
 reposition_all = function()
 	local barSize = configs.barHeight
 	local spacing = configs.barSpacing
@@ -1837,8 +1854,12 @@ reposition_all = function()
 		if main_frame.mobcountbar then
 			main_frame.mobcountbar:SetShown(gcdSettings.showMobCount ~= false)
 		end
+		if main_frame.dispelbar then
+			main_frame.dispelbar:SetShown(gcdSettings.showDispel ~= false)
+		end
 		-- Refresh mob count bar so AOE detection is correct as soon as the row is visible
 		update_mob_count_indicator()
+		update_dispel_indicator()
 		
 		yOffset = yOffset - gcdContainerHeight - spacing
 	else
@@ -2695,6 +2716,7 @@ local function on_event(self, event, arg1, arg2, ...)
 		update_range_indicators()
 		detect_native_range_for_spells()  -- Auto-detect native range when targeting
 		update_aggro_indicator()
+		update_dispel_indicator()
 		
 	elseif event == "UNIT_THREAT_SITUATION_UPDATE" then
 		update_aggro_indicator()
@@ -2712,6 +2734,9 @@ local function on_event(self, event, arg1, arg2, ...)
 			-- Removed auto-scan: use /gcdopt scan to manually rescan
 			-- Just update existing buff bars
 			update_all_buff_bars()
+		end
+		if arg1 == "player" then
+			update_dispel_indicator()
 		end
 		
 	elseif event == "UNIT_SPELLCAST_SUCCEEDED" then
@@ -2877,7 +2902,7 @@ local function init()
 	main_frame.anchor = anchor
 	
 	local sepSize = 2
-	local containerWidth = (configs.size * 6) + (sepSize * 5) + (pad * 2)  -- 6 indicators: stance, gcd, combat, aggro, casting, mobcount
+	local containerWidth = (configs.size * 7) + (sepSize * 6) + (pad * 2)  -- 7: stance, gcd, combat, aggro, casting, mobcount, dispel
 	local gcdCombatContainer = CreateFrame("Frame", nil, main_frame)
 	gcdCombatContainer:SetSize(containerWidth, configs.size + pad * 2)
 	main_frame.gcdcontainer = gcdCombatContainer
@@ -2979,6 +3004,22 @@ local function init()
 	mobcountbar:SetPoint("LEFT", sep5, "RIGHT", 0, 0)
 	main_frame.mobcountbar = mobcountbar
 	
+	local sep6 = gcdCombatContainer:CreateTexture(nil, "ARTWORK")
+	sep6:SetSize(sepSize, configs.size)
+	sep6:SetPoint("LEFT", mobcountbar, "RIGHT", 0, 0)
+	sep6:SetColorTexture(0, 0, 0, 1)
+	
+	-- 7th indicator: player has a dispellable debuff (same method as Decursive: canActivePlayerDispel)
+	local dispelbar = CreateFrame("StatusBar", nil, gcdCombatContainer)
+	dispelbar:SetStatusBarTexture("Interface\\Buttons\\WHITE8X8")
+	dispelbar:GetStatusBarTexture():SetHorizTile(false)
+	dispelbar:SetMinMaxValues(0, 100)
+	dispelbar:SetValue(100)
+	dispelbar:SetSize(configs.size, configs.size)
+	dispelbar:SetStatusBarColor(0, 0, 0)  -- Black = no dispellable debuff
+	dispelbar:SetPoint("LEFT", sep6, "RIGHT", 0, 0)
+	main_frame.dispelbar = dispelbar
+	
 	GCDIndicator_Positions = GCDIndicator_Positions or {}
 	local libGCDI = LibStub and LibStub:GetLibrary("LibGCDI", true)
 	if libGCDI then
@@ -3041,6 +3082,7 @@ local function init()
 	update_all_resources()
 	update_stance_indicator()
 	update_aggro_indicator()
+	update_dispel_indicator()
 	
 	local events = {
 		"SPELL_UPDATE_COOLDOWN",
@@ -3358,6 +3400,14 @@ function GCDI.toggle_preview_mode()
 		if main_frame.stanceIndicator then
 			main_frame.stanceIndicator:SetColorTexture(0.5, 0.3, 0, 1)  -- Bear form color
 		end
+		if main_frame.mobcountbar then
+			main_frame.mobcountbar:SetStatusBarColor(1, 1, 1)
+			main_frame.mobcountbar:SetValue(100)
+		end
+		if main_frame.dispelbar then
+			main_frame.dispelbar:SetStatusBarColor(0.6, 0.2, 0.8, 1)  -- Purple = dispellable
+			main_frame.dispelbar:SetValue(100)
+		end
 		
 		print("|cff00ff00GCDIndicator:|r Preview mode |cff00ff00ON|r - All bars filled")
 	else
@@ -3388,6 +3438,8 @@ function GCDI.toggle_preview_mode()
 		
 		-- Update aggro indicator
 		update_aggro_indicator()
+		update_mob_count_indicator()
+		update_dispel_indicator()
 		
 		-- Force update all tracked elements
 		update_all_spell_bars()
