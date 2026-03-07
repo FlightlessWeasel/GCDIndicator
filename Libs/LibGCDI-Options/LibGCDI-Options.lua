@@ -222,13 +222,19 @@ local function refresh_gcd_tab()
 	mobDesc:SetTextColor(0.7, 0.7, 0.7)
 	yOffset = yOffset - 25
 	
-	-- Mob Count Range dropdown
+	-- Mob Count Range row box
+	local mobRangeRowBox = track(CreateFrame("Frame", nil, frame))
+	mobRangeRowBox:SetSize(280, 24)
+	mobRangeRowBox:SetPoint("TOPLEFT", frame, "TOPLEFT", 0, yOffset)
+	local mobRangeRowBg = mobRangeRowBox:CreateTexture(nil, "BACKGROUND")
+	mobRangeRowBg:SetColorTexture(0.12, 0.12, 0.12, 0.5)
+	mobRangeRowBg:SetAllPoints(mobRangeRowBox)
 	local rangeLabel = track(frame:CreateFontString(nil, "OVERLAY", "GameFontNormal"))
-	rangeLabel:SetPoint("TOPLEFT", 10, yOffset)
+	rangeLabel:SetParent(mobRangeRowBox)
+	rangeLabel:SetPoint("LEFT", mobRangeRowBox, "LEFT", 10, 0)
 	rangeLabel:SetText("Detection Range:")
-	
-	local rangeDropdown = track(CreateFrame("Frame", nil, frame, "UIDropDownMenuTemplate"))
-	rangeDropdown:SetPoint("LEFT", rangeLabel, "RIGHT", -5, -2)
+	local rangeDropdown = track(CreateFrame("Frame", nil, mobRangeRowBox, "UIDropDownMenuTemplate"))
+	rangeDropdown:SetPoint("LEFT", rangeLabel, "RIGHT", math.floor(5 * 0.65), 0)  -- 65% of previous gap
 	UIDropDownMenu_SetWidth(rangeDropdown, 100)
 	
 	-- Only ranges that have a "Range spell (in combat)" set (mob count uses that proxy)
@@ -347,18 +353,25 @@ local function refresh_gcd_tab()
 	rangeDesc:SetTextColor(0.7, 0.7, 0.7)
 	yOffset = yOffset - 25
 	
-	-- Global range fallback (dropdown left edge aligned with range spell dropdowns below)
-	local RANGE_DROPDOWN_LEFT = 150
+	-- Global range row box (label + dropdown aligned in one row)
+	local RANGE_ROW_HEIGHT = 24
+	local RANGE_DROPDOWN_LEFT = math.floor(150 * 0.65)  -- 65% of previous offset, dropdown closer to label
+	local globalRowBox = track(CreateFrame("Frame", nil, frame))
+	globalRowBox:SetSize(320, RANGE_ROW_HEIGHT)
+	globalRowBox:SetPoint("TOPLEFT", frame, "TOPLEFT", 0, yOffset)
+	local globalRowBg = globalRowBox:CreateTexture(nil, "BACKGROUND")
+	globalRowBg:SetColorTexture(0.12, 0.12, 0.12, 0.5)
+	globalRowBg:SetAllPoints(globalRowBox)
 	local globalLabel = track(frame:CreateFontString(nil, "OVERLAY", "GameFontNormal"))
-	globalLabel:SetPoint("TOPLEFT", 10, yOffset)
+	globalLabel:SetParent(globalRowBox)
+	globalLabel:SetPoint("LEFT", globalRowBox, "LEFT", 10, 0)
 	globalLabel:SetText("Global Range:")
-	
-	local globalDropdown = track(create_range_dropdown(frame, 130, settings.globalRangeFallbackYards or 5, function(yards)
+	local globalDropdown = track(create_range_dropdown(globalRowBox, 130, settings.globalRangeFallbackYards or 5, function(yards)
 		settings.globalRangeFallbackYards = yards
 		GCDI.UpdateRangeIndicators()
 	end))
-	globalDropdown:SetPoint("TOPLEFT", frame, "TOPLEFT", RANGE_DROPDOWN_LEFT, yOffset - 2)
-	yOffset = yOffset - 28
+	globalDropdown:SetPoint("LEFT", globalRowBox, "LEFT", RANGE_DROPDOWN_LEFT, 0)
+	yOffset = yOffset - RANGE_ROW_HEIGHT - 4
 	
 	-- Range spells (in combat): one spell per range (keyed by yards)
 	local rangeSpellsHeader = track(frame:CreateFontString(nil, "OVERLAY", "GameFontNormal"))
@@ -390,13 +403,21 @@ local function refresh_gcd_tab()
 	for _, yards in ipairs(RANGE_YARDS_ORDER) do
 		if yards > 0 then
 			rangeRowCount = rangeRowCount + 1
-			local rowY = yOffset - (rangeRowCount - 1) * 20
+			local rowY = yOffset - (rangeRowCount - 1) * (RANGE_ROW_HEIGHT + 2)
 			local item = RANGE_ITEMS[yards]
+			-- Row box: label and dropdown in one row, aligned
+			local rowBox = track(CreateFrame("Frame", nil, frame))
+			rowBox:SetSize(320, RANGE_ROW_HEIGHT)
+			rowBox:SetPoint("TOPLEFT", frame, "TOPLEFT", 0, rowY)
+			local rowBg = rowBox:CreateTexture(nil, "BACKGROUND")
+			rowBg:SetColorTexture(0.12, 0.12, 0.12, 0.5)
+			rowBg:SetAllPoints(rowBox)
 			local label = track(frame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall"))
-			label:SetPoint("TOPLEFT", 14, rowY)
+			label:SetParent(rowBox)
+			label:SetPoint("LEFT", rowBox, "LEFT", 10, 0)
 			label:SetText((item and item.name or tostring(yards) .. " yd") .. ":")
-			local dropdown = track(CreateFrame("Frame", nil, frame, "UIDropDownMenuTemplate"))
-			dropdown:SetPoint("TOPLEFT", frame, "TOPLEFT", RANGE_DROPDOWN_LEFT, rowY - 2)
+			local dropdown = track(CreateFrame("Frame", nil, rowBox, "UIDropDownMenuTemplate"))
+			dropdown:SetPoint("LEFT", rowBox, "LEFT", RANGE_DROPDOWN_LEFT, 0)
 			UIDropDownMenu_SetWidth(dropdown, 165)
 			do
 				local y = yards
@@ -426,7 +447,7 @@ local function refresh_gcd_tab()
 			end
 		end
 	end
-	yOffset = yOffset - rangeRowCount * 20 - 15
+	yOffset = yOffset - rangeRowCount * (RANGE_ROW_HEIGHT + 2) - 15
 	
 	-- ═══════════════════════════════════════════════════════════════════════════
 	-- STANCE/FORM COLORS
