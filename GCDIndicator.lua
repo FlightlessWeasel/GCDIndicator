@@ -2884,7 +2884,7 @@ local function init()
 	if settings.gcdSettings.mobCountThreshold == nil then
 		settings.gcdSettings.mobCountThreshold = 3
 	end
-	
+
 	-- Initialize catalog managers now that settings are available
 	init_catalog_managers()
 	
@@ -3009,7 +3009,7 @@ local function init()
 	sep6:SetPoint("LEFT", mobcountbar, "RIGHT", 0, 0)
 	sep6:SetColorTexture(0, 0, 0, 1)
 	
-	-- 7th indicator: player has a dispellable debuff (same method as Decursive: canActivePlayerDispel)
+	-- 7th indicator: player has a dispellable debuff (HARMFUL|RAID_PLAYER_DISPELLABLE; canActivePlayerDispel is secret so we cannot test it)
 	local dispelbar = CreateFrame("StatusBar", nil, gcdCombatContainer)
 	dispelbar:SetStatusBarTexture("Interface\\Buttons\\WHITE8X8")
 	dispelbar:GetStatusBarTexture():SetHorizTile(false)

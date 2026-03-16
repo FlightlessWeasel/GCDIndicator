@@ -150,7 +150,7 @@ local function refresh_gcd_tab()
 	yOffset = yOffset - 25
 	
 	-- Ensure gcdSettings exists
-	if not settings.gcdSettings then
+		if not settings.gcdSettings then
 		settings.gcdSettings = {
 			showGcdRow = true,
 			showStance = true,
