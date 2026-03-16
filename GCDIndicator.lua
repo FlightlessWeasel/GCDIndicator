@@ -1094,9 +1094,8 @@ local function update_buff_bar(buffID)
 			end
 			if auraData then
 				isActive = true
-				if data.stackDetectors then
-					stacks = LibDetector:CheckValue(data.stackDetectors, auraData.applications)
-				end
+				-- Store applications for stack bar (secret; only pass to SetValue, never read)
+				data._lastApplications = auraData.applications
 				-- Use resolved unit for duration bar below (so target debuffs get correct duration)
 				data._lastAuraUnit = unit
 			end
@@ -1133,28 +1132,13 @@ local function update_buff_bar(buffID)
 		data.active = true
 		data.activeIndicator:SetColorTexture(BUFF_COLORS.active[1], BUFF_COLORS.active[2], BUFF_COLORS.active[3], 1)
 		
-		-- Update stack indicators if present
-		-- Each indicator represents 2 stacks: blue = 1 stack, green = 2 stacks
-		if data.stackIndicators and GCDI.should_show_buff_stacks(buffID) then
-			-- Just iterate through all indicators we have (count is already correct)
-			for i, indicator in ipairs(data.stackIndicators) do
-				-- Indicator i represents stacks (2*i - 1) and (2*i)
-				local stacksForThisIndicator = stacks - (2 * (i - 1))
-				
-				if stacksForThisIndicator >= 2 then
-					-- 2 stacks = green (full)
-					indicator.bg:SetColorTexture(BUFF_COLORS.stackFull[1], BUFF_COLORS.stackFull[2], BUFF_COLORS.stackFull[3], 1)
-					indicator.overlay:Hide()
-				elseif stacksForThisIndicator >= 1 then
-					-- 1 stack = blue (half)
-					indicator.bg:SetColorTexture(BUFF_COLORS.stackHalf[1], BUFF_COLORS.stackHalf[2], BUFF_COLORS.stackHalf[3], 1)
-					indicator.overlay:Hide()
-				else
-					-- 0 stacks = black (empty)
-					indicator.overlay:Show()
-				end
-				indicator.bg:Show()
-			end
+		-- Update stack bar if present: pass applications through to SetValue (no read)
+		if data.stackBar and GCDI.should_show_buff_stacks(buffID) then
+			local maxStacksBar = GCDI.get_buff_max_stacks_display(buffID)
+			data.stackBar:SetMinMaxValues(0, maxStacksBar)
+			-- 1 stack: applications often nil; pass 1 so bar shows one segment
+			data.stackBar:SetValue(data._lastApplications or 1)
+			data.stackBar:Show()
 		end
 		
 		-- Update duration bar using CDM frame (pass auraInstanceID only when non-nil)
@@ -1170,13 +1154,12 @@ local function update_buff_bar(buffID)
 		-- Buff is not active
 		data.active = false
 		data.activeIndicator:SetColorTexture(BUFF_COLORS.inactive[1], BUFF_COLORS.inactive[2], BUFF_COLORS.inactive[3], 1)
+		data._lastApplications = nil
 		
-		-- Show all stack indicators as black (empty)
-		if data.stackIndicators then
-			for _, indicator in ipairs(data.stackIndicators) do
-				indicator.bg:SetColorTexture(BUFF_COLORS.stackHalf[1], BUFF_COLORS.stackHalf[2], BUFF_COLORS.stackHalf[3], 1)
-				indicator.overlay:Show()  -- Show black overlay
-			end
+		-- Empty stack bar
+		if data.stackBar then
+			data.stackBar:SetValue(0)
+			data.stackBar:Show()
 		end
 		
 		-- Reset duration bar
@@ -1201,15 +1184,14 @@ local function create_buff_bar(buffKey, spellName, texture, tooltipSpellID)
 	-- Check if we should show stacks for this buff
 	local showStacks = GCDI.should_show_buff_stacks(buffKey)
 	local maxStacks = GCDI.get_buff_max_stacks_display(buffKey)  -- Max stacks setting (e.g., 10)
-	-- Each indicator represents 2 stacks, so calculate indicator count
-	local indicatorCount = math.ceil(maxStacks / 2)  -- e.g., 10 stacks = 5 indicators
+	-- Single stack bar: one barSize-wide segment per stack (wider for readable segments)
+	local stackWidth = showStacks and (maxStacks * barSize + (maxStacks - 1) * 2) or 0
 	
 	-- Check if we should show duration bar for this buff
 	local showDurationBar = GCDI.should_show_duration_bar(buffKey)
 	
-	-- Layout: [Icon][Active Indicator][Stacks?][Duration Bar?]
+	-- Layout: [Icon][Active Indicator][Stack Bar?][Duration Bar?]
 	-- Active indicator is a single square that shows green when buff is active
-	local stackWidth = showStacks and (indicatorCount * barSize + (indicatorCount - 1) * 2) or 0
 	local extraGap = showStacks and 2 or 0
 	local durationBarWidth = showDurationBar and (barSize + 2) or 0  -- 8x8 clipped indicator
 	local containerWidth = (barSize * 2 + 2) + stackWidth + extraGap + durationBarWidth + pad * 2
@@ -1234,40 +1216,34 @@ local function create_buff_bar(buffKey, spellName, texture, tooltipSpellID)
 	activeIndicator:SetPoint("LEFT", icon, "RIGHT", 2, 0)
 	activeIndicator:SetColorTexture(BUFF_COLORS.inactive[1], BUFF_COLORS.inactive[2], BUFF_COLORS.inactive[3], 1)
 	
-	-- Stack indicators (optional) - colored boxes only, no text
-	-- Each indicator represents 2 stacks: blue = 1 stack, green = 2 stacks
-	local stackIndicators = nil
-	local stackDetectors = nil
-	
+	-- Stack bar (optional) - single StatusBar, fill = stacks (pass secret to SetValue, no read)
+	local stackBar = nil
 	local lastElement = activeIndicator  -- Track last element for duration bar positioning
 	
-	if showStacks and indicatorCount > 0 then
-		stackIndicators = {}
-		stackDetectors = LibDetector:CreateDetectorArray(maxStacks)  -- Detect up to maxStacks
-		local prevElement = activeIndicator
+	if showStacks and stackWidth > 0 then
+		-- Background (empty portion)
+		local stackBarBg = container:CreateTexture(nil, "ARTWORK")
+		stackBarBg:SetSize(stackWidth, barSize)
+		stackBarBg:SetPoint("LEFT", activeIndicator, "RIGHT", 2, 0)
+		stackBarBg:SetColorTexture(BUFF_COLORS.stackEmpty[1], BUFF_COLORS.stackEmpty[2], BUFF_COLORS.stackEmpty[3], 1)
 		
-		for i = 1, indicatorCount do
-			-- Blue background (default color, will be updated based on stacks)
-			local stackBg = container:CreateTexture(nil, "ARTWORK")
-			stackBg:SetSize(barSize, barSize)
-			stackBg:SetPoint("LEFT", prevElement, "RIGHT", 2, 0)
-			stackBg:SetColorTexture(BUFF_COLORS.stackHalf[1], BUFF_COLORS.stackHalf[2], BUFF_COLORS.stackHalf[3], 1)
-			
-			-- Black overlay (stack empty) - shown when stack is NOT present
-			local stackOverlay = container:CreateTexture(nil, "OVERLAY")
-			stackOverlay:SetSize(barSize, barSize)
-			stackOverlay:SetPoint("CENTER", stackBg, "CENTER", 0, 0)
-			stackOverlay:SetColorTexture(BUFF_COLORS.stackEmpty[1], BUFF_COLORS.stackEmpty[2], BUFF_COLORS.stackEmpty[3], 1)
-			stackOverlay:Show()  -- Start shown (no stacks)
-			
-			stackIndicators[i] = {
-				bg = stackBg,
-				overlay = stackOverlay,
-			}
-			
-			prevElement = stackBg
-			lastElement = stackBg
+		stackBar = CreateFrame("StatusBar", nil, container)
+		stackBar:SetSize(stackWidth, barSize)
+		stackBar:SetPoint("LEFT", activeIndicator, "RIGHT", 2, 0)
+		stackBar:SetStatusBarTexture("Interface\\Buttons\\WHITE8X8")
+		stackBar:SetStatusBarColor(BUFF_COLORS.stackHalf[1], BUFF_COLORS.stackHalf[2], BUFF_COLORS.stackHalf[3], 1)  -- Blue (AHK detects only blue)
+		stackBar:SetMinMaxValues(0, maxStacks)
+		stackBar:SetValue(0)
+		
+		-- Segment dividers (vertical lines between stacks)
+		for i = 1, maxStacks - 1 do
+			local div = stackBar:CreateTexture(nil, "OVERLAY")
+			div:SetSize(1, barSize)
+			div:SetPoint("LEFT", stackBar, "LEFT", (i / maxStacks) * stackWidth, 0)
+			div:SetColorTexture(BUFF_COLORS.stackEmpty[1], BUFF_COLORS.stackEmpty[2], BUFF_COLORS.stackEmpty[3], 0.9)
 		end
+		
+		lastElement = stackBar
 	end
 	
 	-- Duration bar (10k wide, clipped to 8x8, offset based on threshold)
@@ -1306,8 +1282,7 @@ local function create_buff_bar(buffKey, spellName, texture, tooltipSpellID)
 	trackedBuffs[buffKey] = {
 		container = container,
 		activeIndicator = activeIndicator,
-		stackIndicators = stackIndicators,
-		stackDetectors = stackDetectors,  -- For ArcUI-style stack detection
+		stackBar = stackBar,  -- Single StatusBar: SetValue(applications) pass-through, no read
 		durationBar = durationBar,
 		active = false,
 		name = spellName,
@@ -3367,16 +3342,11 @@ function GCDI.toggle_preview_mode()
 			if data.activeIndicator then
 				data.activeIndicator:SetColorTexture(0, 0.8, 0, 1)  -- Green = active
 			end
-			if data.stackIndicators then
-				for i, indicator in ipairs(data.stackIndicators) do
-					-- Alternate colors in preview: odd = green (full), even = blue (half)
-					if i % 2 == 1 then
-						indicator.bg:SetColorTexture(BUFF_COLORS.stackFull[1], BUFF_COLORS.stackFull[2], BUFF_COLORS.stackFull[3], 1)
-					else
-						indicator.bg:SetColorTexture(BUFF_COLORS.stackHalf[1], BUFF_COLORS.stackHalf[2], BUFF_COLORS.stackHalf[3], 1)
-					end
-					indicator.overlay:Hide()
-				end
+			if data.stackBar then
+				local maxStacksPreview = GCDI.get_buff_max_stacks_display(buffID)
+				data.stackBar:SetMinMaxValues(0, maxStacksPreview)
+				data.stackBar:SetValue(maxStacksPreview)  -- Full in preview
+				data.stackBar:Show()
 			end
 		end
 		
