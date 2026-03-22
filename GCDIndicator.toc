@@ -2,7 +2,7 @@
 ## Author: jason
 ## Title: GCD Indicator
 ## Notes: Simple bar that flashes red during Global Cooldown (GCD)
-## Version: 260124
+## Version: 260323
 ## IconTexture: Interface\Icons\Inv_10_inscription3_darkmoondeckbox_black.blp
 ## SavedVariablesPerCharacter: GCDIndicator_Positions, GCDIndicator_Settings
 ## Category: aJasonBrown

@@ -25,6 +25,8 @@ local InCombatLockdown = InCombatLockdown
 local UnitAffectingCombat = UnitAffectingCombat
 local UnitHealth = UnitHealth
 local UnitHealthMax = UnitHealthMax
+local CreateUnitHealPredictionCalculator = CreateUnitHealPredictionCalculator
+local UnitGetDetailedHealPrediction = UnitGetDetailedHealPrediction
 local UnitPower = UnitPower
 local UnitPowerMax = UnitPowerMax
 local C_Spell = C_Spell
@@ -1422,15 +1424,79 @@ local function create_resource_bar(name, color)
 	return { bar = bar, container = container, separatorFrame = separatorFrame }
 end
 
+-- Heal absorb: Retail calculator + StatusBar (oUF/ElvUI-style) so values can stay secret-safe on SetValue
+local function setup_health_heal_absorb_bar(data)
+	if not CreateUnitHealPredictionCalculator or not UnitGetDetailedHealPrediction then
+		return
+	end
+	local healthBar = data.bar
+	healthBar:SetClipsChildren(true)
+	local absorbBar = CreateFrame("StatusBar", nil, healthBar)
+	absorbBar:SetFrameLevel(healthBar:GetFrameLevel() + 3)
+	absorbBar:SetStatusBarTexture("Interface\\Buttons\\WHITE8X8")
+	local abTex = absorbBar:GetStatusBarTexture()
+	if abTex and abTex.SetHorizTile then
+		abTex:SetHorizTile(false)
+	end
+	absorbBar:SetStatusBarColor(0, 0, 0, 1)
+	absorbBar:SetMinMaxValues(0, 100)
+	absorbBar:SetValue(0)
+	absorbBar:SetReverseFill(true)
+	absorbBar:Hide()
+	data.healAbsorbBar = absorbBar
+	data.healPredictionValues = CreateUnitHealPredictionCalculator()
+	local calc = data.healPredictionValues
+	calc:SetDamageAbsorbClampMode(Enum.UnitDamageAbsorbClampMode.MissingHealth)
+	calc:SetHealAbsorbClampMode(Enum.UnitHealAbsorbClampMode.CurrentHealth)
+	calc:SetIncomingHealClampMode(Enum.UnitIncomingHealClampMode.MissingHealth)
+	calc:SetHealAbsorbMode(Enum.UnitHealAbsorbMode.ReducedByIncomingHeals)
+	calc:SetIncomingHealOverflowPercent(1.05)
+end
+
+-- Shared layout for heal absorb StatusBar (maxHealth / absorb may be secret when from APIs)
+local function layout_heal_absorb_bar(data, maxHealth, absorbAmount)
+	local absorbBar = data.healAbsorbBar
+	local bar = data.bar
+	if not absorbBar or not maxHealth or maxHealth <= 0 then
+		return false
+	end
+	local hbTex = bar:GetStatusBarTexture()
+	if not hbTex then
+		return false
+	end
+	local w, h = bar:GetSize()
+	if not w or w <= 0 or not h or h <= 0 then
+		return false
+	end
+	absorbBar:SetMinMaxValues(0, maxHealth)
+	absorbBar:SetValue(absorbAmount)
+	absorbBar:ClearAllPoints()
+	absorbBar:SetSize(w, h)
+	absorbBar:SetPoint("RIGHT", hbTex, "RIGHT", 0, 0)
+	absorbBar:SetPoint("TOP", bar, "TOP", 0, 0)
+	absorbBar:Show()
+	return true
+end
+
 local function update_health_bar()
 	if previewMode then return end  -- Skip updates in preview mode
 	if not resourceBars.health then return end
-	local bar = resourceBars.health.bar
+	local data = resourceBars.health
+	local bar = data.bar
 	local rawMax = UnitHealthMax("player")
 	local max = tonumber(rawMax) or 100000
 	if max > 0 then
 		bar:SetMinMaxValues(0, max)
 		bar:SetValue(UnitHealth("player"))
+	end
+	local absorbBar = data.healAbsorbBar
+	local calc = data.healPredictionValues
+	if absorbBar and calc and max > 0 then
+		UnitGetDetailedHealPrediction("player", "player", calc)
+		local healAbsorbAmount = select(1, calc:GetHealAbsorbs())
+		if not layout_heal_absorb_bar(data, max, healAbsorbAmount) then
+			absorbBar:Hide()
+		end
 	end
 end
 
@@ -2623,6 +2689,21 @@ local function on_event(self, event, arg1, arg2, ...)
 			update_health_bar()
 		end
 		
+	elseif event == "UNIT_MAXHEALTH" then
+		if arg1 == "player" then
+			update_health_bar()
+		end
+		
+	elseif event == "UNIT_HEAL_ABSORB_AMOUNT_CHANGED" then
+		if arg1 == "player" then
+			update_health_bar()
+		end
+		
+	elseif event == "UNIT_HEAL_PREDICTION" then
+		if arg1 == "player" then
+			update_health_bar()
+		end
+		
 	elseif event == "UNIT_POWER_UPDATE" or event == "UNIT_POWER_FREQUENT" then
 		if arg1 == "player" then
 			if arg2 == "MANA" then
@@ -2988,6 +3069,7 @@ local function init()
 	local barSize = configs.barHeight
 	-- Create all resource bars
 	resourceBars.health = create_resource_bar("health", RESOURCE_COLORS.health)
+	setup_health_heal_absorb_bar(resourceBars.health)
 	resourceBars.mana = create_resource_bar("mana", RESOURCE_COLORS.mana)
 	resourceBars.rage = create_resource_bar("rage", RESOURCE_COLORS.rage)
 	resourceBars.energy = create_resource_bar("energy", RESOURCE_COLORS.energy)
@@ -3066,6 +3148,9 @@ local function init()
 		main_frame:RegisterEvent(event)
 	end
 	main_frame:RegisterUnitEvent("UNIT_HEALTH", "player")
+	main_frame:RegisterUnitEvent("UNIT_MAXHEALTH", "player")
+	main_frame:RegisterUnitEvent("UNIT_HEAL_ABSORB_AMOUNT_CHANGED", "player")
+	main_frame:RegisterUnitEvent("UNIT_HEAL_PREDICTION", "player")
 	main_frame:RegisterUnitEvent("UNIT_POWER_UPDATE", "player")
 	main_frame:RegisterUnitEvent("UNIT_POWER_FREQUENT", "player")
 	main_frame:RegisterUnitEvent("UNIT_MAXPOWER", "player")
@@ -3291,6 +3376,15 @@ function GCDI.toggle_preview_mode()
 					if color then
 						data.bar:SetStatusBarColor(color[1], color[2], color[3])
 					end
+					-- Plain-number fake absorb for layout only; cannot mimic real "secret" userdata from Lua
+					if key == "health" and configs.debugMode and data.healAbsorbBar then
+						data.bar:SetValue(100)
+						if not layout_heal_absorb_bar(data, 100, 25) then
+							data.healAbsorbBar:Hide()
+						end
+					elseif data.healAbsorbBar then
+						data.healAbsorbBar:Hide()
+					end
 				end
 			end
 		end
@@ -3360,6 +3454,9 @@ function GCDI.toggle_preview_mode()
 		end
 		
 		print("|cff00ff00GCDIndicator:|r Preview mode |cff00ff00ON|r - All bars filled")
+		if configs.debugMode and resourceBars.health and resourceBars.health.healAbsorbBar then
+			print("|cff888888GCDIndicator:|r Debug: health 60/100 + heal absorb 25 (plain numbers for layout; real secrets only come from combat APIs)|r")
+		end
 	else
 		-- Hide background
 		if previewBackground then
