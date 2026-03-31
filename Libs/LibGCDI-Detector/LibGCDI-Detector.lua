@@ -3,7 +3,7 @@
 -- Uses hidden StatusBars to safely read WoW's secret values (charges, stacks)
 -- ═══════════════════════════════════════════════════════════════════════════
 
-local MAJOR, MINOR = "LibGCDI-Detector", 1
+local MAJOR, MINOR = "LibGCDI-Detector", 3
 local lib = LibStub:NewLibrary(MAJOR, MINOR)
 if not lib then return end
 
@@ -13,6 +13,28 @@ lib.activeDetectors = lib.activeDetectors or {}
 
 -- Y offset for positioning detectors off-screen
 local nextYOffset = 500
+
+-- After SetValue(secret), texture GetWidth() can be a secret — comparing it errors.
+-- For plain values (e.g. 0 from inactive UI), width > 0 detects fill more reliably than IsShown().
+local function DetectorThresholdMet(detector, valueFed)
+	local tex = detector:GetStatusBarTexture()
+	if not tex or not tex:IsShown() then
+		return false
+	end
+	local useWidth = true
+	if valueFed ~= nil and issecretvalue and issecretvalue(valueFed) then
+		useWidth = false
+	end
+	if useWidth then
+		local w = tex:GetWidth()
+		if w ~= nil and issecretvalue and issecretvalue(w) then
+			useWidth = false
+		else
+			return (w or 0) > 0.5
+		end
+	end
+	return tex:IsShown()
+end
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- DETECTOR CREATION
@@ -60,7 +82,7 @@ end
 -- Returns: true if value >= threshold, false otherwise
 function lib:CheckThreshold(detector, secretValue)
 	detector:SetValue(secretValue)
-	return detector:GetStatusBarTexture():IsShown()
+	return DetectorThresholdMet(detector, secretValue)
 end
 
 -- Feed a secret value to all detectors and count how many thresholds are met
@@ -77,11 +99,9 @@ function lib:CheckValue(detectors, secretValue)
 	
 	-- Then check which ones show their texture
 	for i, detector in ipairs(detectors) do
-		if detector:GetStatusBarTexture():IsShown() then
+		if DetectorThresholdMet(detector, secretValue) then
 			result = i
 		else
-			-- Once we hit a detector that's not showing, we're done
-			-- (assumes sequential thresholds 1, 2, 3, ...)
 			break
 		end
 	end
@@ -106,7 +126,7 @@ function lib:UpdateIndicators(detectors, indicators, secretValue, invertOverlay)
 	for i, detector in ipairs(detectors) do
 		local indicator = indicators[i]
 		if indicator and indicator.overlay then
-			local thresholdMet = detector:GetStatusBarTexture():IsShown()
+			local thresholdMet = DetectorThresholdMet(detector, secretValue)
 			if invertOverlay then
 				-- Standard: overlay hides when value is sufficient (show underlying "active" color)
 				if thresholdMet then

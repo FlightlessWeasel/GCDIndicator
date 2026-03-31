@@ -23,7 +23,7 @@ lib.BUFF_COLORS = {
 	active = { 0.2, 0.8, 0.2 },
 	inactive = { 0.3, 0.3, 0.3 },
 	stackEmpty = { 0, 0, 0 },
-	stackHalf = { 0.4, 0.7, 1.0 },
+	stackHalf = { 0.4, 0.7, 1.0 }, -- per-segment fill (blue); black overlay = empty
 	stackFull = { 0.2, 0.8, 0.2 },
 }
 
