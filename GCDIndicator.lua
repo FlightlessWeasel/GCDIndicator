@@ -14,6 +14,7 @@ GCDI.configs = {
 	barHeight = 8,
 	bgPadding = 2,
 	debugMode = false,
+	useNativeStackBinding = false,  -- experimental A/B toggle, see CHANGE-TRACKER.md
 }
 local configs = GCDI.configs
 
@@ -1217,32 +1218,45 @@ local function apps_from_aura(auraData)
 	return nil
 end
 
+local function gcdi_try_aura_apps_for_spell(spellID, unit)
+	if not spellID or not C_UnitAuras then return nil end
+	if unit == "player" and C_UnitAuras.GetPlayerAuraBySpellID then
+		local ok, result = pcall(C_UnitAuras.GetPlayerAuraBySpellID, spellID)
+		if ok then
+			local apps = apps_from_aura(result)
+			if apps ~= nil then return apps end
+		end
+	end
+	if C_UnitAuras.GetUnitAuraBySpellID then
+		local ok, result = pcall(C_UnitAuras.GetUnitAuraBySpellID, unit, spellID)
+		if ok then
+			local apps = apps_from_aura(result)
+			if apps ~= nil then return apps end
+		end
+	end
+	return nil
+end
+
 local function gcdi_get_buff_stack_applications(cdmFrame, catalogEntry, data)
-	local spellID = (catalogEntry and (catalogEntry.spellID or catalogEntry.tooltipSpellID))
-		or (data and data.tooltipSpellID)
 	local unit = (cdmFrame and ((cdmFrame.GetAuraDataUnit and cdmFrame:GetAuraDataUnit()) or cdmFrame.auraDataUnit))
 		or (catalogEntry and catalogEntry.isTargetDebuff and "target")
 		or "player"
 
-	if spellID and C_UnitAuras then
-		if unit == "player" and C_UnitAuras.GetPlayerAuraBySpellID then
-			local ok, result = pcall(C_UnitAuras.GetPlayerAuraBySpellID, spellID)
-			if ok then
-				local apps = apps_from_aura(result)
-				if apps ~= nil then return apps end
-			end
-		end
-		if C_UnitAuras.GetUnitAuraBySpellID then
-			local ok, result = pcall(C_UnitAuras.GetUnitAuraBySpellID, unit, spellID)
-			if ok then
-				local apps = apps_from_aura(result)
-				if apps ~= nil then return apps end
-			end
-		end
+	-- CDM's tracked spellID (the ability/button) and its overrideTooltipSpellID can point
+	-- at different spells for procs where the displayed ability isn't what actually stacks.
+	-- Try both live IDs before falling back to the cached (possibly stale) CDM aura data.
+	local primaryID = catalogEntry and catalogEntry.spellID
+	local secondaryID = (catalogEntry and catalogEntry.tooltipSpellID) or (data and data.tooltipSpellID)
+
+	local apps = gcdi_try_aura_apps_for_spell(primaryID, unit)
+	if apps ~= nil then return apps end
+	if secondaryID and secondaryID ~= primaryID then
+		apps = gcdi_try_aura_apps_for_spell(secondaryID, unit)
+		if apps ~= nil then return apps end
 	end
 
 	if cdmFrame then
-		local apps = apps_from_aura(cdmFrame.auraDataCached)
+		apps = apps_from_aura(cdmFrame.auraDataCached)
 		if apps ~= nil then return apps end
 	end
 	return nil
@@ -1293,7 +1307,16 @@ local function update_buff_bar(buffID)
 		cdmFrame = catalogEntry.cdmFrame
 		lookupMethod = "catalog"
 	end
-	
+
+	-- CDM's itemFramePool reassigns frame objects to other cooldownIDs as buffs come and
+	-- go; a cached reference can outlive that reassignment (RefreshData hook narrows but
+	-- doesn't close the window). If the frame's own cooldownID no longer matches the one we
+	-- looked it up under, it belongs to a different buff now - do not read state off it.
+	if cdmFrame and cdmFrame.cooldownID and cdmFrame.cooldownID ~= cooldownID then
+		cdmFrame = nil
+		lookupMethod = "stale-discarded"
+	end
+
 	-- Debug: show lookup status if frame not found
 	if not cdmFrame and configs.debugMode then
 		local hasCatalog = catalogEntry and "yes" or "no"
@@ -1347,7 +1370,9 @@ local function update_buff_bar(buffID)
 			data.activeIndicator:SetColorTexture(BUFF_COLORS.active[1], BUFF_COLORS.active[2], BUFF_COLORS.active[3], 1)
 		end
 
-		if data.stackBar and GCDI.should_show_buff_stacks(buffID) then
+		-- data.nativeStackActive: engine ApplicationBar binding owns this bar's fill
+		-- (configs.useNativeStackBinding path) - don't fight it with a manual write.
+		if data.stackBar and GCDI.should_show_buff_stacks(buffID) and not data.nativeStackActive then
 			local apps
 			if data.manualTracking and not cdmFrame then
 				apps = data.stacks or 0
@@ -1417,18 +1442,25 @@ local function gcdi_install_cdm_stack_hooks()
 	if not mixin or not mixin.SetAuraInstanceInfo then return end
 	gcdi_cdm_stack_hooks_installed = true
 	hooksecurefunc(mixin, "SetAuraInstanceInfo", function(self, auraInfo, unit)
-		if auraInfo then
-			self.auraDataCached = auraInfo
-			if unit ~= nil then
-				self.auraDataUnit = unit
-			end
+		-- Clear as well as set: CDM calls this with nil when the aura instance goes away,
+		-- and our own fallback cache must not keep returning stale application counts
+		-- after that happens (was previously only writing on a truthy auraInfo).
+		self.auraDataCached = auraInfo or nil
+		if auraInfo and unit ~= nil then
+			self.auraDataUnit = unit
 		end
 	end)
 	if mixin.RefreshData then
 		hooksecurefunc(mixin, "RefreshData", function(self)
 			if previewMode then return end
 			local cdID = self.cooldownID
-			if not cdID or not trackedBuffs[cdID] then return end
+			if not cdID then return end
+			-- CDM's itemFramePool reassigns the same frame object to different cooldownIDs
+			-- as buffs come and go, and RefreshData is what (re)binds a pooled frame to its
+			-- current cooldownID. Keep our map in sync here so it self-heals instead of only
+			-- refreshing on the next full scan_cdm_buff_frames() (login/profile-load/manual).
+			cdmBuffFrames[cdID] = self
+			if not trackedBuffs[cdID] then return end
 			C_Timer.After(0, function()
 				if trackedBuffs[cdID] then
 					update_buff_bar(cdID)
@@ -1452,6 +1484,134 @@ local function schedule_update_all_buff_bars_after_aura()
 		-- only polls icons at a low rate.
 		update_spell_icons()
 	end)
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- EXPERIMENTAL: native AuraContainer/AddAuraSlot stack binding
+-- ═══════════════════════════════════════════════════════════════════════════
+-- Alternate to the C_UnitAuras spell-ID query path above (gcdi_get_buff_stack_
+-- applications). Gated by configs.useNativeStackBinding (default OFF) so both
+-- methods can be A/B tested without ripping either one out. See
+-- CHANGE-TRACKER.md for exactly what this touches and how to fully remove it.
+--
+-- Must only be called from a clean (non-tainted) context - bar creation/
+-- rebuild - never from inside UNIT_AURA. SetApplicationBar only accepts a
+-- StatusBar the engine-created AuraButton itself owns (like SetDurationBar),
+-- so this overlays an invisible native button's own bar exactly on top of our
+-- existing stack StatusBar and hides ours once the engine confirms the bind.
+local nativeStackContainers = {}  -- [unit] -> AuraContainer
+
+local function gcdi_ensure_native_stack_container(unit)
+	local existing = nativeStackContainers[unit]
+	if existing then return existing end
+	if InCombatLockdown() then
+		debug("native stacks: container(" .. tostring(unit) .. ") deferred, in combat")
+		return nil
+	end
+	local ok, c = pcall(CreateFrame, "AuraContainer", nil, main_frame, "CustomAuraContainerTemplate")
+	if not ok or not c then
+		debug("native stacks: CreateFrame(AuraContainer) failed - " .. tostring(c))
+		return nil
+	end
+	if c.SetUnit then c:SetUnit(unit) end
+	if c.SetEnabled then c:SetEnabled(true) end
+	c:SetSize(1, 1)
+	c:Show()  -- must be shown+enabled to self-register aura updates
+	nativeStackContainers[unit] = c
+	debug("native stacks: container(" .. tostring(unit) .. ") created, AddAuraSlot=" .. tostring(c.AddAuraSlot ~= nil))
+	return c
+end
+
+local function gcdi_setup_native_stack_slot(buffKey, data, catalogEntry)
+	if not (data and data.stackBar and data.stackBar.bar) then return end
+	local unit = (catalogEntry and catalogEntry.isTargetDebuff) and "target" or "player"
+	local container = gcdi_ensure_native_stack_container(unit)
+	if not container then return end
+	if not container.AddAuraSlot then
+		debug("native stacks: " .. tostring(buffKey) .. " - AddAuraSlot not available on this client")
+		return
+	end
+
+	local ids, seen = {}, {}
+	local function addID(id)
+		if id and not seen[id] then seen[id] = true; ids[#ids + 1] = id end
+	end
+	addID(catalogEntry and catalogEntry.spellID)
+	addID(catalogEntry and catalogEntry.tooltipSpellID)
+	if #ids == 0 then
+		debug("native stacks: " .. tostring(buffKey) .. " - no spellID/tooltipSpellID, skipped")
+		return
+	end
+
+	local filter = (unit == "player") and "HELPFUL" or "HARMFUL"
+	local sourceBar = data.stackBar.bar
+	local maxApplications = data.stackBarMax or 1
+
+	debug("native stacks: " .. tostring(buffKey) .. " - AddAuraSlot ids=" .. table.concat(ids, ",") .. " filter=" .. filter)
+	local addOK, addErr = pcall(function()
+		container:AddAuraSlot("gcdi_stack_" .. tostring(buffKey), filter, {
+			candidateFilters = { includeSpellIDs = ids },
+			templateNames = { "GCDINativeStackButtonTemplate" },
+			initializeFrame = function(button)
+				debug("native stacks: " .. tostring(buffKey) .. " - initializeFrame fired, ArcBar=" ..
+					tostring(button and button.ArcBar ~= nil) .. " SetApplicationBar=" .. tostring(button and button.SetApplicationBar ~= nil))
+				if not (button and button.ArcBar and button.SetApplicationBar) then return end
+				-- Anchor+level the button itself over our bar: ArcBar is a child region,
+				-- so it only draws while its owning button is shown/positioned.
+				button:ClearAllPoints()
+				button:SetAllPoints(sourceBar)
+				button:SetFrameStrata(sourceBar:GetFrameStrata())
+				button:SetFrameLevel((sourceBar:GetFrameLevel() or 1) + 1)
+				local ab = button.ArcBar
+				-- SetApplicationBar resets the widget it's given (anchors/texture/color get
+				-- wiped back to defaults as it takes ownership) - bind FIRST, style AFTER,
+				-- matching ArcUI's order. Doing it the other way around silently discards
+				-- every style call below and leaves the bar blank/invisible.
+				button:SetApplicationBar(ab, {
+					maxApplications = maxApplications,
+					interpolation = Enum.StatusBarInterpolation and Enum.StatusBarInterpolation.Immediate or nil,
+				})
+				ab:ClearAllPoints()
+				ab:SetAllPoints(sourceBar)
+				local srcTex = sourceBar.GetStatusBarTexture and sourceBar:GetStatusBarTexture()
+				ab:SetStatusBarTexture((srcTex and srcTex.GetTexture and srcTex:GetTexture()) or "Interface\\Buttons\\WHITE8X8")
+				local r, g, b, a = sourceBar:GetStatusBarColor()
+				ab:SetStatusBarColor(r, g, b, a or 1)
+				if sourceBar.GetOrientation and ab.SetOrientation then ab:SetOrientation(sourceBar:GetOrientation()) end
+				if sourceBar.GetReverseFill and ab.SetReverseFill then ab:SetReverseFill(sourceBar:GetReverseFill()) end
+				ab:Show()
+				-- Engine-driven bar is now the real fill; stop writing to and hide the classic one.
+				data.nativeStackActive = true
+				sourceBar:Hide()
+				-- Note: do NOT read state back off ab/button here (GetSize, IsShown,
+				-- GetMinMaxValues, etc.) - once the engine owns this widget those reads can
+				-- come back as secret/opaque values and poison the whole debug string into
+				-- "<SECRET>" with no error. Only report what WE told it to be.
+				debug("native stacks: " .. tostring(buffKey) .. " - bound, classic bar hidden, maxApplications=" .. tostring(maxApplications))
+			end,
+		})
+	end)
+	if not addOK then
+		debug("native stacks: " .. tostring(buffKey) .. " - AddAuraSlot pcall failed: " .. tostring(addErr))
+		return
+	end
+	-- Without this, the slot only binds on the NEXT aura change event - a
+	-- buff already active when the slot registers (the common case: toggling
+	-- the option, or rebuilding bars mid-buff) would never call initializeFrame
+	-- and the bar would silently show nothing until the buff refreshes.
+	if container.UpdateAllAuras then
+		local ok, err = pcall(container.UpdateAllAuras, container)
+		if not ok then
+			debug("native stacks: " .. tostring(buffKey) .. " - UpdateAllAuras failed: " .. tostring(err))
+		end
+	end
+end
+
+local function gcdi_setup_all_native_stack_slots()
+	if not configs.useNativeStackBinding then return end
+	for buffKey, data in pairs(trackedBuffs) do
+		gcdi_setup_native_stack_slot(buffKey, data, GCDI.buffCatalog[buffKey])
+	end
 end
 
 local function create_buff_bar(buffKey, spellName, texture, tooltipSpellID)
@@ -2955,7 +3115,8 @@ rebuild_buff_bars = function()
 			create_buff_bar(buffKey, catalogEntry.name, catalogEntry.texture, tooltipSpellID)
 		end
 	end
-	
+
+	gcdi_setup_all_native_stack_slots()
 	update_all_buff_bars()
 	reposition_all()
 end
@@ -3249,6 +3410,12 @@ local function on_event(self, event, arg1, arg2, ...)
 			if previewMode or InCombatLockdown() then return end
 			if gcdi_needs_charge_layout_rebuild() then
 				rebuild_spell_bars()
+			end
+			-- Native stack binding can only bind out of combat (AuraContainer creation
+			-- is combat-lockdown gated); retry any buffs left on the classic path
+			-- because combat started before they ever got a chance to bind.
+			if configs.useNativeStackBinding then
+				gcdi_setup_all_native_stack_slots()
 			end
 		end)
 		
@@ -4093,6 +4260,12 @@ SlashCmdList["GCDOPT"] = function(msg)
 	elseif msg == "debug" then
 		configs.debugMode = not configs.debugMode
 		print("|cff00ff00GCDIndicator:|r Debug mode " .. (configs.debugMode and "ON" or "OFF"))
+	elseif msg == "nativestacks" then
+		-- A/B toggle for buff stack tracking: classic (C_UnitAuras query) vs
+		-- experimental (native AuraContainer/SetApplicationBar). See CHANGE-TRACKER.md.
+		configs.useNativeStackBinding = not configs.useNativeStackBinding
+		print("|cff00ff00GCDIndicator:|r Native stack binding " .. (configs.useNativeStackBinding and "ON (experimental)" or "OFF (classic)"))
+		rebuild_buff_bars()
 	elseif msg == "items" then
 		print("|cff00ff00GCDIndicator:|r --- Item Catalog ---")
 		local count = 0

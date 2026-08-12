@@ -1,0 +1,17 @@
+<Ui xmlns="http://www.blizzard.com/wow/ui/">
+	<!--
+		EXPERIMENTAL - native stack-fill binding (12.1+ AuraContainer / AddAuraSlot).
+		See CHANGE-TRACKER.md before touching this file.
+
+		SetApplicationBar only accepts a StatusBar the engine-created AuraButton itself
+		owns, never an addon-created frame - so this template exists purely to give that
+		button a StatusBar region of its own. GCDIndicator.lua positions/styles ArcBar to
+		sit exactly over the addon's existing stack bar and hides the addon's own bar once
+		the engine confirms the binding (gcdi_setup_native_stack_slot).
+	-->
+	<Button name="GCDINativeStackButtonTemplate" virtual="true">
+		<Frames>
+			<StatusBar parentKey="ArcBar" setAllPoints="true"/>
+		</Frames>
+	</Button>
+</Ui>
