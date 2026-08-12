@@ -2,7 +2,7 @@
 -- LibGCDI-Range - Range Indicator Management for GCDIndicator
 -- ═══════════════════════════════════════════════════════════════════════════
 
-local MAJOR, MINOR = "LibGCDI-Range", 1
+local MAJOR, MINOR = "LibGCDI-Range", 4
 local lib = LibStub:NewLibrary(MAJOR, MINOR)
 if not lib then return end
 
@@ -258,6 +258,123 @@ function lib:DetectNativeRangeForSpells()
 end
 
 -- ═══════════════════════════════════════════════════════════════════════════
+-- LibRangeCheck-3.0 (optional; bundled with GCDIndicator)
+-- ═══════════════════════════════════════════════════════════════════════════
+
+-- Collapse LibRangeCheck:GetRange() min/max band to boolean vs a yard cap (like RangeDisplay's estimate, but binary).
+-- GetSmartMaxChecker alone can return non-boolean; GetRange() uses the full checker ladder (more granular).
+local function rangeBandVersusYardLimit(minR, maxR, yardLimit)
+	if not yardLimit or yardLimit <= 0 then
+		return nil
+	end
+	if minR == nil and maxR == nil then
+		return nil
+	end
+	-- Entirely past the cap
+	if minR ~= nil and minR > yardLimit then
+		return false
+	end
+	-- Entire band at or inside the cap
+	if maxR ~= nil and maxR <= yardLimit then
+		return true
+	end
+	-- Band is from yardLimit upward (e.g. 5–8 yd vs 5 yd melee): treat as out, not grey
+	if minR ~= nil and maxR ~= nil and maxR > yardLimit and minR >= yardLimit then
+		return false
+	end
+	-- Coarse band straddles the cap (e.g. 0–8 yd while cap is 5): unknown
+	if minR ~= nil and maxR ~= nil and minR < yardLimit and maxR > yardLimit then
+		return nil
+	end
+	if maxR == nil and minR ~= nil and minR <= yardLimit then
+		return nil
+	end
+	return nil
+end
+
+-- When enabled in settings.gcdSettings.useLibRangeCheck, uses LibRangeCheck's
+-- GetSmartMaxChecker (spell/item/interact ladder) so range colors stay accurate in combat
+-- when C_Spell / action range is missing or unreliable.
+-- @return true|false if determined, nil to continue with the default pipeline
+function lib:TryRangeWithLibRangeCheck(spellID, useOverride, inCombat)
+	local getSettings = lib.callbacks.getSettings
+	local settings = getSettings and getSettings()
+	if not settings or not settings.gcdSettings or not settings.gcdSettings.useLibRangeCheck then
+		return nil
+	end
+	local rc = LibStub("LibRangeCheck-3.0", true)
+	if not rc then
+		return nil
+	end
+	rc:init()
+
+	local yardLimit = nil
+	if useOverride then
+		local ry = lib:GetRangeFallbackYards(spellID)
+		if ry and ry > 0 then
+			yardLimit = ry
+		end
+	end
+	if yardLimit == nil and C_Spell.SpellHasRange(spellID) then
+		local si = C_Spell.GetSpellInfo(spellID)
+		if si and si.maxRange and si.maxRange > 0 then
+			yardLimit = si.maxRange
+		end
+	end
+	if not yardLimit or yardLimit <= 0 then
+		return nil
+	end
+
+	local checker = rc:GetSmartMaxChecker(yardLimit, inCombat)
+	if not checker then
+		return nil
+	end
+	local ok = checker("target")
+	if type(ok) == "boolean" then
+		return ok
+	end
+	-- Match RangeDisplay-style granularity: full checker ladder via GetRange(), not only SmartMaxChecker
+	local minR, maxR = rc:GetRange("target", false, false, 0.05)
+	local band = rangeBandVersusYardLimit(minR, maxR, yardLimit)
+	if type(band) == "boolean" then
+		return band
+	end
+	return nil
+end
+
+-- When settings.gcdSettings.useLibRangeCheck is enabled: yard check via LibRangeCheck (e.g. nameplate units).
+-- @return true|false if determined, nil if disabled, library missing, or checker cannot decide
+function lib:IsUnitInRangeYardsLRC(unit, yards, inCombat)
+	if not unit or not yards or yards <= 0 then
+		return nil
+	end
+	local getSettings = lib.callbacks.getSettings
+	local settings = getSettings and getSettings()
+	if not settings or not settings.gcdSettings or not settings.gcdSettings.useLibRangeCheck then
+		return nil
+	end
+	local rc = LibStub("LibRangeCheck-3.0", true)
+	if not rc then
+		return nil
+	end
+	rc:init()
+	local checker = rc:GetSmartMaxChecker(yards, inCombat)
+	if not checker then
+		return nil
+	end
+	local ok = checker(unit)
+	if type(ok) == "boolean" then
+		return ok
+	end
+	local minR, maxR = rc:GetRange(unit, false, false, 0.05)
+	local band = rangeBandVersusYardLimit(minR, maxR, yards)
+	if type(band) == "boolean" then
+		return band
+	end
+	return nil
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
 -- RANGE INDICATOR UPDATES
 -- ═══════════════════════════════════════════════════════════════════════════
 
@@ -294,23 +411,37 @@ function lib:UpdateRangeIndicators()
 				if not UnitExists("target") then
 					overlay:SetColorTexture(colors.noTarget[1], colors.noTarget[2], colors.noTarget[3], 1)
 				else
+					local getSettings = lib.callbacks.getSettings
+					local settings = getSettings and getSettings()
+					local useLRC = settings and settings.gcdSettings and settings.gcdSettings.useLibRangeCheck == true
+
 					local useOverride = lib:HasRangeOverride(spellID)
 					local inRange = nil
 					local inCombat = InCombatLockdown()
+
+					local lrcVal = lib:TryRangeWithLibRangeCheck(spellID, useOverride, inCombat)
+					if type(lrcVal) == "boolean" then
+						inRange = lrcVal
+						if useOverride then
+							spellData.cachedFallbackInRange = lrcVal
+						end
+					elseif useLRC and useOverride then
+						-- LibRangeCheck often returns nil when it cannot evaluate a tick; keeping an old
+						-- cached true here reused "in range" green until retarget (RangeDisplay avoids this).
+						spellData.cachedFallbackInRange = nil
+					end
 					
 					-- Only use spell's native range when user has NOT set a range override
-					if not useOverride and C_Spell.SpellHasRange(spellID) then
+					if inRange == nil and not useOverride and C_Spell.SpellHasRange(spellID) then
 						local spellInRange = C_Spell.IsSpellInRange(spellID, "target")
 						if spellInRange ~= nil then
 							inRange = spellInRange
 						end
 					end
 					
-					-- User chose a range override: proxy spell only, then cache
+					-- User chose a range override: proxy spell only, then cache (cache not used with LRC; see below)
 					if inRange == nil and useOverride then
 						local rangeYards = lib:GetRangeFallbackYards(spellID)
-						local getSettings = lib.callbacks.getSettings
-						local settings = getSettings and getSettings()
 						local proxySpells = settings and settings.rangeProxySpells
 						local proxyID = proxySpells and proxySpells[rangeYards]
 						-- Legacy: fall back to rangeProxySpellIDs[index]
@@ -329,7 +460,8 @@ function lib:UpdateRangeIndicators()
 								spellData.cachedFallbackInRange = proxyInRange
 							end
 						end
-						if inRange == nil and spellData.cachedFallbackInRange ~= nil then
+						-- Stale cache caused stuck green in combat when LRC returned nil after a prior true.
+						if inRange == nil and spellData.cachedFallbackInRange ~= nil and not useLRC then
 							inRange = spellData.cachedFallbackInRange
 						end
 					end

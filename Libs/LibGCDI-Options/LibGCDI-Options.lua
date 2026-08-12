@@ -67,6 +67,20 @@ local function get_range_options_list_proxy_only(settings)
 	return list
 end
 
+-- Spells tab range override: all brackets when LibRangeCheck handles yard checks; else proxy-only list
+local function get_spell_range_override_options(settings)
+	if settings and settings.gcdSettings and settings.gcdSettings.useLibRangeCheck then
+		local list = {}
+		for _, yards in ipairs(RANGE_YARDS_ORDER) do
+			if yards > 0 and RANGE_ITEMS[yards] then
+				table.insert(list, { yards = yards, name = RANGE_ITEMS[yards].name })
+			end
+		end
+		return list
+	end
+	return get_range_options_list_proxy_only(settings)
+end
+
 local function create_range_dropdown(parent, width, selectedYards, onChange)
 	local dropdown = CreateFrame("Frame", nil, parent, "UIDropDownMenuTemplate")
 	dropdown:SetPoint("LEFT")
@@ -112,6 +126,7 @@ local GCD_INDICATOR_OPTIONS = {
 	{ key = "showCombat", name = "Show Combat", desc = "Show the combat status indicator", disabled = true },
 	{ key = "showAggro", name = "Show Aggro", desc = "Show the threat/aggro indicator", disabled = true },
 	{ key = "showMobCount", name = "Show Mob Count", desc = "Show the nearby mob count indicator" },
+	{ key = "showDispel", name = "Show Dispel", desc = "Show purple when you have a debuff you can dispel on yourself" },
 }
 
 local function refresh_gcd_tab()
@@ -228,9 +243,17 @@ local function refresh_gcd_tab()
 	rangeDropdown:SetPoint("LEFT", rangeLabel, "RIGHT", -5, -2)
 	UIDropDownMenu_SetWidth(rangeDropdown, 100)
 	
-	-- Only ranges that have a "Range spell (in combat)" set (mob count uses that proxy)
+	-- Mob count range: all brackets when LibRangeCheck is on; else only yards with a Range spell (proxy)
 	local function getMobRangeOptions()
 		local list = {}
+		if settings and settings.gcdSettings and settings.gcdSettings.useLibRangeCheck then
+			for _, yards in ipairs(RANGE_YARDS_ORDER) do
+				if yards > 0 and RANGE_ITEMS[yards] then
+					table.insert(list, yards)
+				end
+			end
+			return list
+		end
 		local proxySpells = settings and settings.rangeProxySpells
 		if proxySpells then
 			for _, yards in ipairs(RANGE_YARDS_ORDER) do
@@ -319,7 +342,7 @@ local function refresh_gcd_tab()
 	-- Help text
 	local mobHelp = track(frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall"))
 	mobHelp:SetPoint("TOPLEFT", 15, yOffset)
-	mobHelp:SetText("Tip: Counts hostiles in range using the Range spell set for this bracket (GCD tab). Indicator turns white when count >= threshold.")
+	mobHelp:SetText("Tip: Counts hostiles on nameplates within the selected range. With LibRangeCheck (below), every bracket is available; without it, only brackets with a Range spell set on this tab. White when count >= threshold.")
 	mobHelp:SetTextColor(0.5, 0.5, 0.5)
 	yOffset = yOffset - 20
 	
@@ -343,18 +366,50 @@ local function refresh_gcd_tab()
 	rangeDesc:SetText("Default range for spells without built-in range. Set a spell per range for in-combat checking (assign overrides in Spells tab).")
 	rangeDesc:SetTextColor(0.7, 0.7, 0.7)
 	yOffset = yOffset - 25
+
+	if settings.gcdSettings.useLibRangeCheck == nil then
+		settings.gcdSettings.useLibRangeCheck = false
+	end
+	local lrcCheckbox = track(CreateFrame("CheckButton", nil, frame, "UICheckButtonTemplate"))
+	lrcCheckbox:SetSize(24, 24)
+	lrcCheckbox:SetPoint("TOPLEFT", 10, yOffset)
+	lrcCheckbox:SetChecked(settings.gcdSettings.useLibRangeCheck == true)
+	lrcCheckbox:SetScript("OnClick", function(self)
+		settings.gcdSettings.useLibRangeCheck = self:GetChecked()
+		GCDI.UpdateRangeIndicators()
+		GCDI.auto_save_to_profile()
+		if GCDI.refresh_options_frame then
+			GCDI.refresh_options_frame()
+		end
+	end)
+	local lrcLabel = track(frame:CreateFontString(nil, "OVERLAY", "GameFontNormal"))
+	lrcLabel:SetPoint("LEFT", lrcCheckbox, "RIGHT", 5, 0)
+	lrcLabel:SetText("Use LibRangeCheck-3.0 for spell range colors")
+	local lrcHelp = track(frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall"))
+	lrcHelp:SetPoint("TOPLEFT", lrcLabel, "BOTTOMLEFT", 0, -4)
+	lrcHelp:SetWidth(440)
+	lrcHelp:SetJustifyH("LEFT")
+	lrcHelp:SetText("Uses the bundled library (WeakAuras fork) for yard-based checks when painting green/red range squares—often more reliable in combat than C_Spell alone. If LibRangeCheck cannot decide, the normal path is used.")
+	lrcHelp:SetTextColor(0.55, 0.55, 0.55)
+	yOffset = yOffset - 48
 	
-	-- Global range fallback (dropdown left edge aligned with range spell dropdowns below)
+	-- Global range fallback: label column right-justified so colons align; dropdowns share one width
 	local RANGE_DROPDOWN_LEFT = 150
-	local globalLabel = track(frame:CreateFontString(nil, "OVERLAY", "GameFontNormal"))
-	globalLabel:SetPoint("TOPLEFT", 10, yOffset)
+	local RANGE_DROPDOWN_WIDTH = 165
+	local RANGE_LABEL_GAP = 8
+	local RANGE_LABEL_WIDTH = RANGE_DROPDOWN_LEFT - RANGE_LABEL_GAP - 10
+	
+	local globalLabel = track(frame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall"))
+	globalLabel:SetWidth(RANGE_LABEL_WIDTH)
+	globalLabel:SetJustifyH("RIGHT")
 	globalLabel:SetText("Global Range:")
 	
-	local globalDropdown = track(create_range_dropdown(frame, 130, settings.globalRangeFallbackYards or 5, function(yards)
+	local globalDropdown = track(create_range_dropdown(frame, RANGE_DROPDOWN_WIDTH, settings.globalRangeFallbackYards or 5, function(yards)
 		settings.globalRangeFallbackYards = yards
 		GCDI.UpdateRangeIndicators()
 	end))
 	globalDropdown:SetPoint("TOPLEFT", frame, "TOPLEFT", RANGE_DROPDOWN_LEFT, yOffset - 2)
+	globalLabel:SetPoint("RIGHT", globalDropdown, "LEFT", -RANGE_LABEL_GAP, 0)
 	yOffset = yOffset - 28
 	
 	-- Range spells (in combat): one spell per range (keyed by yards)
@@ -364,7 +419,8 @@ local function refresh_gcd_tab()
 	rangeSpellsHeader:SetScript("OnEnter", function(self)
 		GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
 		GameTooltip:SetText("Range spells (in combat)")
-		GameTooltip:AddLine("Set one spell per range. In the Spells tab, assign a range override per spell; ranges with a spell here will work in combat.", 1, 1, 1, true)
+		GameTooltip:AddLine("Optional fallback when LibRangeCheck is off: one spell per range for override/mob-count checks that need C_Spell in combat.", 1, 1, 1, true)
+		GameTooltip:AddLine("With LibRangeCheck enabled above, yard checks use the library first; these entries are only used if the library cannot decide.", 0.85, 0.85, 0.85, true)
 		GameTooltip:Show()
 	end)
 	rangeSpellsHeader:SetScript("OnLeave", function() GameTooltip:Hide() end)
@@ -390,11 +446,13 @@ local function refresh_gcd_tab()
 			local rowY = yOffset - (rangeRowCount - 1) * 20
 			local item = RANGE_ITEMS[yards]
 			local label = track(frame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall"))
-			label:SetPoint("TOPLEFT", 14, rowY)
+			label:SetWidth(RANGE_LABEL_WIDTH)
+			label:SetJustifyH("RIGHT")
 			label:SetText((item and item.name or tostring(yards) .. " yd") .. ":")
 			local dropdown = track(CreateFrame("Frame", nil, frame, "UIDropDownMenuTemplate"))
 			dropdown:SetPoint("TOPLEFT", frame, "TOPLEFT", RANGE_DROPDOWN_LEFT, rowY - 2)
-			UIDropDownMenu_SetWidth(dropdown, 165)
+			UIDropDownMenu_SetWidth(dropdown, RANGE_DROPDOWN_WIDTH)
+			label:SetPoint("RIGHT", dropdown, "LEFT", -RANGE_LABEL_GAP, 0)
 			do
 				local y = yards
 				local currentProxy = settings.rangeProxySpells[y]
@@ -560,6 +618,7 @@ local RESOURCE_NAMES = {
 	{ key = "pain", name = "Pain", color = {1, 0.61, 0}, barType = "continuous", powerType = Enum.PowerType.Pain, classes = "Demon Hunter (Vengeance)" },
 	{ key = "astralPower", name = "Astral Power", color = {0.3, 0.52, 0.9}, barType = "continuous", powerType = Enum.PowerType.LunarPower, classes = "Druid (Balance)" },
 	{ key = "essence", name = "Essence", color = {0.27, 0.84, 0.76}, barType = "charges", powerType = Enum.PowerType.Essence, classes = "Evoker" },
+	{ key = "stagger", name = "Stagger", color = {0.35, 0.90, 0.55}, barType = "continuous", powerType = nil, classes = "Monk (Brewmaster)" },
 }
 
 local function refresh_resources_tab()
@@ -644,11 +703,11 @@ local function refresh_resources_tab()
 		checkbox:SetSize(24, 24)
 		checkbox:SetPoint("LEFT", 0, 0)
 		
-		-- Default to enabled if not set
+		-- Default to enabled if not set (stagger defaults off — Brewmaster-only bar)
 		local isEnabled = settings.resourceSettings[resource.key]
 		if isEnabled == nil then
-			isEnabled = true
-			settings.resourceSettings[resource.key] = true
+			isEnabled = (resource.key ~= "stagger")
+			settings.resourceSettings[resource.key] = isEnabled
 		end
 		checkbox:SetChecked(isEnabled)
 		
@@ -673,7 +732,7 @@ local function refresh_resources_tab()
 		
 		-- Get max value
 		local maxValue = 0
-		if resource.key == "health" then
+		if resource.key == "health" or resource.key == "stagger" then
 			local rawMax = UnitHealthMax("player")
 			maxValue = tonumber(rawMax) or 0
 		elseif resource.powerType then
@@ -798,8 +857,13 @@ local function refresh_spells_tab()
 	rangeHeader:SetPoint("TOPLEFT", 240, yOffset)  -- dropdown at row LEFT 213 (+ dropdown padding)
 	rangeHeader:SetText("Range Override")
 	
+	-- Charge pip column must start after UIDropDownMenuTemplate for range (LEFT 213 + text width + arrow ~35px).
+	local chargePipsHeader = track(scrollChild:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall"))
+	chargePipsHeader:SetPoint("TOPLEFT", 354, yOffset)
+	chargePipsHeader:SetText("Charge pips")
+	
 	local orderHeader = track(scrollChild:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall"))
-	orderHeader:SetPoint("TOPLEFT", 415, yOffset)  -- buttons at row LEFT 405
+	orderHeader:SetPoint("TOPLEFT", 468, yOffset)  -- clear of pip dropdown hit rect
 	orderHeader:SetText("Order")
 	yOffset = yOffset - 20
 	
@@ -818,7 +882,7 @@ local function refresh_spells_tab()
 		
 		-- Ensure spell has settings entry
 		if not settings.spellSettings[spellID] then
-			settings.spellSettings[spellID] = { enabled = true, rangeFallbackYards = nil, selfCast = false, hasNativeRange = nil, trackIcon = false }
+			settings.spellSettings[spellID] = { enabled = true, rangeFallbackYards = nil, selfCast = false, hasNativeRange = nil, trackIcon = false, chargePipOverride = nil }
 		end
 		local spellSettings = settings.spellSettings[spellID]
 		
@@ -828,7 +892,7 @@ local function refresh_spells_tab()
 			yOffset = yOffset - 10
 			local disabledSep = track(scrollChild:CreateTexture(nil, "ARTWORK"))
 			disabledSep:SetColorTexture(0.4, 0.4, 0.4, 1)
-			disabledSep:SetSize(450, 1)
+			disabledSep:SetSize(530, 1)
 			disabledSep:SetPoint("TOPLEFT", 10, yOffset)
 			yOffset = yOffset - 5
 			
@@ -851,7 +915,7 @@ local function refresh_spells_tab()
 		hasNativeRange = hasNativeRange or false
 		
 		local row = CreateFrame("Frame", nil, scrollChild)
-		row:SetSize(470, 30)
+		row:SetSize(540, 30)
 		row:SetPoint("TOPLEFT", 10, yOffset)
 		
 		-- Enabled checkbox
@@ -975,13 +1039,12 @@ local function refresh_spells_tab()
 		-- Range dropdown
 		local rangeDropdown = CreateFrame("Frame", nil, row, "UIDropDownMenuTemplate")
 		rangeDropdown:SetPoint("LEFT", 213, 0)
-		UIDropDownMenu_SetWidth(rangeDropdown, 120)
+		UIDropDownMenu_SetWidth(rangeDropdown, 110)
 		
 		local function initSpellRangeDropdown(self, level)
 			local info = UIDropDownMenu_CreateInfo()
 			local currentSpellSettings = GCDI.settings.spellSettings and GCDI.settings.spellSettings[spellID] or {}
-			-- Only ranges that have a proxy spell set (work in combat)
-			local rangeOptions = get_range_options_list_proxy_only(GCDI.settings)
+			local rangeOptions = get_spell_range_override_options(GCDI.settings)
 			
 			if currentSpellSettings.hasNativeRange then
 				info.text = "|cff00ff00Native|r"
@@ -1044,7 +1107,7 @@ local function refresh_spells_tab()
 		if currentYards == nil and spellSettings.rangeFallback ~= nil and GCDI.LEGACY_INDEX_TO_YARDS then
 			currentYards = GCDI.LEGACY_INDEX_TO_YARDS[spellSettings.rangeFallback]
 		end
-		local rangeOptions = get_range_options_list_proxy_only(GCDI.settings)
+		local rangeOptions = get_spell_range_override_options(GCDI.settings)
 		if currentYards == nil then
 			UIDropDownMenu_SetSelectedID(rangeDropdown, 1)
 		else
@@ -1057,14 +1120,74 @@ local function refresh_spells_tab()
 				end
 			end
 			if not found then
-				UIDropDownMenu_SetSelectedID(rangeDropdown, 1)  -- Current range has no proxy; show Use Global
+				UIDropDownMenu_SetSelectedID(rangeDropdown, 1)
 			end
 		end
+		
+		-- Charge pip count override (when max charges are secret or missing; e.g. Keg Smash = 2 pips)
+		local chgDropdown = track(CreateFrame("Frame", nil, row, "UIDropDownMenuTemplate"))
+		chgDropdown:SetPoint("LEFT", 354, 0)
+		UIDropDownMenu_SetWidth(chgDropdown, 68)
+		
+		local function initChargePipDropdown(self, level)
+			local info = UIDropDownMenu_CreateInfo()
+			local cur = GCDI.settings.spellSettings and GCDI.settings.spellSettings[spellID] or {}
+			local ov = cur.chargePipOverride
+			
+			info.text = "Auto"
+			info.checked = (ov == nil)
+			info.func = function()
+				if not GCDI.settings.spellSettings[spellID] then
+					GCDI.settings.spellSettings[spellID] = {}
+				end
+				GCDI.settings.spellSettings[spellID].chargePipOverride = nil
+				UIDropDownMenu_SetText(chgDropdown, "Auto")
+				GCDI.auto_save_to_profile()
+				GCDI.rebuild_spell_bars()
+				GCDI.refresh_options_frame()
+			end
+			UIDropDownMenu_AddButton(info, level)
+			
+			for n = 2, 6 do
+				info = UIDropDownMenu_CreateInfo()
+				info.text = tostring(n) .. " pips"
+				info.checked = (ov == n)
+				info.func = function()
+					if not GCDI.settings.spellSettings[spellID] then
+						GCDI.settings.spellSettings[spellID] = {}
+					end
+					GCDI.settings.spellSettings[spellID].chargePipOverride = n
+					UIDropDownMenu_SetText(chgDropdown, tostring(n) .. " pips")
+					GCDI.auto_save_to_profile()
+					GCDI.rebuild_spell_bars()
+					GCDI.refresh_options_frame()
+				end
+				UIDropDownMenu_AddButton(info, level)
+			end
+		end
+		
+		UIDropDownMenu_Initialize(chgDropdown, initChargePipDropdown)
+		do
+			local ov = spellSettings.chargePipOverride
+			if ov == nil then
+				UIDropDownMenu_SetText(chgDropdown, "Auto")
+			else
+				UIDropDownMenu_SetText(chgDropdown, tostring(ov) .. " pips")
+			end
+		end
+		chgDropdown:HookScript("OnEnter", function(self)
+			GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+			GameTooltip:SetText("Charge pip count")
+			GameTooltip:AddLine("If the charge stack bar shows the wrong number of segments vs. your action bar, pick the count here.", 1, 1, 1, true)
+			GameTooltip:AddLine("Leave Auto when the game reports max charges correctly (often after leaving combat).", 0.7, 0.7, 0.7, true)
+			GameTooltip:Show()
+		end)
+		chgDropdown:HookScript("OnLeave", function() GameTooltip:Hide() end)
 		
 		-- Reorder buttons
 		local upBtn = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
 		upBtn:SetSize(22, 18)
-		upBtn:SetPoint("LEFT", 405, 0)
+		upBtn:SetPoint("LEFT", 468, 0)
 		upBtn:SetText("Up")
 		upBtn:SetNormalFontObject("GameFontNormalSmall")
 		upBtn:SetHighlightFontObject("GameFontHighlightSmall")
@@ -2473,7 +2596,7 @@ local function create_options_frame()
 	
 	-- Main frame
 	optionsFrame = CreateFrame("Frame", "GCDIndicatorOptions", UIParent, "BasicFrameTemplateWithInset")
-	optionsFrame:SetSize(570, 500)
+	optionsFrame:SetSize(590, 500)
 	optionsFrame:SetPoint("CENTER")
 	optionsFrame:SetMovable(true)
 	optionsFrame:EnableMouse(true)
@@ -2663,7 +2786,7 @@ local function create_options_frame()
 	optionsFrame.spellsScrollFrame = spellsScrollFrame
 	
 	local spellsScrollChild = CreateFrame("Frame", nil, spellsScrollFrame)
-	spellsScrollChild:SetSize(450, 600)
+	spellsScrollChild:SetSize(540, 600)
 	spellsScrollFrame:SetScrollChild(spellsScrollChild)
 	optionsFrame.spellsScrollChild = spellsScrollChild
 	

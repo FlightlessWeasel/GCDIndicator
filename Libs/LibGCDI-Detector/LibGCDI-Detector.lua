@@ -3,7 +3,7 @@
 -- Uses hidden StatusBars to safely read WoW's secret values (charges, stacks)
 -- ═══════════════════════════════════════════════════════════════════════════
 
-local MAJOR, MINOR = "LibGCDI-Detector", 3
+local MAJOR, MINOR = "LibGCDI-Detector", 6
 local lib = LibStub:NewLibrary(MAJOR, MINOR)
 if not lib then return end
 
@@ -14,8 +14,11 @@ lib.activeDetectors = lib.activeDetectors or {}
 -- Y offset for positioning detectors off-screen
 local nextYOffset = 500
 
--- After SetValue(secret), texture GetWidth() can be a secret — comparing it errors.
--- For plain values (e.g. 0 from inactive UI), width > 0 detects fill more reliably than IsShown().
+-- For *numeric* valueFed, StatusBar fill width reflects charge count (reliable).
+-- For *secret* valueFed, GetWidth() on the texture is often the layout width (~100), not fill —
+-- treating it as fill made every pip look "full" (all blue). Secret path must use IsShown().
+-- Cross-spell IsShown() bleed is avoided by updating only one secret-charge spell per frame
+-- (see GCDIndicator update_charge_indicators_tick / staggered refresh).
 local function DetectorThresholdMet(detector, valueFed)
 	local tex = detector:GetStatusBarTexture()
 	if not tex or not tex:IsShown() then
@@ -26,11 +29,11 @@ local function DetectorThresholdMet(detector, valueFed)
 		useWidth = false
 	end
 	if useWidth then
-		local w = tex:GetWidth()
-		if w ~= nil and issecretvalue and issecretvalue(w) then
-			useWidth = false
-		else
-			return (w or 0) > 0.5
+		local ok, w = pcall(function()
+			return tex:GetWidth()
+		end)
+		if ok and w ~= nil and not (issecretvalue and issecretvalue(w)) then
+			return (tonumber(w) or 0) > 0.5
 		end
 	end
 	return tex:IsShown()
@@ -42,14 +45,18 @@ end
 
 -- Create a single detector bar for a specific threshold
 -- threshold: The value at which this detector becomes "active"
+-- parent: Holder frame (one per spell/array) so bars are not all direct UIParent siblings
+-- yOfs: Vertical offset inside holder
 -- Returns: detector frame
-local function CreateDetectorBar(threshold)
-	local detector = CreateFrame("StatusBar", nil, UIParent)
+local function CreateDetectorBar(threshold, parent, yOfs)
+	local detector = CreateFrame("StatusBar", nil, parent)
 	detector:SetSize(100, 10)
-	detector:SetPoint("TOPLEFT", UIParent, "TOPLEFT", -500, nextYOffset)
-	nextYOffset = nextYOffset - 15  -- Stagger positions
+	detector:SetPoint("TOPLEFT", parent, "TOPLEFT", 0, yOfs)
 	
-	detector:SetStatusBarTexture("Interface\\TargetingFrame\\UI-StatusBar")
+	local tex = detector:CreateTexture(nil, "ARTWORK", nil, -7)
+	tex:SetTexture("Interface\\Buttons\\WHITE8X8")
+	tex:SetHorizTile(false)
+	detector:SetStatusBarTexture(tex)
 	detector:SetStatusBarColor(1, 1, 1, 1)
 	-- StatusBar shows texture when value > min
 	-- So min=threshold-1, max=threshold means: shows when value >= threshold
@@ -69,9 +76,14 @@ end
 -- Create an array of detectors for thresholds 1 to maxValue
 -- Returns: array of detector frames indexed by threshold
 function lib:CreateDetectorArray(maxValue)
+	local holder = CreateFrame("Frame", nil, UIParent)
+	local holderH = maxValue * 15 + 5
+	holder:SetSize(20, holderH)
+	holder:SetPoint("TOPLEFT", UIParent, "TOPLEFT", -500, nextYOffset)
+	nextYOffset = nextYOffset - holderH - 2
 	local detectors = {}
 	for i = 1, maxValue do
-		detectors[i] = CreateDetectorBar(i)
+		detectors[i] = CreateDetectorBar(i, holder, -(i - 1) * 15)
 	end
 	return detectors
 end
@@ -148,9 +160,14 @@ end
 
 -- Clean up detectors (hide and release)
 function lib:ReleaseDetectors(detectors)
-	if not detectors then return end
-	for i, detector in ipairs(detectors) do
+	if not detectors or not detectors[1] then return end
+	local holder = detectors[1]:GetParent()
+	for _, detector in ipairs(detectors) do
 		detector:Hide()
 		detector:SetParent(nil)
+	end
+	if holder and holder ~= UIParent then
+		holder:Hide()
+		holder:SetParent(nil)
 	end
 end

@@ -249,6 +249,7 @@ function lib:GetResourceDefinitions()
 		{ key = "pain", name = "Pain", barType = "Continuous", powerType = Enum.PowerType.Pain, classes = "Demon Hunter (Vengeance)" },
 		{ key = "astralPower", name = "Astral Power", barType = "Continuous", powerType = Enum.PowerType.LunarPower, classes = "Druid (Balance)" },
 		{ key = "essence", name = "Essence", barType = "Charges", powerType = Enum.PowerType.Essence, classes = "Evoker" },
+		{ key = "stagger", name = "Stagger", barType = "Continuous", powerType = nil, classes = "Monk (Brewmaster)" },
 	}
 end
 
@@ -257,6 +258,7 @@ function lib:GetResourceOrder()
 	return {
 		"health", "mana", "rage", "energy", "focus", "runicPower", "runes",
 		"comboPoints", "soulShards", "holyPower", "chi", "arcaneCharges",
-		"insanity", "maelstrom", "fury", "pain", "astralPower", "essence"
+		"insanity", "maelstrom", "fury", "pain", "astralPower", "essence",
+		"stagger",
 	}
 end

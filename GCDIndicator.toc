@@ -1,8 +1,8 @@
-## Interface: 120000, 120001
+## Interface: 120000, 120001, 120005, 120007, 120100, 120200
 ## Author: jason
 ## Title: GCD Indicator
 ## Notes: Simple bar that flashes red during Global Cooldown (GCD)
-## Version: 260334
+## Version: 260811
 ## IconTexture: Interface\Icons\Inv_10_inscription3_darkmoondeckbox_black.blp
 ## SavedVariablesPerCharacter: GCDIndicator_Positions, GCDIndicator_Settings
 ## Category: aJasonBrown
@@ -10,11 +10,11 @@
 # Libraries
 Libs\LibStub\LibStub.lua
 Libs\CallbackHandler-1.0\CallbackHandler-1.0.lua
+Libs\LibRangeCheck-3.0\LibRangeCheck-3.0.lua
 Libs\LibDataBroker-1.1\LibDataBroker-1.1.lua
 Libs\LibDBIcon-1.0\LibDBIcon-1.0.lua
 Libs\LibGCDI\LibGCDI.lua
 Libs\LibGCDI-Catalog\LibGCDI-Catalog.lua
-Libs\LibGCDI-Detector\LibGCDI-Detector.lua
 Libs\LibGCDI-Profiles\LibGCDI-Profiles.lua
 Libs\LibGCDI-Resources\LibGCDI-Resources.lua
 Libs\LibGCDI-Range\LibGCDI-Range.lua

@@ -72,13 +72,16 @@ local TRACKED_ITEM_TYPES = {
 }
 
 -- Buff tracking via Cooldown Manager integration
--- Blizzard's CDM frames: cooldownID is readable; auraInstanceID and isActive may be SECRET.
--- Only pass auraInstanceID to APIs (e.g. GetAuraDataByAuraInstanceID); do not read or compare it.
+-- Blizzard's CDM frames: cooldownID is readable; auraInstanceID may be SECRET.
+-- 12.1+: GetAuraDataByAuraInstanceID Lua-errors when auras are secret while tainted.
+-- Active = auraInstanceID ~= nil. Stacks/duration: use auraDataCached / GetAuraDuration (tainted-safe).
 GCDI.buffCatalog = {}
 local trackedBuffs = {}
 local buffBars = {}
 local cdmBuffFrames = {}  -- cooldownID -> CDM frame reference
 local lastBuffDebugState = {}  -- buffID -> { isActive } for debug-on-change only
+-- Interface 120100+ (12.1): instance-ID aura data APIs throw under secrecy for addons.
+local GCDI_AURAS_INSTANCE_API_UNSAFE = (tonumber((select(4, GetBuildInfo()))) or 0) >= 120100
 local cooldownToSpellID = {}  -- Maps CDM cooldownID -> actual spellID (like ArcUI)
 local spellIDToCooldownID = {}  -- REVERSE: Maps spellID -> cooldownID for frame lookup
 
@@ -114,6 +117,8 @@ local RESOURCE_COLORS = {
 	essence = { 0.27, 0.84, 0.76 },    -- Teal (Evoker)
 	lunar = { 0.3, 0.52, 0.9 },        -- Blue (Balance Druid alternate)
 	solar = { 1.0, 0.85, 0.0 },        -- Yellow (Balance Druid alternate)
+	-- Fixed mint (not Blizzard green/yellow/red) for a stable, distinct in-range color
+	stagger = { 0.35, 0.90, 0.55 },   -- Brewmaster stagger vs max health
 }
 
 -- Use range colors and items from library
@@ -158,6 +163,7 @@ local DEFAULT_SETTINGS = {
 		pain = true,
 		astralPower = true,
 		essence = true,
+		stagger = false,
 	},
 	gcdSettings = {
 		showGcdRow = true,
@@ -166,8 +172,10 @@ local DEFAULT_SETTINGS = {
 		showCombat = true,
 		showAggro = true,
 		showMobCount = true,
+		showDispel = true,     -- Dispellable debuff on player (purple)
 		mobCountRange = 8,     -- Default range in yards
 		mobCountThreshold = 3, -- Default threshold for white indicator
+		useLibRangeCheck = false, -- GCD tab: use LibRangeCheck-3.0 for spell range indicator colors
 	},
 }
 
@@ -225,7 +233,7 @@ end
 GCDI.FORM_COLORS = FORM_COLORS
 
 -- Forward declarations
-local reposition_all, rebuild_spell_bars, rebuild_item_bars, rebuild_buff_bars
+local reposition_all, rebuild_spell_bars, rebuild_item_bars, rebuild_buff_bars, update_dispel_indicator
 
 -- Layout bounds (updated by reposition_all, used by preview mode)
 local layoutBounds = { width = 200, height = 100 }
@@ -420,7 +428,6 @@ end
 -- ═══════════════════════════════════════════════════════════════════════════
 
 local LibCatalog = LibStub("LibGCDI-Catalog")
-local LibDetector = LibStub("LibGCDI-Detector")
 
 -- Catalog managers (initialized after settings load)
 local spellCatalogManager, itemCatalogManager, buffCatalogManager
@@ -626,21 +633,156 @@ local function update_spell_icons()
 	end
 end
 
--- Update charge indicators using LibDetector
-local function update_charge_indicators_tick()
-	if previewMode then return end  -- Skip updates in preview mode
-	for spellID, data in pairs(trackedSpells) do
-		if data.chargeIndicators and data.chargeDetectors and GCDI.is_spell_enabled(spellID) then
-			local chargeInfo = C_Spell.GetSpellCharges(spellID)
-			if chargeInfo then
-				-- Use LibDetector to update indicators from secret value
-				LibDetector:UpdateIndicators(data.chargeDetectors, data.chargeIndicators, chargeInfo.currentCharges)
-			end
+-- True if this charge table represents a real charge spell (max > 0, or max secret / nil for API quirks)
+local function gcdi_charge_info_is_usable(info)
+	if not info then
+		return false
+	end
+	local m = info.maxCharges
+	if m == nil then
+		return true
+	end
+	if issecretvalue and issecretvalue(m) then
+		return true
+	end
+	return (tonumber(m) or 0) > 0
+end
+
+-- Charge info: prefer action slot (same as Blizzard ActionButton) so bar/catalog spell ID matches the bar.
+local function gcdi_get_spell_charge_info(spellID, actionSlot)
+	if actionSlot and C_ActionBar and C_ActionBar.GetActionCharges then
+		local ok, info = pcall(C_ActionBar.GetActionCharges, actionSlot)
+		if ok and info and gcdi_charge_info_is_usable(info) then
+			return info
+		end
+	end
+	local info = C_Spell.GetSpellCharges(spellID)
+	if info and gcdi_charge_info_is_usable(info) then
+		return info
+	end
+	local oid = C_Spell.GetOverrideSpell(spellID)
+	if oid and oid ~= spellID then
+		info = C_Spell.GetSpellCharges(oid)
+		if info and gcdi_charge_info_is_usable(info) then
+			return info
+		end
+	end
+	return nil
+end
+
+local function gcdi_resolve_max_charges(chargeInfo)
+	if not chargeInfo then
+		return 0
+	end
+	local m = chargeInfo.maxCharges
+	if m == nil then
+		return 0
+	end
+	if issecretvalue and issecretvalue(m) then
+		return 0
+	end
+	return math.max(0, math.floor(tonumber(m) or 0))
+end
+
+-- Pip count for layout: optional per-spell override when API max is secret or missing.
+local function gcdi_effective_max_charge_pips(spellID, chargeInfo)
+	local st = settings and settings.spellSettings and settings.spellSettings[spellID]
+	local ov = st and st.chargePipOverride
+	if type(ov) == "number" then
+		ov = math.floor(ov)
+		if ov >= 2 and ov <= 6 then
+			return ov
+		end
+	end
+	return gcdi_resolve_max_charges(chargeInfo)
+end
+
+-- Spell charge display: same pattern as buff stacks — one StatusBar, black separators, currentCharges passed through to SetValue.
+local SPELL_CHARGE_STACK_COLOR = { 0.4, 0.7, 1.0 }
+
+local function layout_spell_charge_stack_separators(data)
+	if not data or not data.chargeStackBar then return end
+	local maxStacks = math.max(data.chargeStackMax or 1, 1)
+	local barSize = configs.barHeight
+	local separatorWidth = 2
+	local totalWidth = maxStacks * barSize + (maxStacks - 1) * separatorWidth
+	local segmentWidth = (totalWidth - (maxStacks - 1) * separatorWidth) / maxStacks
+	local sf = data.chargeStackBar.separatorFrame
+	if not sf then return end
+	if not data.chargeStackBar.separators then
+		data.chargeStackBar.separators = {}
+	end
+	for i = 1, maxStacks - 1 do
+		if not data.chargeStackBar.separators[i] then
+			local sep = sf:CreateTexture(nil, "OVERLAY")
+			sep:SetSize(separatorWidth, barSize)
+			sep:SetColorTexture(0, 0, 0, 1)
+			data.chargeStackBar.separators[i] = sep
+		end
+		local xPos = (i * segmentWidth) + ((i - 1) * separatorWidth)
+		data.chargeStackBar.separators[i]:ClearAllPoints()
+		data.chargeStackBar.separators[i]:SetPoint("TOPLEFT", sf, "TOPLEFT", xPos, 0)
+		data.chargeStackBar.separators[i]:Show()
+	end
+	for i = maxStacks, #data.chargeStackBar.separators do
+		local sep = data.chargeStackBar.separators[i]
+		if sep then
+			sep:Hide()
 		end
 	end
 end
 
--- Alias for event-based calls (maintains compatibility)
+-- After leaving combat, rebuild if charge API now reports a numeric max (or override changed effective layout).
+local function gcdi_needs_charge_layout_rebuild()
+	if not settings or not settings.spellSettings then
+		return false
+	end
+	for spellID, data in pairs(trackedSpells) do
+		if data.isChargeSpell and GCDI.is_spell_enabled(spellID) then
+			local info = gcdi_get_spell_charge_info(spellID, data.actionSlot)
+			local effectiveMax = gcdi_effective_max_charge_pips(spellID, info)
+			local wantPips = effectiveMax > 1
+			local hasPips = (data.chargeStackBar ~= nil)
+			if wantPips ~= hasPips then
+				return true
+			end
+			if wantPips and hasPips and (data.maxCharges or 0) ~= effectiveMax then
+				return true
+			end
+		end
+	end
+	return false
+end
+
+local function gcdi_charge_spell_id_list()
+	local list = {}
+	for spellID, data in pairs(trackedSpells) do
+		if data.chargeStackBar and GCDI.is_spell_enabled(spellID) then
+			list[#list + 1] = spellID
+		end
+	end
+	table.sort(list)
+	return list
+end
+
+local function gcdi_update_spell_charge_stack(spellID)
+	local data = trackedSpells[spellID]
+	if not data or not data.chargeStackBar or not data.chargeStackBar.bar then return end
+	if not GCDI.is_spell_enabled(spellID) then return end
+	local chargeInfo = gcdi_get_spell_charge_info(spellID, data.actionSlot)
+	if not chargeInfo or chargeInfo.currentCharges == nil then return end
+	local maxS = math.max(data.chargeStackMax or 1, 1)
+	data.chargeStackBar.bar:SetMinMaxValues(0, maxS)
+	data.chargeStackBar.bar:SetValue(chargeInfo.currentCharges)
+end
+
+local function update_charge_indicators_tick()
+	if previewMode then return end
+	for _, spellID in ipairs(gcdi_charge_spell_id_list()) do
+		gcdi_update_spell_charge_stack(spellID)
+	end
+end
+
 local function update_all_charge_indicators()
 	update_charge_indicators_tick()
 end
@@ -650,21 +792,10 @@ local function create_spell_bar(spellID, spellName, texture, actionSlot)
 	local barSize = configs.barHeight
 	local pad = configs.bgPadding
 	
-	-- Check if spell has charges
-	-- chargeInfo being non-nil means it's a charge spell (safe check, no secret reading)
-	local chargeInfo = C_Spell.GetSpellCharges(spellID)
-	local isChargeSpell = (chargeInfo ~= nil)  -- Does this spell use charges at all?
-	local maxCharges = 0
-	
-	if isChargeSpell and chargeInfo.maxCharges then
-		-- Only read maxCharges if NOT a secret value
-		if not issecretvalue or not issecretvalue(chargeInfo.maxCharges) then
-			maxCharges = chargeInfo.maxCharges
-		else
-			-- Secret value - default to 2 (most charge spells have 2)
-			maxCharges = 2
-		end
-	end
+	-- Check if spell has charges (action slot first — catalog spell ID often != bar spell ID in Midnight)
+	local chargeInfo = gcdi_get_spell_charge_info(spellID, actionSlot)
+	local isChargeSpell = (chargeInfo ~= nil)
+	local maxCharges = gcdi_effective_max_charge_pips(spellID, chargeInfo)
 	
 	-- Only show charge INDICATORS if > 1 charge (visual boxes)
 	local showChargeIndicators = maxCharges > 1
@@ -676,7 +807,7 @@ local function create_spell_bar(spellID, spellName, texture, actionSlot)
 	local isSelfCast = is_spell_self_cast(spellID)
 	
 	-- Calculate container width based on spell settings
-	-- Layout: [pad][icon][2][cooldown][2][range?][2][charges?][2][iconChange?][pad]
+	-- Layout: [pad][icon][2][cooldown][2][range?][2][charge stack?][2][iconChange?][pad]
 	local chargeWidth = showChargeIndicators and (maxCharges * barSize + (maxCharges - 1) * 2) or 0  -- squares + gaps
 	local extraGap = showChargeIndicators and 2 or 0  -- gap before charges section
 	local iconChangeWidth = trackIcon and (barSize + 2) or 0  -- icon change indicator + gap
@@ -733,45 +864,48 @@ local function create_spell_bar(spellID, spellName, texture, actionSlot)
 		lastElement = rangeBase
 	end
 	
-	-- Create charge indicators if spell has charges (to the right of range, or cooldown if self-cast)
-	local chargeIndicators = nil
-	local chargeDetectors = nil
+	-- Charge stack bar (buff-style: one StatusBar + segment separators; value pass-through)
+	local chargeStackBar = nil
+	local chargeStackMax = nil
 	
 	if showChargeIndicators then
-		chargeIndicators = {}
-		chargeDetectors = LibDetector:CreateDetectorArray(maxCharges)
-		local prevElement = lastElement
+		chargeStackMax = maxCharges
+		local separatorWidth = 2
+		local stackBarWidth = maxCharges * barSize + (maxCharges - 1) * separatorWidth
 		
-		for i = 1, maxCharges do
-			-- Blue background (charge available)
-			local chargeBg = container:CreateTexture(nil, "ARTWORK")
-			chargeBg:SetSize(barSize, barSize)
-			chargeBg:SetPoint("LEFT", prevElement, "RIGHT", 2, 0)
-			chargeBg:SetColorTexture(0, 0.5, 1, 1)  -- Blue = available
-			
-			-- Black overlay (charge on cooldown) - shown when charge is NOT available
-			local chargeOverlay = container:CreateTexture(nil, "OVERLAY")
-			chargeOverlay:SetSize(barSize, barSize)
-			chargeOverlay:SetPoint("CENTER", chargeBg, "CENTER", 0, 0)
-			chargeOverlay:SetColorTexture(0, 0, 0, 1)  -- Black = on cooldown
-			chargeOverlay:Hide()  -- Start hidden (charge available)
-			
-			chargeIndicators[i] = {
-				bg = chargeBg,
-				overlay = chargeOverlay,
-			}
-			
-			prevElement = chargeBg
+		local stackArea = CreateFrame("Frame", nil, container)
+		stackArea:SetSize(stackBarWidth, barSize)
+		stackArea:SetPoint("LEFT", lastElement, "RIGHT", 2, 0)
+		
+		local sb = CreateFrame("StatusBar", nil, stackArea)
+		sb:SetPoint("TOPLEFT", stackArea, "TOPLEFT", 0, 0)
+		sb:SetPoint("BOTTOMRIGHT", stackArea, "BOTTOMRIGHT", 0, 0)
+		sb:SetStatusBarTexture("Interface\\Buttons\\WHITE8X8")
+		local sbtex = sb:GetStatusBarTexture()
+		if sbtex and sbtex.SetHorizTile then
+			sbtex:SetHorizTile(false)
 		end
+		sb:SetStatusBarColor(SPELL_CHARGE_STACK_COLOR[1], SPELL_CHARGE_STACK_COLOR[2], SPELL_CHARGE_STACK_COLOR[3], 1)
+		sb:SetMinMaxValues(0, maxCharges)
+		sb:SetValue(maxCharges)
+		
+		local separatorFrame = CreateFrame("Frame", nil, stackArea)
+		separatorFrame:SetAllPoints(stackArea)
+		separatorFrame:SetFrameLevel(stackArea:GetFrameLevel() + 10)
+		
+		chargeStackBar = {
+			bar = sb,
+			separatorFrame = separatorFrame,
+			separators = {},
+		}
+		lastElement = stackArea
+		layout_spell_charge_stack_separators({ chargeStackBar = chargeStackBar, chargeStackMax = chargeStackMax })
 	end
 	
 	-- Icon change indicator (after charges, or after range/cooldown if no charges)
 	local iconChangeIndicator = nil
 	if trackIcon then
-		local anchorElement = lastElement  -- Default to last element (range or cooldown)
-		if showChargeIndicators and chargeIndicators then
-			anchorElement = chargeIndicators[maxCharges].bg
-		end
+		local anchorElement = lastElement
 		
 		-- Grey background (normal state)
 		local iconChangeBg = container:CreateTexture(nil, "ARTWORK")
@@ -792,23 +926,14 @@ local function create_spell_bar(spellID, spellName, texture, actionSlot)
 		}
 	end
 	
-	-- Create a single detector for checking if ANY charges are available (for cooldown bar logic)
-	local chargeCheckDetector = nil
-	if isChargeSpell then
-		-- Creates a detector that returns true when currentCharges >= 1
-		local detectorArray = LibDetector:CreateDetectorArray(1)
-		chargeCheckDetector = detectorArray[1]
-	end
-	
 	trackedSpells[spellID] = { 
 		bar = bar, 
 		container = container, 
 		actionSlot = actionSlot,
 		rangeBase = rangeBase,  -- White background for range
 		rangeOverlay = rangeOverlay,  -- Colored overlay for range
-		chargeIndicators = chargeIndicators,
-		chargeDetectors = chargeDetectors,  -- LibDetector array for charge indicator display
-		chargeCheckDetector = chargeCheckDetector,  -- Single detector to check if charges available
+		chargeStackBar = chargeStackBar,
+		chargeStackMax = chargeStackMax,
 		maxCharges = showChargeIndicators and maxCharges or nil,
 		isChargeSpell = isChargeSpell,  -- Whether this spell uses charges (for cooldown logic)
 		icon = icon,  -- Store icon reference for icon change detection
@@ -884,7 +1009,7 @@ local function animate_item_bars()
 	end
 end
 
--- Update item charge indicators (blue if has item, black if not)
+-- Update item charge indicators (spell charge color if has item, black if not)
 local function update_item_charge_indicators()
 	if previewMode then return end  -- Skip updates in preview mode
 	for itemKey, data in pairs(trackedItems) do
@@ -901,9 +1026,9 @@ local function update_item_charge_indicators()
 			end
 			
 			if hasCharge then
-				data.chargeOverlay:Hide()  -- Show blue
+				data.chargeOverlay:Hide()  -- Reveal spell-charge-colored bg
 			else
-				data.chargeOverlay:Show()  -- Show black
+				data.chargeOverlay:Show()  -- Black overlay
 			end
 		end
 	end
@@ -971,7 +1096,7 @@ local function create_item_bar(itemKey, itemName, texture, itemID, slot)
 		local chargeBg = container:CreateTexture(nil, "ARTWORK")
 		chargeBg:SetSize(barSize, barSize)
 		chargeBg:SetPoint("LEFT", clipContainer, "RIGHT", 2, 0)
-		chargeBg:SetColorTexture(0, 0.5, 1, 1)  -- Blue = has charges
+		chargeBg:SetColorTexture(SPELL_CHARGE_STACK_COLOR[1], SPELL_CHARGE_STACK_COLOR[2], SPELL_CHARGE_STACK_COLOR[3], 1)  -- Same as spell charge stack
 		
 		chargeOverlay = container:CreateTexture(nil, "OVERLAY")
 		chargeOverlay:SetSize(barSize, barSize)
@@ -1011,7 +1136,7 @@ end
 local BUFF_COLORS = {
 	active = { 0.2, 0.8, 0.2 },     -- Green when buff is active
 	inactive = { 0.3, 0.3, 0.3 },   -- Grey when buff is not active
-	stackSegment = { 0.4, 0.7, 1.0 }, -- Stack StatusBar fill (matches AHK ColorStackActive)
+	stackSegment = { 0.4, 0.7, 1.0 }, -- Stack StatusBar fill thresholds
 }
 
 -- Delimiter lines from options Max Stacks only (width/segment count — not derived from live stack value)
@@ -1047,6 +1172,60 @@ local function layout_buff_stack_separators(data)
 	end
 end
 
+-- Live stack counts while auras are secret: prefer spell-ID APIs when they
+-- return data; else CDM auraDataCached. AuraContainer/ApplicationBar cannot be
+-- used from tainted code (ChangeParent / AddSecretAspect forbidden).
+local function gcdi_get_buff_stack_applications(cdmFrame, catalogEntry, data)
+	local spellID = (catalogEntry and (catalogEntry.spellID or catalogEntry.tooltipSpellID))
+		or (data and data.tooltipSpellID)
+	local unit = (cdmFrame and ((cdmFrame.GetAuraDataUnit and cdmFrame:GetAuraDataUnit()) or cdmFrame.auraDataUnit))
+		or (catalogEntry and catalogEntry.isTargetDebuff and "target")
+		or "player"
+
+	local function apps_from_aura(auraData)
+		if auraData == nil then return nil end
+		local ok, apps = pcall(function() return auraData.applications end)
+		if ok and apps ~= nil then
+			return apps
+		end
+		return nil
+	end
+
+	if spellID and C_UnitAuras then
+		if unit == "player" and C_UnitAuras.GetPlayerAuraBySpellID then
+			local ok, result = pcall(C_UnitAuras.GetPlayerAuraBySpellID, spellID)
+			if ok then
+				local apps = apps_from_aura(result)
+				if apps ~= nil then return apps end
+			end
+		end
+		if C_UnitAuras.GetUnitAuraBySpellID then
+			local ok, result = pcall(C_UnitAuras.GetUnitAuraBySpellID, unit, spellID)
+			if ok then
+				local apps = apps_from_aura(result)
+				if apps ~= nil then return apps end
+			end
+		end
+	end
+
+	if cdmFrame then
+		local apps = apps_from_aura(cdmFrame.auraDataCached)
+		if apps ~= nil then return apps end
+	end
+	return nil
+end
+
+local function gcdi_set_stack_bar_value(bar, maxS, apps)
+	if not bar then return end
+	maxS = math.max(maxS or 1, 1)
+	bar:SetMinMaxValues(0, maxS)
+	-- Do not clear-to-0 before setting: a non-secret 0 can prevent a following
+	-- secret applications value from displaying (stacks looked permanently empty).
+	if apps ~= nil then
+		bar:SetValue(apps)
+	end
+end
+
 local function update_buff_bar(buffID)
 	if previewMode then return end  -- Skip updates in preview mode
 	if not GCDI.is_buff_enabled(buffID) then return end  -- Skip disabled buffs
@@ -1055,9 +1234,8 @@ local function update_buff_bar(buffID)
 	if not data then return end
 	
 	-- Use Cooldown Manager integration (like ArcUI)
-	-- CDM frames: cooldownID readable; auraInstanceID may be secret - pass only to APIs
+	-- CDM frames: cooldownID readable; auraInstanceID may be secret (presence = active).
 	local isActive = false
-	local auraDataForStacks = nil
 	
 	-- Get catalog entry to find cooldownID
 	local catalogEntry = GCDI.buffCatalog[buffID]
@@ -1092,44 +1270,15 @@ local function update_buff_bar(buffID)
 		debug("LOOKUP FAIL for " .. buffID .. ": catalog=" .. hasCatalog .. " reverseMap=" .. hasReverseMap .. " totalCDMFrames=" .. totalFrames)
 	end
 	
-	-- Helper to auto-detect unit (like ArcUI's GetAuraDataAutoUnit)
-	local function GetAuraDataAutoUnit(auraInstanceID)
-		if not auraInstanceID then return nil, nil end
-		-- Try player first (most common for buffs)
-		local auraData = C_UnitAuras.GetAuraDataByAuraInstanceID("player", auraInstanceID)
-		if auraData then return auraData, "player" end
-		-- Try target (for debuffs like Rip)
-		auraData = C_UnitAuras.GetAuraDataByAuraInstanceID("target", auraInstanceID)
-		if auraData then return auraData, "target" end
-		return nil, nil
-	end
-	
-	local detectedUnit = nil
-	
+	-- Never call GetAuraDataByAuraInstanceID from tainted code: secret auraInstanceIDs throw.
 	if cdmFrame then
-		-- auraInstanceID may be secret; API errors if passed nil. Only call when present.
+		-- Presence only: secret auraInstanceID is still non-nil while the aura is up.
 		local auraInstanceID = cdmFrame.auraInstanceID
 		if auraInstanceID ~= nil then
-			-- CDM can show auras on player (buffs) or target (debuffs). Use frame unit if available, else try player then target (like ArcUI).
-			local unit = (cdmFrame.GetAuraDataUnit and cdmFrame:GetAuraDataUnit()) or nil
-			local auraData
-			if unit then
-				auraData = C_UnitAuras.GetAuraDataByAuraInstanceID(unit, auraInstanceID)
-			end
-			if not auraData then
-				auraData = C_UnitAuras.GetAuraDataByAuraInstanceID("player", auraInstanceID)
-				if auraData then unit = "player" end
-			end
-			if not auraData then
-				auraData = C_UnitAuras.GetAuraDataByAuraInstanceID("target", auraInstanceID)
-				if auraData then unit = "target" end
-			end
-			if auraData then
-				isActive = true
-				auraDataForStacks = auraData
-				-- Use resolved unit for duration bar below (so target debuffs get correct duration)
-				data._lastAuraUnit = unit
-			end
+			isActive = true
+			data._lastAuraUnit = (cdmFrame.GetAuraDataUnit and cdmFrame:GetAuraDataUnit())
+				or cdmFrame.auraDataUnit
+				or "player"
 		end
 	end
 	
@@ -1161,28 +1310,28 @@ local function update_buff_bar(buffID)
 		data.active = true
 		data.activeIndicator:SetColorTexture(BUFF_COLORS.active[1], BUFF_COLORS.active[2], BUFF_COLORS.active[3], 1)
 		
-		-- Stack bar: min/max and pixel width come from options (stackBarMax); value is passed through — no stack count read in Lua
 		if data.stackBar and GCDI.should_show_buff_stacks(buffID) then
-			local maxS = math.max(data.stackBarMax or 1, 1)
-			data.stackBar.bar:SetMinMaxValues(0, maxS)
-			if auraDataForStacks then
-				if auraDataForStacks.applications ~= nil then
-					data.stackBar.bar:SetValue(auraDataForStacks.applications)
-				else
-					data.stackBar.bar:SetValue(0)
-				end
-			elseif data.manualTracking then
-				data.stackBar.bar:SetValue(data.stacks or 0)
+			local apps
+			if data.manualTracking and not cdmFrame then
+				apps = data.stacks or 0
 			else
-				data.stackBar.bar:SetValue(0)
+				apps = gcdi_get_buff_stack_applications(cdmFrame, catalogEntry, data)
+			end
+			-- Only write when we have a value. If applications are unreadable this
+			-- tick, keep the last displayed fill instead of blanking the bar.
+			if apps ~= nil then
+				gcdi_set_stack_bar_value(data.stackBar.bar, data.stackBarMax, apps)
 			end
 		end
 		
-		-- Update duration bar using CDM frame (pass auraInstanceID only when non-nil)
+		-- Duration: GetAuraDuration accepts secret IDs when tainted; pcall in case 12.1+ throws under secrecy.
 		if data.durationBar and cdmFrame and cdmFrame.auraInstanceID ~= nil then
-			local unit = (cdmFrame.GetAuraDataUnit and cdmFrame:GetAuraDataUnit()) or data._lastAuraUnit or "player"
-			local durObj = C_UnitAuras.GetAuraDuration(unit, cdmFrame.auraInstanceID)
-			if durObj then
+			local unit = (cdmFrame.GetAuraDataUnit and cdmFrame:GetAuraDataUnit())
+				or data._lastAuraUnit
+				or cdmFrame.auraDataUnit
+				or "player"
+			local ok, durObj = pcall(C_UnitAuras.GetAuraDuration, unit, cdmFrame.auraInstanceID)
+			if ok and durObj then
 				data.durationBar.bar:SetMinMaxValues(0, 1)
 				data.durationBar.bar:SetTimerDuration(durObj, Enum.StatusBarInterpolation.ExponentialEaseOut, Enum.StatusBarTimerDirection.RemainingTime)
 			end
@@ -1193,8 +1342,7 @@ local function update_buff_bar(buffID)
 		data.activeIndicator:SetColorTexture(BUFF_COLORS.inactive[1], BUFF_COLORS.inactive[2], BUFF_COLORS.inactive[3], 1)
 		
 		if data.stackBar and GCDI.should_show_buff_stacks(buffID) then
-			local maxS = math.max(data.stackBarMax or 1, 1)
-			data.stackBar.bar:SetMinMaxValues(0, maxS)
+			data.stackBar.bar:SetMinMaxValues(0, math.max(data.stackBarMax or 1, 1))
 			data.stackBar.bar:SetValue(0)
 		end
 		
@@ -1210,6 +1358,51 @@ local function update_all_buff_bars()
 	for spellID in pairs(trackedBuffs) do
 		update_buff_bar(spellID)
 	end
+end
+
+-- CDM only writes auraDataCached inside SetAuraInstanceInfo when instance/spell ID
+-- changes, so stack decay on the same ID can leave a stale high applications value.
+-- Force-cache the auraInfo argument whenever SetAuraInstanceInfo runs (still called
+-- with fresh data from RefreshAuraInstance → GetAuraData).
+local gcdi_cdm_stack_hooks_installed = false
+local function gcdi_install_cdm_stack_hooks()
+	if gcdi_cdm_stack_hooks_installed then return end
+	local mixin = _G.CooldownViewerItemDataMixin
+	if not mixin or not mixin.SetAuraInstanceInfo then return end
+	gcdi_cdm_stack_hooks_installed = true
+	hooksecurefunc(mixin, "SetAuraInstanceInfo", function(self, auraInfo, unit)
+		if auraInfo then
+			self.auraDataCached = auraInfo
+			if unit ~= nil then
+				self.auraDataUnit = unit
+			end
+		end
+	end)
+	if mixin.RefreshData then
+		hooksecurefunc(mixin, "RefreshData", function(self)
+			if previewMode then return end
+			local cdID = self.cooldownID
+			if not cdID or not trackedBuffs[cdID] then return end
+			C_Timer.After(0, function()
+				if trackedBuffs[cdID] then
+					update_buff_bar(cdID)
+				end
+			end)
+		end)
+	end
+end
+
+-- Defer buff bar work out of UNIT_AURA: running addon code in the same call chain as Blizzard's
+-- BuffIconCooldownViewer aura handlers taints execution; CooldownViewer then errors when comparing spellID.
+local buffBarsAfterAuraScheduled = false
+local function schedule_update_all_buff_bars_after_aura()
+	if buffBarsAfterAuraScheduled or previewMode then return end
+	buffBarsAfterAuraScheduled = true
+	C_Timer.After(0, function()
+		buffBarsAfterAuraScheduled = false
+		update_all_buff_bars()
+		update_dispel_indicator()
+	end)
 end
 
 local function create_buff_bar(buffKey, spellName, texture, tooltipSpellID)
@@ -1251,7 +1444,7 @@ local function create_buff_bar(buffKey, spellName, texture, tooltipSpellID)
 	activeIndicator:SetPoint("LEFT", icon, "RIGHT", 2, 0)
 	activeIndicator:SetColorTexture(BUFF_COLORS.inactive[1], BUFF_COLORS.inactive[2], BUFF_COLORS.inactive[3], 1)
 	
-	-- Stack bar: StatusBar fill from aura applications (pass-through); min/max + width from Max Stacks option; delimiters from option count only
+	-- Stack bar: StatusBar fill from applications (spell-ID API or CDM cache).
 	local stackBar = nil
 	local stackBarMax = nil
 	local lastElement = activeIndicator
@@ -1782,6 +1975,23 @@ local function update_essence_bar()
 	update_charge_bar(resourceBars.essence, Enum.PowerType.Essence, 5)
 end
 
+-- Brewmaster only; max = max health (same scale as default UI). Values may be secret — pass through to the bar only.
+local function update_stagger_bar()
+	if previewMode then return end
+	if not resourceBars.stagger then return end
+	local bar = resourceBars.stagger.bar
+	local _, class = UnitClass("player")
+	local spec = C_SpecializationInfo.GetSpecialization()
+	local isBrewmaster = class == "MONK" and spec == 1
+	if not isBrewmaster then
+		bar:SetMinMaxValues(0, 1)
+		bar:SetValue(0)
+		return
+	end
+	bar:SetMinMaxValues(0, UnitHealthMax("player"))
+	bar:SetValue(UnitStagger("player"))
+end
+
 local function update_all_resources()
 	update_health_bar()
 	update_mana_bar()
@@ -1801,6 +2011,7 @@ local function update_all_resources()
 	update_pain_bar()
 	update_lunar_power_bar()
 	update_essence_bar()
+	update_stagger_bar()
 end
 
 local function update_stance_indicator()
@@ -1812,12 +2023,46 @@ local function update_stance_indicator()
 	main_frame.stanceIndicator:SetColorTexture(color[1], color[2], color[3], 1)
 end
 
+-- Midnight: UnitAffectingCombat may return a secret boolean — do not branch on it raw.
+local function gcdi_safe_unit_affecting_combat(unit)
+	local v = UnitAffectingCombat(unit)
+	if v == nil then
+		return false
+	end
+	if issecretvalue and issecretvalue(v) then
+		return false
+	end
+	return v and true or false
+end
+
 local function update_aggro_indicator()
 	if previewMode then return end  -- Skip updates in preview mode
 	if not main_frame.aggrobar then return end
 	
+	-- Midnight+: Unit* APIs may return secret booleans/numbers — never use them in if/and/not; coerce first.
+	local function aggro_safe_bool(v, default)
+		if v == nil then
+			return default
+		end
+		if issecretvalue and issecretvalue(v) then
+			return default
+		end
+		return v and true or false
+	end
+	local function aggro_safe_tonumber(v)
+		if v == nil then
+			return nil
+		end
+		if issecretvalue and issecretvalue(v) then
+			return nil
+		end
+		return tonumber(v)
+	end
+	
 	-- Check if target exists and is attackable (hostile). Don't require combat—pre-pull we show grey.
-	local validTarget = UnitExists("target") and UnitCanAttack("player", "target")
+	local exists = UnitExists("target")
+	local canAttack = UnitCanAttack("player", "target")
+	local validTarget = aggro_safe_bool(exists, false) and aggro_safe_bool(canAttack, false)
 	
 	if not validTarget then
 		-- No target or friendly target = white
@@ -1826,12 +2071,18 @@ local function update_aggro_indicator()
 	end
 	
 	-- Have target: grey (no aggro) or orange (has aggro). Only show grey when target is in combat and we don't have aggro.
-	local hasAttackableTarget = UnitCanAttack("player", "target")
-	local targetInCombat = UnitAffectingCombat("target")
-	local threatStatus = UnitThreatSituation("player", "target")
-	local hasAggro = threatStatus and threatStatus >= 2
-	if not hasAggro and UnitExists("targettarget") and UnitIsUnit("targettarget", "player") then
-		hasAggro = true
+	local hasAttackableTarget = aggro_safe_bool(canAttack, false)
+	local targetInCombat = aggro_safe_bool(UnitAffectingCombat("target"), false)
+	local threatNum = aggro_safe_tonumber(UnitThreatSituation("player", "target"))
+	local hasAggro = threatNum ~= nil and threatNum >= 2
+	if not hasAggro then
+		local ttExists = UnitExists("targettarget")
+		if aggro_safe_bool(ttExists, false) then
+			local isSelf = UnitIsUnit("targettarget", "player")
+			if aggro_safe_bool(isSelf, false) then
+				hasAggro = true
+			end
+		end
 	end
 	
 	if hasAggro then
@@ -1843,25 +2094,32 @@ local function update_aggro_indicator()
 	end
 end
 
--- Count nearby hostile mobs within range using nameplates and the range proxy spell for that bracket
+-- Count nearby hostile mobs within range (nameplates). LibRangeCheck when enabled; else proxy spell per bracket.
 local function count_nearby_mobs(range)
 	local count = 0
-	if not settings or not settings.rangeProxySpells then return 0 end
-	local proxySpellID = settings.rangeProxySpells[range]
-	if not proxySpellID or type(proxySpellID) ~= "number" then return 0 end
-	if not C_Spell or not C_Spell.SpellHasRange(proxySpellID) then
-		return 0  -- No proxy spell for this range; set one on GCD tab Range spells (in combat)
-	end
+	if not settings or not range or range <= 0 then return 0 end
+
+	local gcdSettings = settings.gcdSettings or {}
+	local useLRC = gcdSettings.useLibRangeCheck == true
+	local inCombat = InCombatLockdown()
 
 	local nameplates = C_NamePlate and C_NamePlate.GetNamePlates and C_NamePlate.GetNamePlates()
 	if not nameplates or type(nameplates) ~= "table" then return 0 end
+
+	local proxySpellID = settings.rangeProxySpells and settings.rangeProxySpells[range]
 
 	for _, nameplate in pairs(nameplates) do
 		if type(nameplate) == "table" then
 			local unit = (type(nameplate.GetUnit) == "function" and nameplate:GetUnit()) or nameplate.unitToken or nameplate.namePlateUnitToken
 			if unit and UnitExists(unit) then
 				if UnitCanAttack("player", unit) and not UnitIsDead(unit) then
-					local inRange = C_Spell.IsSpellInRange(proxySpellID, unit)
+					local inRange = nil
+					if useLRC then
+						inRange = LibRange:IsUnitInRangeYardsLRC(unit, range, inCombat)
+					end
+					if inRange == nil and proxySpellID and type(proxySpellID) == "number" and C_Spell and C_Spell.SpellHasRange(proxySpellID) then
+						inRange = C_Spell.IsSpellInRange(proxySpellID, unit)
+					end
 					if inRange == true then
 						count = count + 1
 					end
@@ -1883,6 +2141,76 @@ local function update_mob_count_indicator()
 		main_frame.mobcountbar:SetStatusBarColor(1, 1, 1)  -- White = at or above threshold
 	else
 		main_frame.mobcountbar:SetStatusBarColor(0, 0, 0)  -- Black = below threshold
+	end
+end
+
+-- Player debuff the active character can dispel. Purple = need dispel; grey = idle.
+-- Dispel indicator purple (0x9933CC → 0.6, 0.2, 0.8).
+--
+-- Midnight / restricted auras: canActivePlayerDispel on AuraData may be unusable (secret). Matches Decursive’s
+-- C_UnitAuras.GetDebuffDataByIndex(unit, i, "RAID_PLAYER_DISPELLABLE") (see ../Decursive/Decursive.lua scanning block).
+local DISPEL_DEBUFF_FILTER = "RAID_PLAYER_DISPELLABLE"
+local DISPEL_DEBUFF_SCAN_MAX = 40
+
+local function gcdi_safe_can_dispel_flag(v)
+	if v == nil then
+		return false
+	end
+	if issecretvalue and issecretvalue(v) then
+		return false
+	end
+	return v and true or false
+end
+
+local function player_has_dispellable_debuff_on_self()
+	-- 12.1+: GetDebuffDataByIndex / GetAuraSlots / ForEachAura Lua-error when auras are secret
+	-- while tainted. No legal self-dispel scan — leave indicator idle.
+	if GCDI_AURAS_INSTANCE_API_UNSAFE then
+		return false
+	end
+	if C_UnitAuras and C_UnitAuras.GetDebuffDataByIndex then
+		local ok, has = pcall(function()
+			for i = 1, DISPEL_DEBUFF_SCAN_MAX do
+				local aura = C_UnitAuras.GetDebuffDataByIndex("player", i, DISPEL_DEBUFF_FILTER)
+				if aura then
+					return true
+				end
+			end
+			return false
+		end)
+		if ok and has then
+			return true
+		end
+	end
+	-- Fallback: full HARMFUL scan + canActivePlayerDispel (older clients / if API fails)
+	if AuraUtil and AuraUtil.ForEachAura then
+		local ok, found = pcall(function()
+			local hit = false
+			AuraUtil.ForEachAura("player", "HARMFUL", DISPEL_DEBUFF_SCAN_MAX, function(auraData)
+				if auraData and gcdi_safe_can_dispel_flag(auraData.canActivePlayerDispel) then
+					hit = true
+					return true
+				end
+			end, true)
+			return hit
+		end)
+		if ok and found then
+			return true
+		end
+	end
+	return false
+end
+
+update_dispel_indicator = function()
+	if previewMode then return end
+	if not main_frame or not main_frame.dispelbar then return end
+	
+	local hasDispel = player_has_dispellable_debuff_on_self()
+	
+	if hasDispel then
+		main_frame.dispelbar:SetStatusBarColor(0.6, 0.2, 0.8)
+	else
+		main_frame.dispelbar:SetStatusBarColor(0.28, 0.28, 0.32)
 	end
 end
 
@@ -1934,8 +2262,16 @@ reposition_all = function()
 		if main_frame.mobcountbar then
 			main_frame.mobcountbar:SetShown(gcdSettings.showMobCount ~= false)
 		end
+		local showDispel = gcdSettings.showDispel ~= false
+		if main_frame.gcdRowSep6 then
+			main_frame.gcdRowSep6:SetShown(showDispel)
+		end
+		if main_frame.dispelbar then
+			main_frame.dispelbar:SetShown(showDispel)
+		end
 		-- Refresh mob count bar so AOE detection is correct as soon as the row is visible
 		update_mob_count_indicator()
+		update_dispel_indicator()
 		
 		yOffset = yOffset - gcdContainerHeight - spacing
 	else
@@ -1958,7 +2294,8 @@ reposition_all = function()
 	local otherResources = { 
 		"mana", "rage", "energy", "focus", "runicPower", "runes",
 		"comboPoints", "soulShards", "holyPower", "chi", "arcaneCharges",
-		"insanity", "maelstrom", "fury", "pain", "astralPower", "essence"
+		"insanity", "maelstrom", "fury", "pain", "astralPower", "essence",
+		"stagger",
 	}
 	for _, name in ipairs(otherResources) do
 		if resourceBars[name] then
@@ -2192,9 +2529,21 @@ end
 -- CDM SPELL INFO HELPER (match ArcUI: icon/tooltip from overrideTooltipSpellID)
 -- CDM uses internal cooldownIDs; GetCooldownViewerCooldownInfo returns:
 --   .spellID (base), .overrideSpellID (override), .overrideTooltipSpellID (display/tooltip).
--- ArcUI: "For auras, CDM often uses overrideTooltipSpellID for display" - icon and tooltip.
--- Priority: frame.cooldownInfo > C_CooldownViewer API; icon: frame texture > overrideTooltipSpellID > spellID.
+-- Midnights+: these fields may be secret values — never compare with >, use as table keys, or chain into
+-- Blizzard UI code from UNIT_AURA; strip secrets and rely on frame icon when needed.
 -- ═══════════════════════════════════════════════════════════════════════════
+local function CDMSpellIdForAddonUse(id)
+	if id == nil then return nil end
+	if issecretvalue and issecretvalue(id) then return nil end
+	return id
+end
+
+local function CDMIsUsableSpellId(id)
+	if id == nil then return false end
+	if issecretvalue and issecretvalue(id) then return false end
+	return type(id) == "number" and id > 0
+end
+
 local function GetCDMSpellInfo(frame, cooldownID)
 	local spellID = nil
 	local overrideSpellID = nil
@@ -2208,12 +2557,12 @@ local function GetCDMSpellInfo(frame, cooldownID)
 		cooldownInfo = C_CooldownViewer.GetCooldownViewerCooldownInfo(cooldownID)
 	end
 	if cooldownInfo then
-		spellID = cooldownInfo.spellID
-		overrideSpellID = cooldownInfo.overrideSpellID
-		overrideTooltipSpellID = cooldownInfo.overrideTooltipSpellID
+		spellID = CDMSpellIdForAddonUse(cooldownInfo.spellID)
+		overrideSpellID = CDMSpellIdForAddonUse(cooldownInfo.overrideSpellID)
+		overrideTooltipSpellID = CDMSpellIdForAddonUse(cooldownInfo.overrideTooltipSpellID)
 		hasCharges = cooldownInfo.hasCharges or false
 	end
-	local displaySpellID = overrideSpellID or spellID  -- for name/APIs
+	local displaySpellID = overrideSpellID or spellID  -- for name/APIs (never secret after strip)
 
 	-- 1) Icon: try frame's Icon first (what CDM actually shows)
 	if frame and frame.Icon then
@@ -2248,27 +2597,27 @@ local function GetCDMSpellInfo(frame, cooldownID)
 		end
 	end
 	-- 2) Auras: overrideTooltipSpellID is what CDM uses for display (ArcUI)
-	if not texture and overrideTooltipSpellID and overrideTooltipSpellID > 0 and C_Spell and C_Spell.GetSpellTexture then
+	if not texture and CDMIsUsableSpellId(overrideTooltipSpellID) and C_Spell and C_Spell.GetSpellTexture then
 		texture = C_Spell.GetSpellTexture(overrideTooltipSpellID)
 	end
-	if not texture and displaySpellID and C_Spell and C_Spell.GetSpellTexture then
+	if not texture and CDMIsUsableSpellId(displaySpellID) and C_Spell and C_Spell.GetSpellTexture then
 		texture = C_Spell.GetSpellTexture(displaySpellID)
 	end
-	if not texture and spellID and spellID > 0 and C_Spell and C_Spell.GetSpellTexture then
+	if not texture and CDMIsUsableSpellId(spellID) and C_Spell and C_Spell.GetSpellTexture then
 		texture = C_Spell.GetSpellTexture(spellID)
 	end
 	if not texture then texture = 134400 end
 
 	-- Name from same spell as tooltip (overrideTooltipSpellID first) so name matches what tooltip shows
-	if overrideTooltipSpellID and overrideTooltipSpellID > 0 and C_Spell and C_Spell.GetSpellInfo then
+	if CDMIsUsableSpellId(overrideTooltipSpellID) and C_Spell and C_Spell.GetSpellInfo then
 		local info = C_Spell.GetSpellInfo(overrideTooltipSpellID)
 		if info and info.name then spellName = info.name end
 	end
-	if not spellName and displaySpellID and C_Spell and C_Spell.GetSpellInfo then
+	if not spellName and CDMIsUsableSpellId(displaySpellID) and C_Spell and C_Spell.GetSpellInfo then
 		local info = C_Spell.GetSpellInfo(displaySpellID)
 		if info and info.name then spellName = info.name end
 	end
-	if not spellName and spellID and spellID > 0 and C_Spell and C_Spell.GetSpellInfo then
+	if not spellName and CDMIsUsableSpellId(spellID) and C_Spell and C_Spell.GetSpellInfo then
 		local info = C_Spell.GetSpellInfo(spellID)
 		if info and info.name then spellName = info.name end
 	end
@@ -2283,6 +2632,7 @@ end
 -- 2) From BuffIconCooldownViewer's itemFramePool: only frames that are currently active.
 --    We use these for frame references (auraInstanceID, etc.); pool may have fewer than selected.
 local function scan_cdm_buff_frames()
+	gcdi_install_cdm_stack_hooks()
 	-- Don't wipe - update in place to preserve references
 	local foundThisScan = {}
 	local foundCount = 0
@@ -2718,11 +3068,13 @@ local function on_event(self, event, arg1, arg2, ...)
 	elseif event == "UNIT_HEALTH" then
 		if arg1 == "player" then
 			update_health_bar()
+			update_stagger_bar()
 		end
 		
 	elseif event == "UNIT_MAXHEALTH" then
 		if arg1 == "player" then
 			update_health_bar()
+			update_stagger_bar()
 		end
 		
 	elseif event == "UNIT_HEAL_ABSORB_AMOUNT_CHANGED" then
@@ -2782,10 +3134,17 @@ local function on_event(self, event, arg1, arg2, ...)
 		
 	elseif event == "PLAYER_REGEN_ENABLED" then
 		main_frame.combatbar:SetStatusBarColor(0, 0, 0)
+		C_Timer.After(0.5, function()
+			if previewMode or InCombatLockdown() then return end
+			if gcdi_needs_charge_layout_rebuild() then
+				rebuild_spell_bars()
+			end
+		end)
 		
 	elseif event == "PLAYER_ENTERING_WORLD" then
-		main_frame.combatbar:SetStatusBarColor(UnitAffectingCombat("player") and 1 or 0, 0, 0)
+		main_frame.combatbar:SetStatusBarColor(gcdi_safe_unit_affecting_combat("player") and 1 or 0, 0, 0)
 		update_aggro_indicator()
+		update_dispel_indicator()
 		-- Removed auto-scan: use /gcdopt scan to manually rescan
 		update_all_resources()
 		update_gcd()  -- Initialize GCD bar
@@ -2821,15 +3180,17 @@ local function on_event(self, event, arg1, arg2, ...)
 		
 	elseif event == "UNIT_AURA" then
 		if arg1 == "player" then
-			-- Removed auto-scan: use /gcdopt scan to manually rescan
-			-- Just update existing buff bars
-			update_all_buff_bars()
+			-- Defer: see schedule_update_all_buff_bars_after_aura (CooldownViewer taint / secret spellID compare)
+			schedule_update_all_buff_bars_after_aura()
 		end
 		
 	elseif event == "UNIT_SPELLCAST_SUCCEEDED" then
 		-- Manual buff tracking for buffs not in CDM
 		if arg1 == "player" then
 			local spellID = arg2
+			if issecretvalue and issecretvalue(spellID) then
+				return
+			end
 			-- Check if this spell triggers a manual buff
 			if settings and settings.buffSettings then
 				local buffSetting = settings.buffSettings[spellID]
@@ -2941,7 +3302,11 @@ local function init()
 			pain = true,
 			astralPower = true,
 			essence = true,
+			stagger = false,
 		}
+	end
+	if settings.resourceSettings.stagger == nil then
+		settings.resourceSettings.stagger = false
 	end
 	
 	-- Initialize gcdSettings
@@ -2953,6 +3318,7 @@ local function init()
 			showCombat = true,
 			showAggro = true,
 			showMobCount = true,
+			showDispel = true,
 			mobCountRange = 8,
 			mobCountThreshold = 3,
 		}
@@ -2970,6 +3336,12 @@ local function init()
 	end
 	if settings.gcdSettings.mobCountThreshold == nil then
 		settings.gcdSettings.mobCountThreshold = 3
+	end
+	if settings.gcdSettings.showDispel == nil then
+		settings.gcdSettings.showDispel = true
+	end
+	if settings.gcdSettings.useLibRangeCheck == nil then
+		settings.gcdSettings.useLibRangeCheck = false
 	end
 	
 	-- Initialize catalog managers now that settings are available
@@ -2989,7 +3361,7 @@ local function init()
 	main_frame.anchor = anchor
 	
 	local sepSize = 2
-	local containerWidth = (configs.size * 6) + (sepSize * 5) + (pad * 2)  -- 6 indicators: stance, gcd, combat, aggro, casting, mobcount
+	local containerWidth = (configs.size * 7) + (sepSize * 6) + (pad * 2)  -- 7: stance, gcd, combat, aggro, casting, mobcount, dispel
 	local gcdCombatContainer = CreateFrame("Frame", nil, main_frame)
 	gcdCombatContainer:SetSize(containerWidth, configs.size + pad * 2)
 	main_frame.gcdcontainer = gcdCombatContainer
@@ -3091,6 +3463,22 @@ local function init()
 	mobcountbar:SetPoint("LEFT", sep5, "RIGHT", 0, 0)
 	main_frame.mobcountbar = mobcountbar
 	
+	local sep6 = gcdCombatContainer:CreateTexture(nil, "ARTWORK")
+	sep6:SetSize(sepSize, configs.size)
+	sep6:SetPoint("LEFT", mobcountbar, "RIGHT", 0, 0)
+	sep6:SetColorTexture(0, 0, 0, 1)
+	
+	local dispelbar = CreateFrame("StatusBar", nil, gcdCombatContainer)
+	dispelbar:SetStatusBarTexture("Interface\\Buttons\\WHITE8X8")
+	dispelbar:GetStatusBarTexture():SetHorizTile(false)
+	dispelbar:SetMinMaxValues(0, 100)
+	dispelbar:SetValue(100)
+	dispelbar:SetSize(configs.size, configs.size)
+	dispelbar:SetStatusBarColor(0.28, 0.28, 0.32)  -- Visible idle vs row bg; purple when dispel needed
+	dispelbar:SetPoint("LEFT", sep6, "RIGHT", 0, 0)
+	main_frame.dispelbar = dispelbar
+	main_frame.gcdRowSep6 = sep6
+	
 	GCDIndicator_Positions = GCDIndicator_Positions or {}
 	local libGCDI = LibStub and LibStub:GetLibrary("LibGCDI", true)
 	if libGCDI then
@@ -3118,6 +3506,7 @@ local function init()
 	resourceBars.pain = create_resource_bar("pain", RESOURCE_COLORS.pain)
 	resourceBars.astralPower = create_resource_bar("astralPower", RESOURCE_COLORS.astralPower)
 	resourceBars.essence = create_resource_bar("essence", RESOURCE_COLORS.essence)
+	resourceBars.stagger = create_resource_bar("stagger", RESOURCE_COLORS.stagger)
 	
 	-- Helper function to add separators to charge-based resource bars
 	local function add_separators(resourceData, maxSeparators)
@@ -3192,7 +3581,7 @@ local function init()
 	main_frame:RegisterUnitEvent("UNIT_TARGET", "target")  -- So aggro indicator updates when target's target changes
 	main_frame:SetScript("OnEvent", on_event)
 
-	if UnitAffectingCombat("player") then
+	if gcdi_safe_unit_affecting_combat("player") then
 		combatbar:SetStatusBarColor(1, 0, 0)
 	end
 	
@@ -3269,13 +3658,15 @@ local function init()
 		update_charge_indicators_tick()
 		update_range_indicators()
 		update_all_buff_bars()
+		update_stagger_bar()
 		
-		-- Every 5 ticks (~75ms): Update mob count
+		-- Every 5 ticks (~75ms): Mob count + dispel (Decursive-style debuff filter; catch edge cases if UNIT_AURA is sparse)
 		if tickCount % 5 == 0 then
 			local ok, err = pcall(update_mob_count_indicator)
 			if not ok and err then
 				-- Don't spam; ticker keeps running
 			end
+			pcall(update_dispel_indicator)
 		end
 		
 		-- Buff scan only on "Rescan Buffs" button (no periodic scan)
@@ -3289,8 +3680,11 @@ local function init()
 		end
 	end)
 
-	-- Initial mob count update (nameplates may not be ready at load)
-	C_Timer.After(1, update_mob_count_indicator)
+	-- Initial mob count + dispel (nameplates / auras may not be ready at load)
+	C_Timer.After(1, function()
+		update_mob_count_indicator()
+		update_dispel_indicator()
+	end)
 
 	-- Create minimap button
 	create_minimap_button()
@@ -3396,7 +3790,8 @@ function GCDI.toggle_preview_mode()
 			local allResources = {
 				"health", "mana", "rage", "energy", "focus", "runicPower", "runes",
 				"comboPoints", "soulShards", "holyPower", "chi", "arcaneCharges",
-				"insanity", "maelstrom", "fury", "pain", "astralPower", "essence"
+				"insanity", "maelstrom", "fury", "pain", "astralPower", "essence",
+				"stagger",
 			}
 			for _, key in ipairs(allResources) do
 				local data = resourceBars[key]
@@ -3425,10 +3820,10 @@ function GCDI.toggle_preview_mode()
 			if data.rangeOverlay then
 				data.rangeOverlay:SetColorTexture(0, 1, 0, 1)  -- Green = in range
 			end
-			if data.chargeIndicators then
-				for _, indicator in ipairs(data.chargeIndicators) do
-					indicator.overlay:Hide()  -- Show blue (available)
-				end
+			if data.chargeStackBar and data.chargeStackBar.bar then
+				local m = math.max(data.chargeStackMax or 2, 1)
+				data.chargeStackBar.bar:SetMinMaxValues(0, m)
+				data.chargeStackBar.bar:SetValue(m)
 			end
 			if data.iconChangeIndicator then
 				data.iconChangeIndicator.overlay:Show()  -- Show red (changed)
@@ -3441,7 +3836,7 @@ function GCDI.toggle_preview_mode()
 				data.rangeOverlay:SetColorTexture(0, 1, 0, 1)  -- Green
 			end
 			if data.chargeOverlay then
-				data.chargeOverlay:Hide()  -- Hide overlay to show blue (has charge)
+				data.chargeOverlay:Hide()  -- Hide overlay to show spell charge color (has charge)
 			end
 		end
 		
@@ -3474,6 +3869,14 @@ function GCDI.toggle_preview_mode()
 			main_frame.castingbar:SetStatusBarColor(1, 0.8, 0)  -- Yellow = channeling
 			main_frame.castingbar:SetValue(100)
 		end
+		if main_frame.mobcountbar then
+			main_frame.mobcountbar:SetStatusBarColor(1, 1, 1)
+			main_frame.mobcountbar:SetValue(100)
+		end
+		if main_frame.dispelbar then
+			main_frame.dispelbar:SetStatusBarColor(0.6, 0.2, 0.8)  -- Sample: dispel-active purple
+			main_frame.dispelbar:SetValue(100)
+		end
 		if main_frame.stanceIndicator then
 			main_frame.stanceIndicator:SetColorTexture(0.5, 0.3, 0, 1)  -- Bear form color
 		end
@@ -3498,7 +3901,7 @@ function GCDI.toggle_preview_mode()
 			main_frame.gcdbar:SetValue(0)
 		end
 		if main_frame.combatbar then
-			main_frame.combatbar:SetStatusBarColor(UnitAffectingCombat("player") and 1 or 0, 0, 0)
+			main_frame.combatbar:SetStatusBarColor(gcdi_safe_unit_affecting_combat("player") and 1 or 0, 0, 0)
 		end
 		
 		-- Update stance indicator
@@ -3733,10 +4136,10 @@ SlashCmdList["GCDOPT"] = function(msg)
 				if info then spellName = info.name end
 			end
 			
-			-- Active state: pass auraInstanceID only to API when non-nil (API errors on nil)
-			local auraData = (frame.auraInstanceID ~= nil) and C_UnitAuras.GetAuraDataByAuraInstanceID("player", frame.auraInstanceID) or nil
-			local activeStr = auraData and "|cff00ff00ACTIVE|r" or "|cff888888inactive|r"
-			if auraData then activeCount = activeCount + 1 end
+			-- Active = auraInstanceID present (do not call GetAuraDataByAuraInstanceID; throws when secret/tainted on 12.1+)
+			local hasAura = frame.auraInstanceID ~= nil
+			local activeStr = hasAura and "|cff00ff00ACTIVE|r" or "|cff888888inactive|r"
+			if hasAura then activeCount = activeCount + 1 end
 			
 			-- Print with spellID and name
 			local spellStr = spellID and ("|cff88ccffspell:" .. spellID .. "|r") or "|cffff8888no-spell|r"
