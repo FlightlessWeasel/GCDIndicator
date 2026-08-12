@@ -2,7 +2,7 @@
 -- LibGCDI-Range - Range Indicator Management for GCDIndicator
 -- ═══════════════════════════════════════════════════════════════════════════
 
-local MAJOR, MINOR = "LibGCDI-Range", 4
+local MAJOR, MINOR = "LibGCDI-Range", 5
 local lib = LibStub:NewLibrary(MAJOR, MINOR)
 if not lib then return end
 
@@ -14,6 +14,69 @@ local InCombatLockdown = InCombatLockdown
 local C_Spell = C_Spell
 local pairs = pairs
 local ipairs = ipairs
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- LIBRANGECHECK HANDLE (resolved once, not per spell per update)
+-- ═══════════════════════════════════════════════════════════════════════════
+
+-- LibStub lookup + rc:init() used to run inside the per-spell loop, i.e. once per
+-- spell per tick. Both are idempotent, so resolve them a single time.
+local rangeCheckLib = nil
+local rangeCheckResolved = false
+
+local function get_range_check()
+	if not rangeCheckResolved then
+		rangeCheckResolved = true
+		local rc = LibStub("LibRangeCheck-3.0", true)
+		if rc then
+			rc:init()
+			rangeCheckLib = rc
+		end
+	end
+	return rangeCheckLib
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- SPELL RANGE METADATA CACHE
+-- ═══════════════════════════════════════════════════════════════════════════
+
+-- C_Spell.GetSpellInfo allocates a fresh table on every call; it was being called
+-- once per spell per tick purely to read maxRange. maxRange / SpellHasRange only
+-- change when the spellbook does, so cache them and clear on SPELLS_CHANGED.
+local spellHasRangeCache = {}
+local spellMaxRangeCache = {}
+
+function lib:InvalidateSpellRangeCache()
+	wipe(spellHasRangeCache)
+	wipe(spellMaxRangeCache)
+end
+
+local function spell_has_range(spellID)
+	local cached = spellHasRangeCache[spellID]
+	if cached == nil then
+		cached = C_Spell.SpellHasRange(spellID) and true or false
+		spellHasRangeCache[spellID] = cached
+	end
+	return cached
+end
+
+local function spell_max_range(spellID)
+	local cached = spellMaxRangeCache[spellID]
+	if cached == nil then
+		cached = false
+		if spell_has_range(spellID) then
+			local si = C_Spell.GetSpellInfo(spellID)
+			if si and si.maxRange and si.maxRange > 0 then
+				cached = si.maxRange
+			end
+		end
+		spellMaxRangeCache[spellID] = cached
+	end
+	if cached == false then return nil end
+	return cached
+end
+
+lib.SpellHasRangeCached = function(_, spellID) return spell_has_range(spellID) end
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- RANGE COLORS
@@ -302,11 +365,10 @@ function lib:TryRangeWithLibRangeCheck(spellID, useOverride, inCombat)
 	if not settings or not settings.gcdSettings or not settings.gcdSettings.useLibRangeCheck then
 		return nil
 	end
-	local rc = LibStub("LibRangeCheck-3.0", true)
+	local rc = get_range_check()
 	if not rc then
 		return nil
 	end
-	rc:init()
 
 	local yardLimit = nil
 	if useOverride then
@@ -315,11 +377,8 @@ function lib:TryRangeWithLibRangeCheck(spellID, useOverride, inCombat)
 			yardLimit = ry
 		end
 	end
-	if yardLimit == nil and C_Spell.SpellHasRange(spellID) then
-		local si = C_Spell.GetSpellInfo(spellID)
-		if si and si.maxRange and si.maxRange > 0 then
-			yardLimit = si.maxRange
-		end
+	if yardLimit == nil then
+		yardLimit = spell_max_range(spellID)
 	end
 	if not yardLimit or yardLimit <= 0 then
 		return nil
@@ -353,11 +412,10 @@ function lib:IsUnitInRangeYardsLRC(unit, yards, inCombat)
 	if not settings or not settings.gcdSettings or not settings.gcdSettings.useLibRangeCheck then
 		return nil
 	end
-	local rc = LibStub("LibRangeCheck-3.0", true)
+	local rc = get_range_check()
 	if not rc then
 		return nil
 	end
-	rc:init()
 	local checker = rc:GetSmartMaxChecker(yards, inCombat)
 	if not checker then
 		return nil
@@ -378,46 +436,81 @@ end
 -- RANGE INDICATOR UPDATES
 -- ═══════════════════════════════════════════════════════════════════════════
 
+-- Indicator writes are dirty-checked: this runs on the shared update ticker, and
+-- unconditional Show/Hide/SetColorTexture calls were the bulk of its cost even
+-- when nothing about the range state had actually changed.
+
+local function set_range_shown(spellData, shown)
+	if spellData.rangeShownState == shown then return end
+	spellData.rangeShownState = shown
+	if shown then
+		if spellData.rangeBase then spellData.rangeBase:Show() end
+		spellData.rangeOverlay:Show()
+	else
+		if spellData.rangeBase then spellData.rangeBase:Hide() end
+		spellData.rangeOverlay:Hide()
+	end
+end
+
+local function set_range_color(spellData, state, color)
+	if spellData.rangeColorState == state then return end
+	spellData.rangeColorState = state
+	spellData.rangeOverlay:SetColorTexture(color[1], color[2], color[3], 1)
+end
+
+-- Anything that writes rangeOverlay outside this file (preview mode) must clear the
+-- cached state, or the next update will believe the indicator is already correct.
+function lib:ResetIndicatorState()
+	local getTrackedSpells = lib.callbacks.getTrackedSpells
+	if not getTrackedSpells then return end
+	local trackedSpells = getTrackedSpells()
+	if not trackedSpells then return end
+	for _, spellData in pairs(trackedSpells) do
+		spellData.rangeShownState = nil
+		spellData.rangeColorState = nil
+	end
+end
+
 -- Update all range indicators for tracked spells
 function lib:UpdateRangeIndicators()
 	local isPreviewMode = lib.callbacks.isPreviewMode
 	if isPreviewMode and isPreviewMode() then return end
-	
+
 	local getSpellBars = lib.callbacks.getSpellBars
 	local getTrackedSpells = lib.callbacks.getTrackedSpells
 	local isSpellEnabled = lib.callbacks.isSpellEnabled
-	
+
 	if not getSpellBars or not getTrackedSpells or not isSpellEnabled then return end
-	
+
 	local spellBars = getSpellBars()
 	local trackedSpells = getTrackedSpells()
 	local colors = lib.RANGE_COLORS
-	
+
+	-- Loop invariants: these were re-evaluated once per spell per tick.
+	local getSettings = lib.callbacks.getSettings
+	local settings = getSettings and getSettings()
+	local useLRC = settings and settings.gcdSettings and settings.gcdSettings.useLibRangeCheck == true
+	local inCombat = InCombatLockdown()
+	local hasTarget = UnitExists("target") and true or false
+
 	for i, spellID in ipairs(spellBars) do
 		local spellData = trackedSpells[spellID]
 		if spellData and spellData.rangeOverlay and isSpellEnabled(spellID) then
 			local overlay = spellData.rangeOverlay
 			local actionSlot = spellData.actionSlot
-			
+
 			if lib:IsSpellSelfCast(spellID) then
 				-- Hide both base and overlay for self-cast spells
-				if spellData.rangeBase then spellData.rangeBase:Hide() end
-				overlay:Hide()
+				set_range_shown(spellData, false)
 			else
 				-- Show both for non-self-cast spells
-				if spellData.rangeBase then spellData.rangeBase:Show() end
-				overlay:Show()
-				
-				if not UnitExists("target") then
-					overlay:SetColorTexture(colors.noTarget[1], colors.noTarget[2], colors.noTarget[3], 1)
-				else
-					local getSettings = lib.callbacks.getSettings
-					local settings = getSettings and getSettings()
-					local useLRC = settings and settings.gcdSettings and settings.gcdSettings.useLibRangeCheck == true
+				set_range_shown(spellData, true)
 
+				if not hasTarget then
+					set_range_color(spellData, "none", colors.noTarget)
+				else
 					local useOverride = lib:HasRangeOverride(spellID)
 					local inRange = nil
-					local inCombat = InCombatLockdown()
 
 					local lrcVal = lib:TryRangeWithLibRangeCheck(spellID, useOverride, inCombat)
 					if type(lrcVal) == "boolean" then
@@ -432,7 +525,7 @@ function lib:UpdateRangeIndicators()
 					end
 					
 					-- Only use spell's native range when user has NOT set a range override
-					if inRange == nil and not useOverride and C_Spell.SpellHasRange(spellID) then
+					if inRange == nil and not useOverride and spell_has_range(spellID) then
 						local spellInRange = C_Spell.IsSpellInRange(spellID, "target")
 						if spellInRange ~= nil then
 							inRange = spellInRange
@@ -453,7 +546,7 @@ function lib:UpdateRangeIndicators()
 								end
 							end
 						end
-						if proxyID and rangeYards and rangeYards > 0 and C_Spell.SpellHasRange(proxyID) then
+						if proxyID and rangeYards and rangeYards > 0 and spell_has_range(proxyID) then
 							local proxyInRange = C_Spell.IsSpellInRange(proxyID, "target")
 							if proxyInRange ~= nil then
 								inRange = proxyInRange
@@ -482,23 +575,22 @@ function lib:UpdateRangeIndicators()
 							-- Native range returned nil (self-cast or no range)
 							-- Try auto-detect self-cast
 							if lib:AutoDetectSelfCast(spellID, actionSlot) then
-								if spellData.rangeBase then spellData.rangeBase:Hide() end
-								overlay:Hide()
+								set_range_shown(spellData, false)
 								inRange = "selfcast"
 							end
 						end
 					end
-					
+
 					-- Apply the color based on result
 					if inRange == "selfcast" then
 						-- Already handled above (hidden)
 					elseif inRange == true then
-						overlay:SetColorTexture(colors.inRange[1], colors.inRange[2], colors.inRange[3], 1)
+						set_range_color(spellData, "in", colors.inRange)
 					elseif inRange == false then
-						overlay:SetColorTexture(colors.outOfRange[1], colors.outOfRange[2], colors.outOfRange[3], 1)
+						set_range_color(spellData, "out", colors.outOfRange)
 					else
 						-- No range info available - use grey
-						overlay:SetColorTexture(colors.noTarget[1], colors.noTarget[2], colors.noTarget[3], 1)
+						set_range_color(spellData, "none", colors.noTarget)
 					end
 				end
 			end

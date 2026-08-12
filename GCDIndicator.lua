@@ -39,10 +39,7 @@ local save_profile, delete_profile
 
 -- Library references
 local LibProfiles = LibStub("LibGCDI-Profiles")
-local LibResources = LibStub("LibGCDI-Resources")
 local LibRange = LibStub("LibGCDI-Range")
-local LibScanner = LibStub("LibGCDI-Scanner")
-local LibBars = LibStub("LibGCDI-Bars")
 
 -- Utility functions from libraries
 local deepcopy = LibProfiles.deepcopy
@@ -325,37 +322,59 @@ function GCDI.get_duration_threshold(spellID)
 	return buffSettings.durationThreshold or 30  -- Default to 30%
 end
 
-function GCDI.get_action_slot_for_spell(spellID)
-	-- Get override spell ID (for talents that replace base spells)
-	local overrideID = C_Spell.GetOverrideSpell(spellID) or spellID
-	
+-- spellID -> action slot, built by one pass over the 180 slots.
+--
+-- This used to be a linear scan run once per spell, so a rebuild with N spells did
+-- 180*N GetActionInfo calls plus as many GetOverrideSpell calls. Both the base ID and
+-- the override ID of each slot are indexed, so a spell is found by either.
+local actionSlotBySpell = {}
+local actionSlotMapDirty = true
+
+local function gcdi_index_slot(map, id, slot)
+	if id and map[id] == nil then
+		map[id] = slot
+	end
+end
+
+local function gcdi_rebuild_action_slot_map()
+	actionSlotMapDirty = false
+	wipe(actionSlotBySpell)
+
 	-- Scan all action slots (1-180 covers all action bars)
 	for slot = 1, 180 do
 		local actionType, id = GetActionInfo(slot)
-		
+
 		if actionType == "spell" and id then
-			-- Direct spell match
-			if id == spellID or id == overrideID then
-				return slot
-			end
-			-- Check if this spell is an override of our target
-			local slotOverride = C_Spell.GetOverrideSpell(id)
-			if slotOverride and (slotOverride == spellID or slotOverride == overrideID) then
-				return slot
-			end
+			gcdi_index_slot(actionSlotBySpell, id, slot)
+			gcdi_index_slot(actionSlotBySpell, C_Spell.GetOverrideSpell(id), slot)
 		elseif actionType == "macro" and id then
-			-- Check macro for spell
 			local macroSpell = GetMacroSpell(id)
 			if macroSpell then
-				if macroSpell == spellID or macroSpell == overrideID then
-					return slot
-				end
-				local macroOverride = C_Spell.GetOverrideSpell(macroSpell)
-				if macroOverride and (macroOverride == spellID or macroOverride == overrideID) then
-					return slot
-				end
+				gcdi_index_slot(actionSlotBySpell, macroSpell, slot)
+				gcdi_index_slot(actionSlotBySpell, C_Spell.GetOverrideSpell(macroSpell), slot)
 			end
 		end
+	end
+end
+
+local function gcdi_invalidate_action_slot_map()
+	actionSlotMapDirty = true
+end
+
+GCDI.invalidate_action_slot_map = gcdi_invalidate_action_slot_map
+
+function GCDI.get_action_slot_for_spell(spellID)
+	if actionSlotMapDirty then
+		gcdi_rebuild_action_slot_map()
+	end
+
+	local slot = actionSlotBySpell[spellID]
+	if slot then return slot end
+
+	-- Talent replacements: the catalog may hold the base ID while the bar holds the override.
+	local overrideID = C_Spell.GetOverrideSpell(spellID)
+	if overrideID and overrideID ~= spellID then
+		return actionSlotBySpell[overrideID]
 	end
 	return nil
 end
@@ -558,18 +577,9 @@ local function update_spell_bar(spellID)
 	local data = trackedSpells[spellID]
 	if not data then return end
 	
-	local durObj
-	
-	if data.isChargeSpell then
-		-- For charge spells, use the spell's own cooldown duration
-		-- This should show GCD when on GCD, and nothing when charges are available
-		durObj = C_Spell.GetSpellCooldownDuration(spellID)
-		applyTimerToBar(data.bar, durObj)
-	else
-		-- Non-charge spell - show normal cooldown
-		durObj = C_Spell.GetSpellCooldownDuration(spellID)
-		applyTimerToBar(data.bar, durObj)
-	end
+	-- Charge and non-charge spells both read the spell's own cooldown duration: a
+	-- charge spell reports GCD while charges remain and the real cooldown otherwise.
+	applyTimerToBar(data.bar, C_Spell.GetSpellCooldownDuration(spellID))
 end
 
 local function update_all_spell_bars()
@@ -754,15 +764,30 @@ local function gcdi_needs_charge_layout_rebuild()
 	return false
 end
 
+-- Membership only changes when bars are rebuilt or a spell is enabled/disabled, but
+-- this list is walked on the update ticker; building + sorting it per tick was pure
+-- garbage. Built once and invalidated explicitly.
+local chargeSpellIDList = {}
+local chargeSpellIDListDirty = true
+
+local function gcdi_invalidate_charge_spell_list()
+	chargeSpellIDListDirty = true
+end
+
+GCDI.invalidate_charge_spell_list = gcdi_invalidate_charge_spell_list
+
 local function gcdi_charge_spell_id_list()
-	local list = {}
-	for spellID, data in pairs(trackedSpells) do
-		if data.chargeStackBar and GCDI.is_spell_enabled(spellID) then
-			list[#list + 1] = spellID
+	if chargeSpellIDListDirty then
+		chargeSpellIDListDirty = false
+		wipe(chargeSpellIDList)
+		for spellID, data in pairs(trackedSpells) do
+			if data.chargeStackBar and GCDI.is_spell_enabled(spellID) then
+				chargeSpellIDList[#chargeSpellIDList + 1] = spellID
+			end
 		end
+		table.sort(chargeSpellIDList)
 	end
-	table.sort(list)
-	return list
+	return chargeSpellIDList
 end
 
 local function gcdi_update_spell_charge_stack(spellID)
@@ -942,6 +967,7 @@ local function create_spell_bar(spellID, spellName, texture, actionSlot)
 		iconChangeIndicator = iconChangeIndicator,  -- Icon change state indicator
 	}
 	spellBars[barIndex] = spellID
+	gcdi_invalidate_charge_spell_list()
 end
 
 local function clear_spell_bars()
@@ -953,6 +979,7 @@ local function clear_spell_bars()
 	end
 	wipe(trackedSpells)
 	wipe(spellBars)
+	gcdi_invalidate_charge_spell_list()
 end
 
 -- ═══════════════════════════════════════════════════════════════════════════
@@ -1175,21 +1202,27 @@ end
 -- Live stack counts while auras are secret: prefer spell-ID APIs when they
 -- return data; else CDM auraDataCached. AuraContainer/ApplicationBar cannot be
 -- used from tainted code (ChangeParent / AddSecretAspect forbidden).
+-- Reading .applications can throw when the aura is secret, so it needs a pcall.
+-- Hoisted to file scope: as a nested closure this allocated twice per buff per tick.
+local function gcdi_read_applications(auraData)
+	return auraData.applications
+end
+
+local function apps_from_aura(auraData)
+	if auraData == nil then return nil end
+	local ok, apps = pcall(gcdi_read_applications, auraData)
+	if ok and apps ~= nil then
+		return apps
+	end
+	return nil
+end
+
 local function gcdi_get_buff_stack_applications(cdmFrame, catalogEntry, data)
 	local spellID = (catalogEntry and (catalogEntry.spellID or catalogEntry.tooltipSpellID))
 		or (data and data.tooltipSpellID)
 	local unit = (cdmFrame and ((cdmFrame.GetAuraDataUnit and cdmFrame:GetAuraDataUnit()) or cdmFrame.auraDataUnit))
 		or (catalogEntry and catalogEntry.isTargetDebuff and "target")
 		or "player"
-
-	local function apps_from_aura(auraData)
-		if auraData == nil then return nil end
-		local ok, apps = pcall(function() return auraData.applications end)
-		if ok and apps ~= nil then
-			return apps
-		end
-		return nil
-	end
 
 	if spellID and C_UnitAuras then
 		if unit == "player" and C_UnitAuras.GetPlayerAuraBySpellID then
@@ -1307,9 +1340,13 @@ local function update_buff_bar(buffID)
 	
 	if isActive then
 		-- Buff is active
-		data.active = true
-		data.activeIndicator:SetColorTexture(BUFF_COLORS.active[1], BUFF_COLORS.active[2], BUFF_COLORS.active[3], 1)
-		
+		-- Recolor only on transition: this runs on the update ticker and the texture
+		-- write is otherwise repeated every tick for every tracked buff.
+		if not data.active then
+			data.active = true
+			data.activeIndicator:SetColorTexture(BUFF_COLORS.active[1], BUFF_COLORS.active[2], BUFF_COLORS.active[3], 1)
+		end
+
 		if data.stackBar and GCDI.should_show_buff_stacks(buffID) then
 			local apps
 			if data.manualTracking and not cdmFrame then
@@ -1325,30 +1362,39 @@ local function update_buff_bar(buffID)
 		end
 		
 		-- Duration: GetAuraDuration accepts secret IDs when tainted; pcall in case 12.1+ throws under secrecy.
+		-- Arm the timer only when the aura instance changes. SetTimerDuration hands the
+		-- bar a duration the client animates itself; re-arming every tick both restarts
+		-- the ExponentialEaseOut interpolation and re-does the work for nothing.
 		if data.durationBar and cdmFrame and cdmFrame.auraInstanceID ~= nil then
-			local unit = (cdmFrame.GetAuraDataUnit and cdmFrame:GetAuraDataUnit())
-				or data._lastAuraUnit
-				or cdmFrame.auraDataUnit
-				or "player"
-			local ok, durObj = pcall(C_UnitAuras.GetAuraDuration, unit, cdmFrame.auraInstanceID)
-			if ok and durObj then
-				data.durationBar.bar:SetMinMaxValues(0, 1)
-				data.durationBar.bar:SetTimerDuration(durObj, Enum.StatusBarInterpolation.ExponentialEaseOut, Enum.StatusBarTimerDirection.RemainingTime)
+			if data.durationArmedFor ~= cdmFrame.auraInstanceID then
+				local unit = (cdmFrame.GetAuraDataUnit and cdmFrame:GetAuraDataUnit())
+					or data._lastAuraUnit
+					or cdmFrame.auraDataUnit
+					or "player"
+				local ok, durObj = pcall(C_UnitAuras.GetAuraDuration, unit, cdmFrame.auraInstanceID)
+				if ok and durObj then
+					data.durationArmedFor = cdmFrame.auraInstanceID
+					data.durationBar.bar:SetMinMaxValues(0, 1)
+					data.durationBar.bar:SetTimerDuration(durObj, Enum.StatusBarInterpolation.ExponentialEaseOut, Enum.StatusBarTimerDirection.RemainingTime)
+				end
 			end
 		end
 	else
 		-- Buff is not active
-		data.active = false
-		data.activeIndicator:SetColorTexture(BUFF_COLORS.inactive[1], BUFF_COLORS.inactive[2], BUFF_COLORS.inactive[3], 1)
-		
-		if data.stackBar and GCDI.should_show_buff_stacks(buffID) then
-			data.stackBar.bar:SetMinMaxValues(0, math.max(data.stackBarMax or 1, 1))
-			data.stackBar.bar:SetValue(0)
-		end
-		
-		-- Reset duration bar
-		if data.durationBar then
-			data.durationBar.bar:SetValue(0)
+		if data.active ~= false then
+			data.active = false
+			data.activeIndicator:SetColorTexture(BUFF_COLORS.inactive[1], BUFF_COLORS.inactive[2], BUFF_COLORS.inactive[3], 1)
+
+			if data.stackBar and GCDI.should_show_buff_stacks(buffID) then
+				data.stackBar.bar:SetMinMaxValues(0, math.max(data.stackBarMax or 1, 1))
+				data.stackBar.bar:SetValue(0)
+			end
+
+			-- Reset duration bar
+			if data.durationBar then
+				data.durationArmedFor = nil
+				data.durationBar.bar:SetValue(0)
+			end
 		end
 	end
 end
@@ -1402,6 +1448,9 @@ local function schedule_update_all_buff_bars_after_aura()
 		buffBarsAfterAuraScheduled = false
 		update_all_buff_bars()
 		update_dispel_indicator()
+		-- Proc icon swaps are aura-driven; keeps them instant now that the ticker
+		-- only polls icons at a low rate.
+		update_spell_icons()
 	end)
 end
 
@@ -1609,11 +1658,6 @@ end
 
 GCDI.UpdateRangeIndicators = update_range_indicators
 
--- Helper function used by spell bar creation
-local function is_spell_self_cast(spellID)
-	return LibRange:IsSpellSelfCast(spellID)
-end
-
 -- ═══════════════════════════════════════════════════════════════════════════
 -- RESOURCE BARS
 -- ═══════════════════════════════════════════════════════════════════════════
@@ -1756,7 +1800,11 @@ local function update_combo_points_bar()
 	
 	bar:SetMinMaxValues(0, max)
 	bar:SetValue(UnitPower("player", Enum.PowerType.ComboPoints))
-	
+
+	-- Separator geometry depends only on max; skip the relayout when it is unchanged.
+	if data.lastSeparatorMax == max then return end
+	data.lastSeparatorMax = max
+
 	-- Fixed total width of 200px, calculate segment width based on max
 	local totalWidth = 200
 	local separatorWidth = 2
@@ -1825,12 +1873,16 @@ local function update_runes_bar()
 	
 	bar:SetMinMaxValues(0, max)
 	bar:SetValue(current)
-	
+
+	-- Separator geometry depends only on max; skip the relayout when it is unchanged.
+	if data.lastSeparatorMax == max then return end
+	data.lastSeparatorMax = max
+
 	-- Update separators based on max
 	if not data.separators then
 		data.separators = {}
 	end
-	
+
 	-- Fixed total width of 200px, calculate segment width based on max
 	local totalWidth = 200
 	local separatorWidth = 2
@@ -1881,7 +1933,12 @@ local function update_charge_bar(data, powerType, defaultMax)
 	
 	bar:SetMinMaxValues(0, max)
 	bar:SetValue(UnitPower("player", powerType))
-	
+
+	-- Separator geometry depends only on max, which changes rarely (talents/spec).
+	-- Re-anchoring every pip on every power tick was the bulk of this function.
+	if data.lastSeparatorMax == max then return end
+	data.lastSeparatorMax = max
+
 	-- Update width and separators like combo points
 	local totalWidth = 200
 	local separatorWidth = 2
@@ -1890,7 +1947,7 @@ local function update_charge_bar(data, powerType, defaultMax)
 	local segmentWidth = (totalWidth - totalSeparatorWidth) / max
 	local pad = configs.bgPadding
 	data.container:SetWidth(totalWidth + pad * 2)
-	
+
 	if data.separators and data.separatorFrame then
 		for i, sep in ipairs(data.separators) do
 			if i < max then
@@ -1976,42 +2033,80 @@ local function update_essence_bar()
 end
 
 -- Brewmaster only; max = max health (same scale as default UI). Values may be secret — pass through to the bar only.
+-- Class never changes and spec changes fire PLAYER_SPECIALIZATION_CHANGED, so the
+-- lookup is cached: this runs on the update ticker and every non-Brewmaster was
+-- paying for UnitClass + GetSpecialization every tick just to bail out.
+local staggerIsBrewmaster = nil
+
+local function gcdi_refresh_stagger_spec()
+	local _, class = UnitClass("player")
+	if class ~= "MONK" then
+		staggerIsBrewmaster = false
+		return
+	end
+	staggerIsBrewmaster = (C_SpecializationInfo.GetSpecialization() == 1)
+end
+
 local function update_stagger_bar()
 	if previewMode then return end
 	if not resourceBars.stagger then return end
+	if staggerIsBrewmaster == nil then
+		gcdi_refresh_stagger_spec()
+	end
 	local bar = resourceBars.stagger.bar
-	local _, class = UnitClass("player")
-	local spec = C_SpecializationInfo.GetSpecialization()
-	local isBrewmaster = class == "MONK" and spec == 1
-	if not isBrewmaster then
+	if not staggerIsBrewmaster then
+		-- Only write once on transition; the bar is already parked at 0 afterwards.
+		if resourceBars.stagger.staggerParked then return end
+		resourceBars.stagger.staggerParked = true
 		bar:SetMinMaxValues(0, 1)
 		bar:SetValue(0)
 		return
 	end
+	resourceBars.stagger.staggerParked = nil
 	bar:SetMinMaxValues(0, UnitHealthMax("player"))
 	bar:SetValue(UnitStagger("player"))
 end
 
+-- Resource key -> updater, so the sweep can skip bars the user has disabled instead
+-- of hitting UnitPowerMax/UnitPower and relaying separators for all 19 every time.
+local RESOURCE_UPDATERS = {
+	{ "health", update_health_bar },
+	{ "mana", update_mana_bar },
+	{ "rage", update_rage_bar },
+	{ "energy", update_energy_bar },
+	{ "focus", update_focus_bar },
+	{ "runicPower", update_runic_power_bar },
+	{ "runes", update_runes_bar },
+	{ "comboPoints", update_combo_points_bar },
+	{ "soulShards", update_soul_shards_bar },
+	{ "holyPower", update_holy_power_bar },
+	{ "chi", update_chi_bar },
+	{ "arcaneCharges", update_arcane_charges_bar },
+	{ "insanity", update_insanity_bar },
+	{ "maelstrom", update_maelstrom_bar },
+	{ "fury", update_fury_bar },
+	{ "pain", update_pain_bar },
+	{ "astralPower", update_lunar_power_bar },
+	{ "essence", update_essence_bar },
+	{ "stagger", update_stagger_bar },
+}
+
+local function gcdi_is_resource_enabled(key)
+	if not settings or not settings.resourceSettings then return true end
+	local enabled = settings.resourceSettings[key]
+	if enabled == nil then return true end  -- Default to enabled
+	return enabled and true or false
+end
+
+GCDI.is_resource_enabled = gcdi_is_resource_enabled
+
 local function update_all_resources()
-	update_health_bar()
-	update_mana_bar()
-	update_rage_bar()
-	update_energy_bar()
-	update_focus_bar()
-	update_runic_power_bar()
-	update_runes_bar()
-	update_combo_points_bar()
-	update_soul_shards_bar()
-	update_holy_power_bar()
-	update_chi_bar()
-	update_arcane_charges_bar()
-	update_insanity_bar()
-	update_maelstrom_bar()
-	update_fury_bar()
-	update_pain_bar()
-	update_lunar_power_bar()
-	update_essence_bar()
-	update_stagger_bar()
+	for i = 1, #RESOURCE_UPDATERS do
+		local entry = RESOURCE_UPDATERS[i]
+		if gcdi_is_resource_enabled(entry[1]) then
+			entry[2]()
+		end
+	end
 end
 
 local function update_stance_indicator()
@@ -2035,30 +2130,33 @@ local function gcdi_safe_unit_affecting_combat(unit)
 	return v and true or false
 end
 
+-- Midnight+: Unit* APIs may return secret booleans/numbers — never use them in if/and/not; coerce first.
+-- File scope, not nested: update_aggro_indicator runs off UNIT_THREAT_SITUATION_UPDATE
+-- and UNIT_TARGET, so nesting these allocated two closures per threat event.
+local function aggro_safe_bool(v, default)
+	if v == nil then
+		return default
+	end
+	if issecretvalue and issecretvalue(v) then
+		return default
+	end
+	return v and true or false
+end
+
+local function aggro_safe_tonumber(v)
+	if v == nil then
+		return nil
+	end
+	if issecretvalue and issecretvalue(v) then
+		return nil
+	end
+	return tonumber(v)
+end
+
 local function update_aggro_indicator()
 	if previewMode then return end  -- Skip updates in preview mode
 	if not main_frame.aggrobar then return end
-	
-	-- Midnight+: Unit* APIs may return secret booleans/numbers — never use them in if/and/not; coerce first.
-	local function aggro_safe_bool(v, default)
-		if v == nil then
-			return default
-		end
-		if issecretvalue and issecretvalue(v) then
-			return default
-		end
-		return v and true or false
-	end
-	local function aggro_safe_tonumber(v)
-		if v == nil then
-			return nil
-		end
-		if issecretvalue and issecretvalue(v) then
-			return nil
-		end
-		return tonumber(v)
-	end
-	
+
 	-- Check if target exists and is attackable (hostile). Don't require combat—pre-pull we show grey.
 	local exists = UnitExists("target")
 	local canAttack = UnitCanAttack("player", "target")
@@ -2087,10 +2185,9 @@ local function update_aggro_indicator()
 	
 	if hasAggro then
 		main_frame.aggrobar:SetStatusBarColor(1, 0.5, 0)  -- Orange = has aggro
-	elseif hasAttackableTarget and targetInCombat then
-		main_frame.aggrobar:SetStatusBarColor(0.3, 0.3, 0.3)  -- Grey = in combat, no aggro
 	else
-		main_frame.aggrobar:SetStatusBarColor(0.3, 0.3, 0.3)  -- Grey = target not attackable or not in combat
+		-- Grey covers both "in combat, no aggro" and "target not attackable / not in combat"
+		main_frame.aggrobar:SetStatusBarColor(0.3, 0.3, 0.3)
 	end
 end
 
@@ -2107,6 +2204,8 @@ local function count_nearby_mobs(range)
 	if not nameplates or type(nameplates) ~= "table" then return 0 end
 
 	local proxySpellID = settings.rangeProxySpells and settings.rangeProxySpells[range]
+	-- Invariant across the nameplate loop; was re-checked for every unit.
+	local proxyUsable = (type(proxySpellID) == "number") and C_Spell and C_Spell.SpellHasRange(proxySpellID)
 
 	for _, nameplate in pairs(nameplates) do
 		if type(nameplate) == "table" then
@@ -2117,7 +2216,7 @@ local function count_nearby_mobs(range)
 					if useLRC then
 						inRange = LibRange:IsUnitInRangeYardsLRC(unit, range, inCombat)
 					end
-					if inRange == nil and proxySpellID and type(proxySpellID) == "number" and C_Spell and C_Spell.SpellHasRange(proxySpellID) then
+					if inRange == nil and proxyUsable then
 						inRange = C_Spell.IsSpellInRange(proxySpellID, unit)
 					end
 					if inRange == true then
@@ -2137,7 +2236,11 @@ local function update_mob_count_indicator()
 	local range = gcdSettings.mobCountRange or 8
 	local threshold = gcdSettings.mobCountThreshold or 3
 	local mobCount = count_nearby_mobs(range)
-	if mobCount >= threshold then
+	local aboveThreshold = mobCount >= threshold
+	-- Polled on the update ticker; only repaint on transition.
+	if main_frame.mobCountState == aboveThreshold then return end
+	main_frame.mobCountState = aboveThreshold
+	if aboveThreshold then
 		main_frame.mobcountbar:SetStatusBarColor(1, 1, 1)  -- White = at or above threshold
 	else
 		main_frame.mobcountbar:SetStatusBarColor(0, 0, 0)  -- Black = below threshold
@@ -2162,6 +2265,33 @@ local function gcdi_safe_can_dispel_flag(v)
 	return v and true or false
 end
 
+-- Scan bodies hoisted to file scope; as nested closures these were reallocated on
+-- every poll (three per call, counting the ForEachAura callback).
+local function gcdi_scan_dispellable_by_index()
+	for i = 1, DISPEL_DEBUFF_SCAN_MAX do
+		local aura = C_UnitAuras.GetDebuffDataByIndex("player", i, DISPEL_DEBUFF_FILTER)
+		if aura then
+			return true
+		end
+	end
+	return false
+end
+
+local gcdi_dispel_scan_hit = false
+
+local function gcdi_dispel_aura_visitor(auraData)
+	if auraData and gcdi_safe_can_dispel_flag(auraData.canActivePlayerDispel) then
+		gcdi_dispel_scan_hit = true
+		return true
+	end
+end
+
+local function gcdi_scan_dispellable_foreach()
+	gcdi_dispel_scan_hit = false
+	AuraUtil.ForEachAura("player", "HARMFUL", DISPEL_DEBUFF_SCAN_MAX, gcdi_dispel_aura_visitor, true)
+	return gcdi_dispel_scan_hit
+end
+
 local function player_has_dispellable_debuff_on_self()
 	-- 12.1+: GetDebuffDataByIndex / GetAuraSlots / ForEachAura Lua-error when auras are secret
 	-- while tainted. No legal self-dispel scan — leave indicator idle.
@@ -2169,31 +2299,14 @@ local function player_has_dispellable_debuff_on_self()
 		return false
 	end
 	if C_UnitAuras and C_UnitAuras.GetDebuffDataByIndex then
-		local ok, has = pcall(function()
-			for i = 1, DISPEL_DEBUFF_SCAN_MAX do
-				local aura = C_UnitAuras.GetDebuffDataByIndex("player", i, DISPEL_DEBUFF_FILTER)
-				if aura then
-					return true
-				end
-			end
-			return false
-		end)
+		local ok, has = pcall(gcdi_scan_dispellable_by_index)
 		if ok and has then
 			return true
 		end
 	end
 	-- Fallback: full HARMFUL scan + canActivePlayerDispel (older clients / if API fails)
 	if AuraUtil and AuraUtil.ForEachAura then
-		local ok, found = pcall(function()
-			local hit = false
-			AuraUtil.ForEachAura("player", "HARMFUL", DISPEL_DEBUFF_SCAN_MAX, function(auraData)
-				if auraData and gcdi_safe_can_dispel_flag(auraData.canActivePlayerDispel) then
-					hit = true
-					return true
-				end
-			end, true)
-			return hit
-		end)
+		local ok, found = pcall(gcdi_scan_dispellable_foreach)
 		if ok and found then
 			return true
 		end
@@ -2206,7 +2319,11 @@ update_dispel_indicator = function()
 	if not main_frame or not main_frame.dispelbar then return end
 	
 	local hasDispel = player_has_dispellable_debuff_on_self()
-	
+
+	-- Driven by UNIT_AURA plus a low-rate safety poll; only repaint on transition.
+	if main_frame.dispelState == hasDispel then return end
+	main_frame.dispelState = hasDispel
+
 	if hasDispel then
 		main_frame.dispelbar:SetStatusBarColor(0.6, 0.2, 0.8)
 	else
@@ -2231,14 +2348,8 @@ reposition_all = function()
 	
 	local yOffset = 0
 	
-	-- Helper to check if a resource is enabled
-	local function isResourceEnabled(key)
-		if not settings or not settings.resourceSettings then return true end
-		local enabled = settings.resourceSettings[key]
-		if enabled == nil then return true end  -- Default to enabled
-		return enabled
-	end
-	
+	local isResourceEnabled = gcdi_is_resource_enabled
+
 	-- 1. GLOBAL CHECKS (GCD container: Stance, GCD, Combat, Aggro) - FIRST ROW
 	local gcdSettings = settings.gcdSettings or {}
 	if gcdSettings.showGcdRow ~= false then
@@ -3014,9 +3125,9 @@ end
 GCDI.rebuild_spell_bars = rebuild_spell_bars
 
 -- Rebuilds all bars from current catalogs; does not scan. Use options buttons to rescan.
+-- rebuild_spell_bars already rebuilds item bars, so it is not repeated here.
 local function scan_action_bars()
 	rebuild_spell_bars()
-	rebuild_item_bars()
 	rebuild_buff_bars()
 end
 
@@ -3155,13 +3266,26 @@ local function on_event(self, event, arg1, arg2, ...)
 		-- Only update stance indicator, don't rescan spells
 		-- Spells should stay static unless profile is changed
 		update_stance_indicator()
+		-- Bonus bar swaps repoint action slots.
+		gcdi_invalidate_action_slot_map()
 		
 	elseif event == "RUNE_POWER_UPDATE" then
 		update_runes_bar()
-		
+
+	elseif event == "ACTIONBAR_SLOT_CHANGED" or event == "UPDATE_MACROS" then
+		-- Cached spellID -> action slot map is now stale.
+		gcdi_invalidate_action_slot_map()
+
+	elseif event == "SPELLS_CHANGED" then
+		gcdi_invalidate_action_slot_map()
+		LibRange:InvalidateSpellRangeCache()
+
 	elseif event == "PLAYER_SPECIALIZATION_CHANGED" then
 		-- Removed auto-scan: use /gcdopt scan to manually rescan
-		
+		gcdi_invalidate_action_slot_map()
+		LibRange:InvalidateSpellRangeCache()
+		gcdi_refresh_stagger_spec()
+
 	elseif event == "PLAYER_TARGET_CHANGED" then
 		update_range_indicators()
 		detect_native_range_for_spells()  -- Auto-detect native range when targeting
@@ -3646,35 +3770,46 @@ local function init()
 		end)
 	end
 	
-	-- Master update ticker (0.015s / 15ms base interval)
-	-- All updates run every tick except native range detection
+	-- Master update ticker (0.05s / 50ms base interval).
+	--
+	-- This was 0.015s with every update running on every tick, i.e. once per frame at
+	-- 60fps. Anything reachable from a game event now runs on that event and keeps only
+	-- a low-rate safety poll here; what stays at full rate is bar animation the client
+	-- does not drive itself.
+	local TICK_INTERVAL = 0.05
 	local tickCount = 0
-	C_Timer.NewTicker(0.015, function()
+	C_Timer.NewTicker(TICK_INTERVAL, function()
 		tickCount = tickCount + 1
-		
-		-- Every tick (15ms): All frequent updates
-		update_gcd()
+
+		-- Every tick (20 Hz): manual cooldown animation + charge pips
 		animate_item_bars()
 		update_charge_indicators_tick()
-		update_range_indicators()
-		update_all_buff_bars()
-		update_stagger_bar()
-		
-		-- Every 5 ticks (~75ms): Mob count + dispel (Decursive-style debuff filter; catch edge cases if UNIT_AURA is sparse)
-		if tickCount % 5 == 0 then
-			local ok, err = pcall(update_mob_count_indicator)
-			if not ok and err then
-				-- Don't spam; ticker keeps running
-			end
+
+		-- Every 2 ticks (10 Hz): range colors, stagger
+		if tickCount % 2 == 0 then
+			update_range_indicators()
+			update_stagger_bar()
+		end
+
+		-- Every 4 ticks (5 Hz): nameplate sweep, proc icon swaps
+		-- Also driven by NAME_PLATE_UNIT_ADDED/REMOVED and UNIT_AURA respectively.
+		if tickCount % 4 == 0 then
+			pcall(update_mob_count_indicator)
+			update_spell_icons()
+		end
+
+		-- Every 10 ticks (2 Hz): safety polls for state that is primarily event-driven.
+		-- GCD/cooldown bars self-animate via SetTimerDuration once armed; buffs come from
+		-- UNIT_AURA and the CDM RefreshData hook; item charges from BAG_UPDATE.
+		if tickCount % 10 == 0 then
+			update_gcd()
+			update_all_buff_bars()
+			update_item_charge_indicators()
 			pcall(update_dispel_indicator)
 		end
-		
-		-- Buff scan only on "Rescan Buffs" button (no periodic scan)
-		update_spell_icons()
-		update_item_charge_indicators()
-		
-		-- Every 333 ticks (~5s): Native range detection
-		if tickCount % 333 == 0 then
+
+		-- Every 100 ticks (5s): Native range detection
+		if tickCount % 100 == 0 then
 			detect_native_range_for_spells()
 			tickCount = 0  -- Reset to prevent overflow
 		end
@@ -3890,7 +4025,22 @@ function GCDI.toggle_preview_mode()
 		if previewBackground then
 			previewBackground:Hide()
 		end
-		
+
+		-- Preview wrote indicator textures directly, bypassing the change-detection
+		-- caches. Clear them so the updates below actually repaint instead of
+		-- concluding everything is already correct and leaving preview colors up.
+		LibRange:ResetIndicatorState()
+		for _, data in pairs(trackedBuffs) do
+			data.active = nil
+			data.durationArmedFor = nil
+		end
+		if resourceBars.stagger then
+			resourceBars.stagger.staggerParked = nil
+		end
+		main_frame.mobCountState = nil
+		main_frame.dispelState = nil
+		gcdi_invalidate_charge_spell_list()
+
 		-- Force update all bars to restore real values
 		-- Call individual update functions to properly restore each resource bar
 		update_all_resources()
