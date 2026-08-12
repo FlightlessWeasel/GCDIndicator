@@ -33,6 +33,165 @@ local currentTab = "gcd"
 local refresh_profiles_tab
 
 -- ═══════════════════════════════════════════════════════════════════════════
+-- WIDGET POOL
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- WoW never frees Frames, FontStrings or Textures: SetParent(nil) only orphans
+-- them. Every tab refresh used to build a fresh widget tree and drop the old one,
+-- so each refresh permanently leaked a tree — and refresh runs on tab switch, on
+-- rescan, on profile load and after most checkbox clicks. Widgets are pooled by
+-- (kind, template) and reused instead.
+--
+-- Pooling is by type, not by position: a call site always fully configures the
+-- widget it gets (size, anchor, text, scripts), so it does not matter which
+-- specific widget of that type comes back out of the bucket.
+
+local pooledHost = CreateFrame("Frame")
+pooledHost:Hide()
+
+local widgetPool = {}
+
+-- Scripts are cleared on release so a reused widget cannot keep behaviour from
+-- whatever it was last time.
+local POOL_SCRIPTS = {
+	"OnClick", "OnEnter", "OnLeave", "OnUpdate", "OnMouseDown", "OnMouseUp",
+	"OnTextChanged", "OnEnterPressed", "OnEscapePressed", "OnValueChanged",
+	"OnShow", "OnHide", "OnDragStart", "OnDragStop", "OnEditFocusGained",
+	"OnEditFocusLost", "OnChar", "OnKeyDown",
+}
+
+-- Widgets acquired while a list is active are registered to it automatically, so
+-- every acquire is guaranteed to have a matching release.
+local activeTrackList = nil
+
+local function pool_take(key)
+	local bucket = widgetPool[key]
+	if not bucket then
+		bucket = {}
+		widgetPool[key] = bucket
+		return nil, bucket
+	end
+	return table.remove(bucket), bucket
+end
+
+local function pool_register(w)
+	if activeTrackList then
+		activeTrackList[#activeTrackList + 1] = w
+	end
+	return w
+end
+
+-- A recycled widget can carry state from its previous use that the new call
+-- site never touches (disabled buttons, small reorder-button fonts, cropped
+-- icon texcoords, greyed-out description text...). Reset everything a call
+-- site might reasonably assume is at its default.
+local function acquire_frame(kind, parent, template)
+	local key = "F\t" .. kind .. "\t" .. (template or "")
+	local w = pool_take(key)
+	if w then
+		w:SetParent(parent)
+	else
+		w = CreateFrame(kind, nil, parent, template)
+		w.__poolKey = key
+		w.__poolKind = "frame"
+	end
+	w:ClearAllPoints()
+	w:SetAlpha(1)
+	if w.SetEnabled then w:SetEnabled(true) end
+	if w.SetNormalFontObject and _G.GameFontNormal then w:SetNormalFontObject(_G.GameFontNormal) end
+	if w.SetHighlightFontObject and _G.GameFontHighlight then w:SetHighlightFontObject(_G.GameFontHighlight) end
+	if kind == "EditBox" and w.SetText then w:SetText("") end
+	w:Show()
+	return pool_register(w)
+end
+
+local function acquire_fontstring(parent, layer, template)
+	layer = layer or "OVERLAY"
+	local key = "S\t" .. layer .. "\t" .. (template or "")
+	local fs = pool_take(key)
+	if fs then
+		fs:SetParent(parent)
+		fs:SetDrawLayer(layer)
+	else
+		fs = parent:CreateFontString(nil, layer, template)
+		fs.__poolKey = key
+		fs.__poolKind = "fontstring"
+	end
+	fs:ClearAllPoints()
+	fs:SetText("")
+	fs:SetJustifyH("LEFT")
+	fs:SetWidth(0)
+	fs:SetAlpha(1)
+	local fontObj = fs:GetFontObject()
+	if fontObj then
+		fs:SetTextColor(fontObj:GetTextColor())
+	end
+	fs:Show()
+	return pool_register(fs)
+end
+
+local function acquire_texture(parent, layer)
+	layer = layer or "ARTWORK"
+	local key = "T\t" .. layer
+	local tex = pool_take(key)
+	if tex then
+		tex:SetParent(parent)
+		tex:SetDrawLayer(layer)
+	else
+		tex = parent:CreateTexture(nil, layer)
+		tex.__poolKey = key
+		tex.__poolKind = "texture"
+	end
+	tex:ClearAllPoints()
+	tex:SetTexture(nil)
+	tex:SetTexCoord(0, 1, 0, 1)
+	tex:SetVertexColor(1, 1, 1, 1)
+	tex:SetAlpha(1)
+	tex:Show()
+	return pool_register(tex)
+end
+
+local function release_widget(w)
+	if not w then return end
+	if not w.__poolKey then
+		-- Created before pooling or by a path that is not pooled; orphan as before.
+		if w.Hide then w:Hide() end
+		if w.SetParent then w:SetParent(nil) end
+		return
+	end
+	w:Hide()
+	w:ClearAllPoints()
+	if w.__poolKind == "frame" then
+		for i = 1, #POOL_SCRIPTS do
+			local script = POOL_SCRIPTS[i]
+			if w:HasScript(script) then
+				w:SetScript(script, nil)
+			end
+		end
+	elseif w.__poolKind == "fontstring" then
+		w:SetText("")
+	end
+	w:SetParent(pooledHost)
+	local bucket = widgetPool[w.__poolKey]
+	if not bucket then
+		bucket = {}
+		widgetPool[w.__poolKey] = bucket
+	end
+	bucket[#bucket + 1] = w
+end
+
+-- Release everything in a tracking list and make it the active list for the
+-- rebuild that follows.
+local function reset_track_list(list)
+	for i = 1, #list do
+		release_widget(list[i])
+	end
+	wipe(list)
+	activeTrackList = list
+	return list
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
 -- UTILITY FUNCTIONS
 -- ═══════════════════════════════════════════════════════════════════════════
 
@@ -82,7 +241,7 @@ local function get_spell_range_override_options(settings)
 end
 
 local function create_range_dropdown(parent, width, selectedYards, onChange)
-	local dropdown = CreateFrame("Frame", nil, parent, "UIDropDownMenuTemplate")
+	local dropdown = acquire_frame("Frame", parent, "UIDropDownMenuTemplate")
 	dropdown:SetPoint("LEFT")
 	UIDropDownMenu_SetWidth(dropdown, width)
 	
@@ -134,30 +293,27 @@ local function refresh_gcd_tab()
 	
 	local frame = optionsFrame.gcdScrollChild
 	
-	-- Clear existing elements
-	for _, element in ipairs(gcdTabElements) do
-		element:Hide()
-		element:SetParent(nil)
-	end
-	wipe(gcdTabElements)
-	
+	-- Release existing elements back to the pool and collect the rebuild into the
+	-- same list. acquire_* registers automatically, so track() is now a no-op pass
+	-- through kept for readability at the call sites.
+	reset_track_list(gcdTabElements)
+
 	local function track(element)
-		table.insert(gcdTabElements, element)
 		return element
 	end
-	
+
 	local yOffset = -10
 	
 	-- ═══════════════════════════════════════════════════════════════════════════
 	-- GCD ROW OPTIONS
 	-- ═══════════════════════════════════════════════════════════════════════════
 	
-	local title = track(frame:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge"))
+	local title = track(acquire_fontstring(frame, "OVERLAY", "GameFontNormalLarge"))
 	title:SetPoint("TOPLEFT", 5, yOffset)
 	title:SetText("GCD Row Options")
 	yOffset = yOffset - 25
 	
-	local desc = track(frame:CreateFontString(nil, "OVERLAY", "GameFontHighlight"))
+	local desc = track(acquire_fontstring(frame, "OVERLAY", "GameFontHighlight"))
 	desc:SetPoint("TOPLEFT", 5, yOffset)
 	desc:SetText("Toggle which indicators appear in the GCD status row.")
 	desc:SetTextColor(0.7, 0.7, 0.7)
@@ -176,7 +332,7 @@ local function refresh_gcd_tab()
 	
 	-- Create toggle for each option
 	for _, opt in ipairs(GCD_INDICATOR_OPTIONS) do
-		local checkbox = track(CreateFrame("CheckButton", nil, frame, "UICheckButtonTemplate"))
+		local checkbox = track(acquire_frame("CheckButton", frame, "UICheckButtonTemplate"))
 		checkbox:SetSize(24, 24)
 		checkbox:SetPoint("TOPLEFT", 10, yOffset)
 		checkbox:SetChecked(settings.gcdSettings[opt.key] ~= false)
@@ -191,14 +347,14 @@ local function refresh_gcd_tab()
 			end)
 		end
 		
-		local label = track(frame:CreateFontString(nil, "OVERLAY", "GameFontNormal"))
+		local label = track(acquire_fontstring(frame, "OVERLAY", "GameFontNormal"))
 		label:SetPoint("LEFT", checkbox, "RIGHT", 5, 0)
 		label:SetText(opt.name)
 		if opt.disabled then
 			label:SetTextColor(0.5, 0.5, 0.5)
 		end
 		
-		local descText = track(frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall"))
+		local descText = track(acquire_fontstring(frame, "OVERLAY", "GameFontHighlightSmall"))
 		descText:SetPoint("LEFT", label, "RIGHT", 15, 0)
 		if opt.disabled then
 			descText:SetText("- " .. opt.desc .. " (coming soon)")
@@ -217,29 +373,29 @@ local function refresh_gcd_tab()
 	-- MOB COUNT SETTINGS
 	-- ═══════════════════════════════════════════════════════════════════════════
 	
-	local mobSep = track(frame:CreateTexture(nil, "ARTWORK"))
+	local mobSep = track(acquire_texture(frame, "ARTWORK"))
 	mobSep:SetColorTexture(0.4, 0.4, 0.4, 1)
 	mobSep:SetSize(480, 1)
 	mobSep:SetPoint("TOPLEFT", 5, yOffset)
 	yOffset = yOffset - 20
 	
-	local mobTitle = track(frame:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge"))
+	local mobTitle = track(acquire_fontstring(frame, "OVERLAY", "GameFontNormalLarge"))
 	mobTitle:SetPoint("TOPLEFT", 5, yOffset)
 	mobTitle:SetText("Mob Count Settings")
 	yOffset = yOffset - 25
 	
-	local mobDesc = track(frame:CreateFontString(nil, "OVERLAY", "GameFontHighlight"))
+	local mobDesc = track(acquire_fontstring(frame, "OVERLAY", "GameFontHighlight"))
 	mobDesc:SetPoint("TOPLEFT", 5, yOffset)
 	mobDesc:SetText("Configure the nearby mob count indicator. White = at or above threshold, Black = below.")
 	mobDesc:SetTextColor(0.7, 0.7, 0.7)
 	yOffset = yOffset - 25
 	
 	-- Mob Count Range dropdown
-	local rangeLabel = track(frame:CreateFontString(nil, "OVERLAY", "GameFontNormal"))
+	local rangeLabel = track(acquire_fontstring(frame, "OVERLAY", "GameFontNormal"))
 	rangeLabel:SetPoint("TOPLEFT", 10, yOffset)
 	rangeLabel:SetText("Detection Range:")
 	
-	local rangeDropdown = track(CreateFrame("Frame", nil, frame, "UIDropDownMenuTemplate"))
+	local rangeDropdown = track(acquire_frame("Frame", frame, "UIDropDownMenuTemplate"))
 	rangeDropdown:SetPoint("LEFT", rangeLabel, "RIGHT", -5, -2)
 	UIDropDownMenu_SetWidth(rangeDropdown, 100)
 	
@@ -310,11 +466,11 @@ local function refresh_gcd_tab()
 	yOffset = yOffset - 35
 	
 	-- Mob Count Threshold dropdown
-	local thresholdLabel = track(frame:CreateFontString(nil, "OVERLAY", "GameFontNormal"))
+	local thresholdLabel = track(acquire_fontstring(frame, "OVERLAY", "GameFontNormal"))
 	thresholdLabel:SetPoint("TOPLEFT", 10, yOffset)
 	thresholdLabel:SetText("Mob Threshold:")
 	
-	local thresholdDropdown = track(CreateFrame("Frame", nil, frame, "UIDropDownMenuTemplate"))
+	local thresholdDropdown = track(acquire_frame("Frame", frame, "UIDropDownMenuTemplate"))
 	thresholdDropdown:SetPoint("LEFT", thresholdLabel, "RIGHT", 5, -2)
 	UIDropDownMenu_SetWidth(thresholdDropdown, 80)
 	
@@ -340,7 +496,7 @@ local function refresh_gcd_tab()
 	yOffset = yOffset - 35
 	
 	-- Help text
-	local mobHelp = track(frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall"))
+	local mobHelp = track(acquire_fontstring(frame, "OVERLAY", "GameFontHighlightSmall"))
 	mobHelp:SetPoint("TOPLEFT", 15, yOffset)
 	mobHelp:SetText("Tip: Counts hostiles on nameplates within the selected range. With LibRangeCheck (below), every bracket is available; without it, only brackets with a Range spell set on this tab. White when count >= threshold.")
 	mobHelp:SetTextColor(0.5, 0.5, 0.5)
@@ -350,18 +506,18 @@ local function refresh_gcd_tab()
 	-- RANGE SETTINGS
 	-- ═══════════════════════════════════════════════════════════════════════════
 	
-	local rangeSep = track(frame:CreateTexture(nil, "ARTWORK"))
+	local rangeSep = track(acquire_texture(frame, "ARTWORK"))
 	rangeSep:SetColorTexture(0.4, 0.4, 0.4, 1)
 	rangeSep:SetSize(480, 1)
 	rangeSep:SetPoint("TOPLEFT", 5, yOffset)
 	yOffset = yOffset - 20
 	
-	local rangeTitle = track(frame:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge"))
+	local rangeTitle = track(acquire_fontstring(frame, "OVERLAY", "GameFontNormalLarge"))
 	rangeTitle:SetPoint("TOPLEFT", 5, yOffset)
 	rangeTitle:SetText("Range Settings")
 	yOffset = yOffset - 25
 	
-	local rangeDesc = track(frame:CreateFontString(nil, "OVERLAY", "GameFontHighlight"))
+	local rangeDesc = track(acquire_fontstring(frame, "OVERLAY", "GameFontHighlight"))
 	rangeDesc:SetPoint("TOPLEFT", 5, yOffset)
 	rangeDesc:SetText("Default range for spells without built-in range. Set a spell per range for in-combat checking (assign overrides in Spells tab).")
 	rangeDesc:SetTextColor(0.7, 0.7, 0.7)
@@ -370,7 +526,7 @@ local function refresh_gcd_tab()
 	if settings.gcdSettings.useLibRangeCheck == nil then
 		settings.gcdSettings.useLibRangeCheck = false
 	end
-	local lrcCheckbox = track(CreateFrame("CheckButton", nil, frame, "UICheckButtonTemplate"))
+	local lrcCheckbox = track(acquire_frame("CheckButton", frame, "UICheckButtonTemplate"))
 	lrcCheckbox:SetSize(24, 24)
 	lrcCheckbox:SetPoint("TOPLEFT", 10, yOffset)
 	lrcCheckbox:SetChecked(settings.gcdSettings.useLibRangeCheck == true)
@@ -382,10 +538,10 @@ local function refresh_gcd_tab()
 			GCDI.refresh_options_frame()
 		end
 	end)
-	local lrcLabel = track(frame:CreateFontString(nil, "OVERLAY", "GameFontNormal"))
+	local lrcLabel = track(acquire_fontstring(frame, "OVERLAY", "GameFontNormal"))
 	lrcLabel:SetPoint("LEFT", lrcCheckbox, "RIGHT", 5, 0)
 	lrcLabel:SetText("Use LibRangeCheck-3.0 for spell range colors")
-	local lrcHelp = track(frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall"))
+	local lrcHelp = track(acquire_fontstring(frame, "OVERLAY", "GameFontHighlightSmall"))
 	lrcHelp:SetPoint("TOPLEFT", lrcLabel, "BOTTOMLEFT", 0, -4)
 	lrcHelp:SetWidth(440)
 	lrcHelp:SetJustifyH("LEFT")
@@ -399,7 +555,7 @@ local function refresh_gcd_tab()
 	local RANGE_LABEL_GAP = 8
 	local RANGE_LABEL_WIDTH = RANGE_DROPDOWN_LEFT - RANGE_LABEL_GAP - 10
 	
-	local globalLabel = track(frame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall"))
+	local globalLabel = track(acquire_fontstring(frame, "OVERLAY", "GameFontNormalSmall"))
 	globalLabel:SetWidth(RANGE_LABEL_WIDTH)
 	globalLabel:SetJustifyH("RIGHT")
 	globalLabel:SetText("Global Range:")
@@ -413,7 +569,7 @@ local function refresh_gcd_tab()
 	yOffset = yOffset - 28
 	
 	-- Range spells (in combat): one spell per range (keyed by yards)
-	local rangeSpellsHeader = track(frame:CreateFontString(nil, "OVERLAY", "GameFontNormal"))
+	local rangeSpellsHeader = track(acquire_fontstring(frame, "OVERLAY", "GameFontNormal"))
 	rangeSpellsHeader:SetPoint("TOPLEFT", 10, yOffset)
 	rangeSpellsHeader:SetText("Range spells (in combat):")
 	rangeSpellsHeader:SetScript("OnEnter", function(self)
@@ -445,11 +601,11 @@ local function refresh_gcd_tab()
 			rangeRowCount = rangeRowCount + 1
 			local rowY = yOffset - (rangeRowCount - 1) * 20
 			local item = RANGE_ITEMS[yards]
-			local label = track(frame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall"))
+			local label = track(acquire_fontstring(frame, "OVERLAY", "GameFontNormalSmall"))
 			label:SetWidth(RANGE_LABEL_WIDTH)
 			label:SetJustifyH("RIGHT")
 			label:SetText((item and item.name or tostring(yards) .. " yd") .. ":")
-			local dropdown = track(CreateFrame("Frame", nil, frame, "UIDropDownMenuTemplate"))
+			local dropdown = track(acquire_frame("Frame", frame, "UIDropDownMenuTemplate"))
 			dropdown:SetPoint("TOPLEFT", frame, "TOPLEFT", RANGE_DROPDOWN_LEFT, rowY - 2)
 			UIDropDownMenu_SetWidth(dropdown, RANGE_DROPDOWN_WIDTH)
 			label:SetPoint("RIGHT", dropdown, "LEFT", -RANGE_LABEL_GAP, 0)
@@ -487,18 +643,18 @@ local function refresh_gcd_tab()
 	-- STANCE/FORM COLORS
 	-- ═══════════════════════════════════════════════════════════════════════════
 	
-	local sep1 = track(frame:CreateTexture(nil, "ARTWORK"))
+	local sep1 = track(acquire_texture(frame, "ARTWORK"))
 	sep1:SetColorTexture(0.4, 0.4, 0.4, 1)
 	sep1:SetSize(480, 1)
 	sep1:SetPoint("TOPLEFT", 5, yOffset)
 	yOffset = yOffset - 20
 	
-	local stanceTitle = track(frame:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge"))
+	local stanceTitle = track(acquire_fontstring(frame, "OVERLAY", "GameFontNormalLarge"))
 	stanceTitle:SetPoint("TOPLEFT", 5, yOffset)
 	stanceTitle:SetText("Stance/Form Colors")
 	yOffset = yOffset - 25
 	
-	local stanceDesc = track(frame:CreateFontString(nil, "OVERLAY", "GameFontHighlight"))
+	local stanceDesc = track(acquire_fontstring(frame, "OVERLAY", "GameFontHighlight"))
 	stanceDesc:SetPoint("TOPLEFT", 5, yOffset)
 	stanceDesc:SetText("The stance indicator changes color based on your current form or stance.")
 	stanceDesc:SetTextColor(0.7, 0.7, 0.7)
@@ -509,7 +665,7 @@ local function refresh_gcd_tab()
 	local formColors = GCDI.FORM_COLORS
 	
 	-- Class name header
-	local className = track(frame:CreateFontString(nil, "OVERLAY", "GameFontNormal"))
+	local className = track(acquire_fontstring(frame, "OVERLAY", "GameFontNormal"))
 	className:SetPoint("TOPLEFT", 10, yOffset)
 	className:SetText("Your Class: |cffffcc00" .. (playerClass or "Unknown") .. "|r")
 	yOffset = yOffset - 25
@@ -526,25 +682,25 @@ local function refresh_gcd_tab()
 	
 	-- Display each form
 	for _, formInfo in ipairs(formsToShow) do
-		local row = track(CreateFrame("Frame", nil, frame))
+		local row = track(acquire_frame("Frame", frame))
 		row:SetSize(400, 20)
 		row:SetPoint("TOPLEFT", 15, yOffset)
 		
 		-- Color swatch
-		local colorSwatch = track(row:CreateTexture(nil, "ARTWORK"))
+		local colorSwatch = track(acquire_texture(row, "ARTWORK"))
 		colorSwatch:SetSize(16, 16)
 		colorSwatch:SetPoint("LEFT", 0, 0)
 		colorSwatch:SetColorTexture(formInfo.color[1], formInfo.color[2], formInfo.color[3], 1)
 		
 		-- Border around swatch
-		local swatchBorder = track(row:CreateTexture(nil, "OVERLAY"))
+		local swatchBorder = track(acquire_texture(row, "OVERLAY"))
 		swatchBorder:SetSize(18, 18)
 		swatchBorder:SetPoint("CENTER", colorSwatch, "CENTER", 0, 0)
 		swatchBorder:SetColorTexture(0.3, 0.3, 0.3, 1)
 		colorSwatch:SetDrawLayer("OVERLAY", 1)
 		
 		-- Form name
-		local formLabel = track(row:CreateFontString(nil, "OVERLAY", "GameFontNormal"))
+		local formLabel = track(acquire_fontstring(row, "OVERLAY", "GameFontNormal"))
 		formLabel:SetPoint("LEFT", colorSwatch, "RIGHT", 10, 0)
 		
 		local labelText = string.format("[%d] %s", formInfo.index, formInfo.name)
@@ -562,31 +718,31 @@ local function refresh_gcd_tab()
 	-- INDICATOR LEGEND
 	-- ═══════════════════════════════════════════════════════════════════════════
 	
-	local sep2 = track(frame:CreateTexture(nil, "ARTWORK"))
+	local sep2 = track(acquire_texture(frame, "ARTWORK"))
 	sep2:SetColorTexture(0.4, 0.4, 0.4, 1)
 	sep2:SetSize(480, 1)
 	sep2:SetPoint("TOPLEFT", 5, yOffset)
 	yOffset = yOffset - 20
 	
-	local legendTitle = track(frame:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge"))
+	local legendTitle = track(acquire_fontstring(frame, "OVERLAY", "GameFontNormalLarge"))
 	legendTitle:SetPoint("TOPLEFT", 5, yOffset)
 	legendTitle:SetText("Indicator Legend")
 	yOffset = yOffset - 25
 	
 	-- GCD Bar legend
-	local gcdLegend = track(frame:CreateFontString(nil, "OVERLAY", "GameFontNormal"))
+	local gcdLegend = track(acquire_fontstring(frame, "OVERLAY", "GameFontNormal"))
 	gcdLegend:SetPoint("TOPLEFT", 10, yOffset)
 	gcdLegend:SetText("|cffffffffGCD Bar:|r Shows global cooldown progress (white bar)")
 	yOffset = yOffset - 20
 	
 	-- Combat indicator legend
-	local combatLegend = track(frame:CreateFontString(nil, "OVERLAY", "GameFontNormal"))
+	local combatLegend = track(acquire_fontstring(frame, "OVERLAY", "GameFontNormal"))
 	combatLegend:SetPoint("TOPLEFT", 10, yOffset)
 	combatLegend:SetText("|cffff0000Combat:|r Red = In Combat, |cff333333Black = Out of Combat|r")
 	yOffset = yOffset - 20
 	
 	-- Aggro indicator legend
-	local aggroLegend = track(frame:CreateFontString(nil, "OVERLAY", "GameFontNormal"))
+	local aggroLegend = track(acquire_fontstring(frame, "OVERLAY", "GameFontNormal"))
 	aggroLegend:SetPoint("TOPLEFT", 10, yOffset)
 	aggroLegend:SetText("|cffff8000Aggro:|r Orange = Has Threat, |cff666666Grey = No Threat|r, |cffffffffWhite = No Target|r")
 	yOffset = yOffset - 20
@@ -632,28 +788,22 @@ local function refresh_resources_tab()
 		settings.resourceSettings = {}
 	end
 	
-	-- Clear existing elements
-	for _, element in pairs(resourcesTabElements) do
-		if element.Hide then element:Hide() end
-		if element.SetParent then element:SetParent(nil) end
-	end
-	wipe(resourcesTabElements)
-	
+	reset_track_list(resourcesTabElements)
+
 	local scrollChild = optionsFrame.resourcesScrollChild
 	local yOffset = -10
-	
+
 	local function track(element)
-		table.insert(resourcesTabElements, element)
 		return element
 	end
-	
+
 	-- Section title
-	local sectionTitle = track(scrollChild:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge"))
+	local sectionTitle = track(acquire_fontstring(scrollChild, "OVERLAY", "GameFontNormalLarge"))
 	sectionTitle:SetPoint("TOPLEFT", 10, yOffset)
 	sectionTitle:SetText("Resource Bars")
 	yOffset = yOffset - 25
 	
-	local sectionDesc = track(scrollChild:CreateFontString(nil, "OVERLAY", "GameFontHighlight"))
+	local sectionDesc = track(acquire_fontstring(scrollChild, "OVERLAY", "GameFontHighlight"))
 	sectionDesc:SetPoint("TOPLEFT", 10, yOffset)
 	sectionDesc:SetText("Toggle which resource bars are displayed.")
 	sectionDesc:SetTextColor(0.7, 0.7, 0.7)
@@ -671,35 +821,35 @@ local function refresh_resources_tab()
 	end
 	
 	-- Column headers
-	local nameHeader = track(scrollChild:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall"))
+	local nameHeader = track(acquire_fontstring(scrollChild, "OVERLAY", "GameFontNormalSmall"))
 	nameHeader:SetPoint("TOPLEFT", 55, yOffset)
 	nameHeader:SetText("Resource")
 	
-	local maxHeader = track(scrollChild:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall"))
+	local maxHeader = track(acquire_fontstring(scrollChild, "OVERLAY", "GameFontNormalSmall"))
 	maxHeader:SetPoint("TOPLEFT", 160, yOffset)
 	maxHeader:SetWidth(40)
 	maxHeader:SetJustifyH("CENTER")
 	maxHeader:SetText("Max")
 	
-	local typeHeader = track(scrollChild:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall"))
+	local typeHeader = track(acquire_fontstring(scrollChild, "OVERLAY", "GameFontNormalSmall"))
 	typeHeader:SetPoint("TOPLEFT", 205, yOffset)
 	typeHeader:SetWidth(55)
 	typeHeader:SetJustifyH("CENTER")
 	typeHeader:SetText("Type")
 	
-	local classHeader = track(scrollChild:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall"))
+	local classHeader = track(acquire_fontstring(scrollChild, "OVERLAY", "GameFontNormalSmall"))
 	classHeader:SetPoint("TOPLEFT", 265, yOffset)
 	classHeader:SetText("Class")
 	yOffset = yOffset - 20
 	
 	-- Create checkbox for each resource
 	for _, resource in ipairs(RESOURCE_NAMES) do
-		local row = track(CreateFrame("Frame", nil, scrollChild))
+		local row = track(acquire_frame("Frame", scrollChild))
 		row:SetSize(520, 30)
 		row:SetPoint("TOPLEFT", 10, yOffset)
 		
 		-- Enabled checkbox
-		local checkbox = CreateFrame("CheckButton", nil, row, "UICheckButtonTemplate")
+		local checkbox = acquire_frame("CheckButton", row, "UICheckButtonTemplate")
 		checkbox:SetSize(24, 24)
 		checkbox:SetPoint("LEFT", 0, 0)
 		
@@ -718,13 +868,13 @@ local function refresh_resources_tab()
 		end)
 		
 		-- Color swatch
-		local colorSwatch = row:CreateTexture(nil, "ARTWORK")
+		local colorSwatch = acquire_texture(row, "ARTWORK")
 		colorSwatch:SetSize(16, 16)
 		colorSwatch:SetPoint("LEFT", checkbox, "RIGHT", 5, 0)
 		colorSwatch:SetColorTexture(resource.color[1], resource.color[2], resource.color[3], 1)
 		
 		-- Resource name
-		local nameText = row:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+		local nameText = acquire_fontstring(row, "OVERLAY", "GameFontNormal")
 		nameText:SetPoint("LEFT", colorSwatch, "RIGHT", 10, 0)
 		nameText:SetWidth(110)
 		nameText:SetJustifyH("LEFT")
@@ -741,7 +891,7 @@ local function refresh_resources_tab()
 		end
 		
 		-- Max value display (centered)
-		local maxText = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+		local maxText = acquire_fontstring(row, "OVERLAY", "GameFontNormalSmall")
 		maxText:SetPoint("LEFT", 150, 0)
 		maxText:SetWidth(40)
 		maxText:SetJustifyH("CENTER")
@@ -752,7 +902,7 @@ local function refresh_resources_tab()
 		end
 		
 		-- Bar type display (centered)
-		local typeText = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+		local typeText = acquire_fontstring(row, "OVERLAY", "GameFontNormalSmall")
 		typeText:SetPoint("LEFT", 195, 0)
 		typeText:SetWidth(55)
 		typeText:SetJustifyH("CENTER")
@@ -763,7 +913,7 @@ local function refresh_resources_tab()
 		end
 		
 		-- Class display
-		local classText = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+		local classText = acquire_fontstring(row, "OVERLAY", "GameFontNormalSmall")
 		classText:SetPoint("LEFT", 255, 0)
 		classText:SetWidth(200)
 		classText:SetJustifyH("LEFT")
@@ -782,21 +932,15 @@ end
 local spellsTabElements = {}  -- Track all UI elements created in spells tab
 
 local function clear_spells_tab_elements()
-	for _, element in pairs(spellsTabElements) do
-		if element.Hide then element:Hide() end
-		if element.SetParent then element:SetParent(nil) end
-	end
-	wipe(spellsTabElements)
-	for _, row in pairs(spellRows) do
-		row:Hide()
-		row:SetParent(nil)
-	end
+	-- Rows and their children are registered by acquire_*, so releasing the tracking
+	-- list reclaims the whole tree. spellRows must NOT be released separately or the
+	-- same row would be returned to the pool twice.
+	reset_track_list(spellsTabElements)
 	wipe(spellRows)
 end
 
--- Helper to track created elements
+-- Helper to track created elements (acquire_* registers automatically)
 local function track(element)
-	table.insert(spellsTabElements, element)
 	return element
 end
 
@@ -813,7 +957,7 @@ local function refresh_spells_tab()
 	local yOffset = -10
 	
 	-- Rescan Spells button
-	local rescanSpellsBtn = track(CreateFrame("Button", nil, scrollChild, "UIPanelButtonTemplate"))
+	local rescanSpellsBtn = track(acquire_frame("Button", scrollChild, "UIPanelButtonTemplate"))
 	rescanSpellsBtn:SetSize(100, 22)
 	rescanSpellsBtn:SetPoint("TOPLEFT", 10, yOffset)
 	rescanSpellsBtn:SetText("Rescan Spells")
@@ -833,36 +977,36 @@ local function refresh_spells_tab()
 	yOffset = yOffset - 35
 	
 	-- Column headers (row starts at x=10, so add 10 to row-relative positions)
-	local enabledHeader = track(scrollChild:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall"))
+	local enabledHeader = track(acquire_fontstring(scrollChild, "OVERLAY", "GameFontNormalSmall"))
 	enabledHeader:SetPoint("TOPLEFT", 14, yOffset)  -- checkbox at row LEFT 0, centered
 	enabledHeader:SetText("On")
 	
-	local selfCastHeader = track(scrollChild:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall"))
+	local selfCastHeader = track(acquire_fontstring(scrollChild, "OVERLAY", "GameFontNormalSmall"))
 	selfCastHeader:SetPoint("TOPLEFT", 40, yOffset)  -- checkbox at row LEFT 28, centered
 	selfCastHeader:SetText("Self")
 	
-	local iconTrackHeader = track(scrollChild:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall"))
+	local iconTrackHeader = track(acquire_fontstring(scrollChild, "OVERLAY", "GameFontNormalSmall"))
 	iconTrackHeader:SetPoint("TOPLEFT", 70, yOffset)  -- checkbox at row LEFT 56, centered
 	iconTrackHeader:SetText("Ico")
 	
-	local spellNameHeader = track(scrollChild:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall"))
+	local spellNameHeader = track(acquire_fontstring(scrollChild, "OVERLAY", "GameFontNormalSmall"))
 	spellNameHeader:SetPoint("TOPLEFT", 94, yOffset)  -- icon at row LEFT 84
 	spellNameHeader:SetText("Spell")
 	
-	local nativeHeader = track(scrollChild:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall"))
+	local nativeHeader = track(acquire_fontstring(scrollChild, "OVERLAY", "GameFontNormalSmall"))
 	nativeHeader:SetPoint("TOPLEFT", 210, yOffset)  -- indicator at row LEFT 200
 	nativeHeader:SetText("|cff00ff00N|r")
 	
-	local rangeHeader = track(scrollChild:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall"))
+	local rangeHeader = track(acquire_fontstring(scrollChild, "OVERLAY", "GameFontNormalSmall"))
 	rangeHeader:SetPoint("TOPLEFT", 240, yOffset)  -- dropdown at row LEFT 213 (+ dropdown padding)
 	rangeHeader:SetText("Range Override")
 	
 	-- Charge pip column must start after UIDropDownMenuTemplate for range (LEFT 213 + text width + arrow ~35px).
-	local chargePipsHeader = track(scrollChild:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall"))
+	local chargePipsHeader = track(acquire_fontstring(scrollChild, "OVERLAY", "GameFontNormalSmall"))
 	chargePipsHeader:SetPoint("TOPLEFT", 354, yOffset)
 	chargePipsHeader:SetText("Charge pips")
 	
-	local orderHeader = track(scrollChild:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall"))
+	local orderHeader = track(acquire_fontstring(scrollChild, "OVERLAY", "GameFontNormalSmall"))
 	orderHeader:SetPoint("TOPLEFT", 468, yOffset)  -- clear of pip dropdown hit rect
 	orderHeader:SetText("Order")
 	yOffset = yOffset - 20
@@ -890,13 +1034,13 @@ local function refresh_spells_tab()
 		if not GCDI.is_spell_enabled(spellID) and not disabledSectionStarted then
 			disabledSectionStarted = true
 			yOffset = yOffset - 10
-			local disabledSep = track(scrollChild:CreateTexture(nil, "ARTWORK"))
+			local disabledSep = track(acquire_texture(scrollChild, "ARTWORK"))
 			disabledSep:SetColorTexture(0.4, 0.4, 0.4, 1)
 			disabledSep:SetSize(530, 1)
 			disabledSep:SetPoint("TOPLEFT", 10, yOffset)
 			yOffset = yOffset - 5
 			
-			local disabledLabel = track(scrollChild:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall"))
+			local disabledLabel = track(acquire_fontstring(scrollChild, "OVERLAY", "GameFontNormalSmall"))
 			disabledLabel:SetPoint("TOPLEFT", 10, yOffset)
 			disabledLabel:SetText("|cff888888— Disabled Spells —|r")
 			yOffset = yOffset - 18
@@ -914,12 +1058,12 @@ local function refresh_spells_tab()
 		end
 		hasNativeRange = hasNativeRange or false
 		
-		local row = CreateFrame("Frame", nil, scrollChild)
+		local row = acquire_frame("Frame", scrollChild)
 		row:SetSize(540, 30)
 		row:SetPoint("TOPLEFT", 10, yOffset)
 		
 		-- Enabled checkbox
-		local checkbox = CreateFrame("CheckButton", nil, row, "UICheckButtonTemplate")
+		local checkbox = acquire_frame("CheckButton", row, "UICheckButtonTemplate")
 		checkbox:SetSize(24, 24)
 		checkbox:SetPoint("LEFT", 0, 0)
 		checkbox:SetChecked(spellSettings.enabled ~= false)
@@ -941,7 +1085,7 @@ local function refresh_spells_tab()
 		end)
 		
 		-- Self-Cast checkbox
-		local selfCastCheckbox = CreateFrame("CheckButton", nil, row, "UICheckButtonTemplate")
+		local selfCastCheckbox = acquire_frame("CheckButton", row, "UICheckButtonTemplate")
 		selfCastCheckbox:SetSize(24, 24)
 		selfCastCheckbox:SetPoint("LEFT", 28, 0)
 		selfCastCheckbox:SetChecked(spellSettings.selfCast == true)
@@ -964,7 +1108,7 @@ local function refresh_spells_tab()
 		selfCastCheckbox:SetScript("OnLeave", function() GameTooltip:Hide() end)
 		
 		-- Track Icon checkbox
-		local trackIconCheckbox = CreateFrame("CheckButton", nil, row, "UICheckButtonTemplate")
+		local trackIconCheckbox = acquire_frame("CheckButton", row, "UICheckButtonTemplate")
 		trackIconCheckbox:SetSize(24, 24)
 		trackIconCheckbox:SetPoint("LEFT", 56, 0)
 		trackIconCheckbox:SetChecked(spellSettings.trackIcon == true)
@@ -986,12 +1130,12 @@ local function refresh_spells_tab()
 		trackIconCheckbox:SetScript("OnLeave", function() GameTooltip:Hide() end)
 		
 		-- Spell icon
-		local icon = row:CreateTexture(nil, "ARTWORK")
+		local icon = acquire_texture(row, "ARTWORK")
 		icon:SetSize(20, 20)
 		icon:SetPoint("LEFT", 84, 0)
 		icon:SetTexture(texture)
 		icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
-		local iconTip = CreateFrame("Frame", nil, row)
+		local iconTip = acquire_frame("Frame", row)
 		iconTip:SetSize(20, 20)
 		iconTip:SetPoint("LEFT", 84, 0)
 		iconTip:EnableMouse(true)
@@ -1003,14 +1147,14 @@ local function refresh_spells_tab()
 		iconTip:SetScript("OnLeave", function() GameTooltip:Hide() end)
 		
 		-- Spell name
-		local nameText = row:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+		local nameText = acquire_fontstring(row, "OVERLAY", "GameFontNormal")
 		nameText:SetPoint("LEFT", 108, 0)
 		nameText:SetWidth(90)
 		nameText:SetJustifyH("LEFT")
 		nameText:SetText(spellName)
 		
 		-- Native range indicator
-		local rangeIndicatorText = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+		local rangeIndicatorText = acquire_fontstring(row, "OVERLAY", "GameFontNormalSmall")
 		rangeIndicatorText:SetPoint("LEFT", 200, 0)
 		if spellSettings.hasNativeRange then
 			rangeIndicatorText:SetText("|cff00ff00N|r")
@@ -1019,7 +1163,7 @@ local function refresh_spells_tab()
 		end
 		
 		-- Tooltip for indicator (same position as the indicator text)
-		local indicatorTooltip = CreateFrame("Frame", nil, row)
+		local indicatorTooltip = acquire_frame("Frame", row)
 		indicatorTooltip:SetPoint("LEFT", 198, 0)
 		indicatorTooltip:SetSize(24, 24)
 		indicatorTooltip:SetScript("OnEnter", function(self)
@@ -1037,7 +1181,7 @@ local function refresh_spells_tab()
 		indicatorTooltip:SetScript("OnLeave", function() GameTooltip:Hide() end)
 		
 		-- Range dropdown
-		local rangeDropdown = CreateFrame("Frame", nil, row, "UIDropDownMenuTemplate")
+		local rangeDropdown = acquire_frame("Frame", row, "UIDropDownMenuTemplate")
 		rangeDropdown:SetPoint("LEFT", 213, 0)
 		UIDropDownMenu_SetWidth(rangeDropdown, 110)
 		
@@ -1125,7 +1269,7 @@ local function refresh_spells_tab()
 		end
 		
 		-- Charge pip count override (when max charges are secret or missing; e.g. Keg Smash = 2 pips)
-		local chgDropdown = track(CreateFrame("Frame", nil, row, "UIDropDownMenuTemplate"))
+		local chgDropdown = track(acquire_frame("Frame", row, "UIDropDownMenuTemplate"))
 		chgDropdown:SetPoint("LEFT", 354, 0)
 		UIDropDownMenu_SetWidth(chgDropdown, 68)
 		
@@ -1185,7 +1329,7 @@ local function refresh_spells_tab()
 		chgDropdown:HookScript("OnLeave", function() GameTooltip:Hide() end)
 		
 		-- Reorder buttons
-		local upBtn = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
+		local upBtn = acquire_frame("Button", row, "UIPanelButtonTemplate")
 		upBtn:SetSize(22, 18)
 		upBtn:SetPoint("LEFT", 468, 0)
 		upBtn:SetText("Up")
@@ -1197,7 +1341,7 @@ local function refresh_spells_tab()
 			GCDI.refresh_options_frame()
 		end)
 		
-		local downBtn = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
+		local downBtn = acquire_frame("Button", row, "UIPanelButtonTemplate")
 		downBtn:SetSize(22, 18)
 		downBtn:SetPoint("LEFT", upBtn, "RIGHT", 2, 0)
 		downBtn:SetText("Dn")
@@ -1209,7 +1353,7 @@ local function refresh_spells_tab()
 			GCDI.refresh_options_frame()
 		end)
 		
-		local bottomBtn = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
+		local bottomBtn = acquire_frame("Button", row, "UIPanelButtonTemplate")
 		bottomBtn:SetSize(24, 18)
 		bottomBtn:SetPoint("LEFT", downBtn, "RIGHT", 2, 0)
 		bottomBtn:SetText("Bot")
@@ -1238,30 +1382,20 @@ local function refresh_items_tab()
 	-- Always sync settings reference
 	settings = GCDI.settings
 	
-	-- Clear existing item rows
-	for _, row in pairs(itemRows) do
-		row:Hide()
-		row:SetParent(nil)
-	end
+	-- Rows and their children are registered by acquire_*, so the tracking list owns
+	-- the whole tree; itemRows must not be released separately (double free).
+	reset_track_list(itemsTabElements)
 	wipe(itemRows)
-	
-	-- Clear items tab elements
-	for _, element in pairs(itemsTabElements) do
-		if element.Hide then element:Hide() end
-		if element.SetParent then element:SetParent(nil) end
-	end
-	wipe(itemsTabElements)
-	
+
 	local scrollChild = optionsFrame.itemsScrollChild
 	local yOffset = -10
-	
+
 	local function track(element)
-		table.insert(itemsTabElements, element)
 		return element
 	end
-	
+
 	-- Rescan Items button
-	local rescanItemsBtn = track(CreateFrame("Button", nil, scrollChild, "UIPanelButtonTemplate"))
+	local rescanItemsBtn = track(acquire_frame("Button", scrollChild, "UIPanelButtonTemplate"))
 	rescanItemsBtn:SetSize(100, 22)
 	rescanItemsBtn:SetPoint("TOPLEFT", 10, yOffset)
 	rescanItemsBtn:SetText("Rescan Items")
@@ -1280,19 +1414,19 @@ local function refresh_items_tab()
 	yOffset = yOffset - 30
 	
 	-- Column headers
-	local enabledHeader = track(scrollChild:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall"))
+	local enabledHeader = track(acquire_fontstring(scrollChild, "OVERLAY", "GameFontNormalSmall"))
 	enabledHeader:SetPoint("TOPLEFT", 10, yOffset)
 	enabledHeader:SetText("On")
 	
-	local chargesHeader = track(scrollChild:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall"))
+	local chargesHeader = track(acquire_fontstring(scrollChild, "OVERLAY", "GameFontNormalSmall"))
 	chargesHeader:SetPoint("TOPLEFT", 38, yOffset)
 	chargesHeader:SetText("Chg")
 	
-	local itemNameHeader = track(scrollChild:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall"))
+	local itemNameHeader = track(acquire_fontstring(scrollChild, "OVERLAY", "GameFontNormalSmall"))
 	itemNameHeader:SetPoint("TOPLEFT", 70, yOffset)
 	itemNameHeader:SetText("Item")
 	
-	local orderHeader = track(scrollChild:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall"))
+	local orderHeader = track(acquire_fontstring(scrollChild, "OVERLAY", "GameFontNormalSmall"))
 	orderHeader:SetPoint("TOPLEFT", 350, yOffset)
 	orderHeader:SetText("Order")
 	yOffset = yOffset - 20
@@ -1302,12 +1436,12 @@ local function refresh_items_tab()
 	local disabledSectionStarted = false
 	
 	if #orderedItems == 0 then
-		local noItemsText = track(scrollChild:CreateFontString(nil, "OVERLAY", "GameFontNormal"))
+		local noItemsText = track(acquire_fontstring(scrollChild, "OVERLAY", "GameFontNormal"))
 		noItemsText:SetPoint("TOPLEFT", 10, yOffset)
 		noItemsText:SetText("|cff888888No trinkets equipped or consumables in bags.|r")
 		yOffset = yOffset - 30
 		
-		local tipText = track(scrollChild:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall"))
+		local tipText = track(acquire_fontstring(scrollChild, "OVERLAY", "GameFontNormalSmall"))
 		tipText:SetPoint("TOPLEFT", 10, yOffset)
 		tipText:SetText("Equip trinkets or get consumables to see them here.")
 		yOffset = yOffset - 25
@@ -1333,24 +1467,24 @@ local function refresh_items_tab()
 		if not GCDI.is_item_enabled(itemKey) and not disabledSectionStarted then
 			disabledSectionStarted = true
 			yOffset = yOffset - 10
-			local disabledSep = track(scrollChild:CreateTexture(nil, "ARTWORK"))
+			local disabledSep = track(acquire_texture(scrollChild, "ARTWORK"))
 			disabledSep:SetColorTexture(0.4, 0.4, 0.4, 1)
 			disabledSep:SetSize(450, 1)
 			disabledSep:SetPoint("TOPLEFT", 10, yOffset)
 			yOffset = yOffset - 5
 			
-			local disabledLabel = track(scrollChild:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall"))
+			local disabledLabel = track(acquire_fontstring(scrollChild, "OVERLAY", "GameFontNormalSmall"))
 			disabledLabel:SetPoint("TOPLEFT", 10, yOffset)
 			disabledLabel:SetText("|cff888888— Disabled Items —|r")
 			yOffset = yOffset - 18
 		end
 		
-		local row = CreateFrame("Frame", nil, scrollChild)
+		local row = acquire_frame("Frame", scrollChild)
 		row:SetSize(450, 30)
 		row:SetPoint("TOPLEFT", 10, yOffset)
 		
 		-- Enabled checkbox
-		local checkbox = CreateFrame("CheckButton", nil, row, "UICheckButtonTemplate")
+		local checkbox = acquire_frame("CheckButton", row, "UICheckButtonTemplate")
 		checkbox:SetSize(24, 24)
 		checkbox:SetPoint("LEFT", 0, 0)
 		checkbox:SetChecked(itemSettings.enabled ~= false)
@@ -1372,7 +1506,7 @@ local function refresh_items_tab()
 		end)
 		
 		-- Show Charges checkbox
-		local chargesCheckbox = CreateFrame("CheckButton", nil, row, "UICheckButtonTemplate")
+		local chargesCheckbox = acquire_frame("CheckButton", row, "UICheckButtonTemplate")
 		chargesCheckbox:SetSize(24, 24)
 		chargesCheckbox:SetPoint("LEFT", 28, 0)
 		chargesCheckbox:SetChecked(itemSettings.showCharges == true)
@@ -1395,12 +1529,12 @@ local function refresh_items_tab()
 		chargesCheckbox:SetScript("OnLeave", function() GameTooltip:Hide() end)
 		
 		-- Item icon
-		local icon = row:CreateTexture(nil, "ARTWORK")
+		local icon = acquire_texture(row, "ARTWORK")
 		icon:SetSize(20, 20)
 		icon:SetPoint("LEFT", 56, 0)
 		icon:SetTexture(texture)
 		icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
-		local iconTip = CreateFrame("Frame", nil, row)
+		local iconTip = acquire_frame("Frame", row)
 		iconTip:SetSize(20, 20)
 		iconTip:SetPoint("LEFT", 56, 0)
 		iconTip:EnableMouse(true)
@@ -1416,14 +1550,14 @@ local function refresh_items_tab()
 		iconTip:SetScript("OnLeave", function() GameTooltip:Hide() end)
 		
 		-- Item name
-		local nameText = row:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+		local nameText = acquire_fontstring(row, "OVERLAY", "GameFontNormal")
 		nameText:SetPoint("LEFT", 80, 0)
 		nameText:SetWidth(220)
 		nameText:SetJustifyH("LEFT")
 		nameText:SetText(itemName)
 		
 		-- Type indicator
-		local typeText = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+		local typeText = acquire_fontstring(row, "OVERLAY", "GameFontNormalSmall")
 		typeText:SetPoint("LEFT", 290, 0)
 		if catalogEntry.slot then
 			typeText:SetText("|cff00ff00Trinket|r")
@@ -1432,7 +1566,7 @@ local function refresh_items_tab()
 		end
 		
 		-- Reorder buttons
-		local upBtn = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
+		local upBtn = acquire_frame("Button", row, "UIPanelButtonTemplate")
 		upBtn:SetSize(22, 18)
 		upBtn:SetPoint("LEFT", 345, 0)
 		upBtn:SetText("Up")
@@ -1444,7 +1578,7 @@ local function refresh_items_tab()
 			GCDI.refresh_options_frame()
 		end)
 		
-		local downBtn = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
+		local downBtn = acquire_frame("Button", row, "UIPanelButtonTemplate")
 		downBtn:SetSize(22, 18)
 		downBtn:SetPoint("LEFT", upBtn, "RIGHT", 2, 0)
 		downBtn:SetText("Dn")
@@ -1456,7 +1590,7 @@ local function refresh_items_tab()
 			GCDI.refresh_options_frame()
 		end)
 		
-		local bottomBtn = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
+		local bottomBtn = acquire_frame("Button", row, "UIPanelButtonTemplate")
 		bottomBtn:SetSize(24, 18)
 		bottomBtn:SetPoint("LEFT", downBtn, "RIGHT", 2, 0)
 		bottomBtn:SetText("Bot")
@@ -1485,30 +1619,20 @@ local function refresh_buffs_tab()
 	-- Always sync settings reference
 	settings = GCDI.settings
 	
-	-- Clear existing buff rows
-	for _, row in pairs(buffRows) do
-		row:Hide()
-		row:SetParent(nil)
-	end
+	-- Rows and their children are registered by acquire_*, so the tracking list owns
+	-- the whole tree; buffRows must not be released separately (double free).
+	reset_track_list(buffsTabElements)
 	wipe(buffRows)
-	
-	-- Clear buffs tab elements
-	for _, element in pairs(buffsTabElements) do
-		if element.Hide then element:Hide() end
-		if element.SetParent then element:SetParent(nil) end
-	end
-	wipe(buffsTabElements)
-	
+
 	local scrollChild = optionsFrame.buffsScrollChild
 	local yOffset = -10
-	
+
 	local function track(element)
-		table.insert(buffsTabElements, element)
 		return element
 	end
-	
+
 	-- Rescan Buffs button
-	local rescanBuffsBtn = track(CreateFrame("Button", nil, scrollChild, "UIPanelButtonTemplate"))
+	local rescanBuffsBtn = track(acquire_frame("Button", scrollChild, "UIPanelButtonTemplate"))
 	rescanBuffsBtn:SetSize(100, 22)
 	rescanBuffsBtn:SetPoint("TOPLEFT", 10, yOffset)
 	rescanBuffsBtn:SetText("Rescan Buffs")
@@ -1527,18 +1651,18 @@ local function refresh_buffs_tab()
 	yOffset = yOffset - 30
 	
 	-- Add Buff section
-	local addBuffLabel = track(scrollChild:CreateFontString(nil, "OVERLAY", "GameFontNormal"))
+	local addBuffLabel = track(acquire_fontstring(scrollChild, "OVERLAY", "GameFontNormal"))
 	addBuffLabel:SetPoint("TOPLEFT", 10, yOffset)
 	addBuffLabel:SetText("Add Buff by Spell ID:")
 	
-	local addBuffEditBox = track(CreateFrame("EditBox", nil, scrollChild, "InputBoxTemplate"))
+	local addBuffEditBox = track(acquire_frame("EditBox", scrollChild, "InputBoxTemplate"))
 	addBuffEditBox:SetSize(80, 20)
 	addBuffEditBox:SetPoint("LEFT", addBuffLabel, "RIGHT", 10, 0)
 	addBuffEditBox:SetAutoFocus(false)
 	addBuffEditBox:SetNumeric(true)
 	addBuffEditBox:SetMaxLetters(10)
 	
-	local addBuffBtn = track(CreateFrame("Button", nil, scrollChild, "UIPanelButtonTemplate"))
+	local addBuffBtn = track(acquire_frame("Button", scrollChild, "UIPanelButtonTemplate"))
 	addBuffBtn:SetSize(60, 22)
 	addBuffBtn:SetPoint("LEFT", addBuffEditBox, "RIGHT", 5, 0)
 	addBuffBtn:SetText("Add")
@@ -1561,45 +1685,45 @@ local function refresh_buffs_tab()
 		addBuffBtn:Click()
 	end)
 	
-	local helpText = track(scrollChild:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall"))
+	local helpText = track(acquire_fontstring(scrollChild, "OVERLAY", "GameFontNormalSmall"))
 	helpText:SetPoint("TOPLEFT", 10, yOffset - 25)
 	helpText:SetTextColor(0.7, 0.7, 0.7)
 	helpText:SetText("Tip: Get spell IDs from Wowhead or addon tooltips. Buffs are auto-detected when applied.")
 	yOffset = yOffset - 55
 	
 	-- Separator
-	local sep = track(scrollChild:CreateTexture(nil, "ARTWORK"))
+	local sep = track(acquire_texture(scrollChild, "ARTWORK"))
 	sep:SetColorTexture(0.4, 0.4, 0.4, 1)
 	sep:SetSize(450, 1)
 	sep:SetPoint("TOPLEFT", 10, yOffset)
 	yOffset = yOffset - 15
 	
 	-- Column headers
-	local enabledHeader = track(scrollChild:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall"))
+	local enabledHeader = track(acquire_fontstring(scrollChild, "OVERLAY", "GameFontNormalSmall"))
 	enabledHeader:SetPoint("TOPLEFT", 10, yOffset)
 	enabledHeader:SetText("On")
 	
-	local stacksHeader = track(scrollChild:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall"))
+	local stacksHeader = track(acquire_fontstring(scrollChild, "OVERLAY", "GameFontNormalSmall"))
 	stacksHeader:SetPoint("TOPLEFT", 38, yOffset)
 	stacksHeader:SetText("Stk")
 	
-	local buffNameHeader = track(scrollChild:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall"))
+	local buffNameHeader = track(acquire_fontstring(scrollChild, "OVERLAY", "GameFontNormalSmall"))
 	buffNameHeader:SetPoint("TOPLEFT", 70, yOffset)
 	buffNameHeader:SetText("Buff (ID)")
 	
-	local maxStacksHeader = track(scrollChild:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall"))
+	local maxStacksHeader = track(acquire_fontstring(scrollChild, "OVERLAY", "GameFontNormalSmall"))
 	maxStacksHeader:SetPoint("TOPLEFT", 220, yOffset)
 	maxStacksHeader:SetText("Max Stacks")
 	
-	local durationHeader = track(scrollChild:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall"))
+	local durationHeader = track(acquire_fontstring(scrollChild, "OVERLAY", "GameFontNormalSmall"))
 	durationHeader:SetPoint("TOPLEFT", 295, yOffset)
 	durationHeader:SetText("Dur")
 	
-	local thresholdHeader = track(scrollChild:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall"))
+	local thresholdHeader = track(acquire_fontstring(scrollChild, "OVERLAY", "GameFontNormalSmall"))
 	thresholdHeader:SetPoint("TOPLEFT", 325, yOffset)
 	thresholdHeader:SetText("Thr%")
 	
-	local orderHeader = track(scrollChild:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall"))
+	local orderHeader = track(acquire_fontstring(scrollChild, "OVERLAY", "GameFontNormalSmall"))
 	orderHeader:SetPoint("TOPLEFT", 400, yOffset)
 	orderHeader:SetText("Order")
 	yOffset = yOffset - 20
@@ -1609,12 +1733,12 @@ local function refresh_buffs_tab()
 	local disabledSectionStarted = false
 	
 	if #orderedBuffs == 0 then
-		local noBuffsText = track(scrollChild:CreateFontString(nil, "OVERLAY", "GameFontNormal"))
+		local noBuffsText = track(acquire_fontstring(scrollChild, "OVERLAY", "GameFontNormal"))
 		noBuffsText:SetPoint("TOPLEFT", 10, yOffset)
 		noBuffsText:SetText("|cff888888No buffs being tracked.|r")
 		yOffset = yOffset - 30
 		
-		local tipText = track(scrollChild:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall"))
+		local tipText = track(acquire_fontstring(scrollChild, "OVERLAY", "GameFontNormalSmall"))
 		tipText:SetPoint("TOPLEFT", 10, yOffset)
 		tipText:SetText("Add buffs by spell ID above, or they'll be auto-detected when applied.")
 		yOffset = yOffset - 25
@@ -1642,24 +1766,24 @@ local function refresh_buffs_tab()
 		if not GCDI.is_buff_enabled(buffKey) and not disabledSectionStarted then
 			disabledSectionStarted = true
 			yOffset = yOffset - 10
-			local disabledSep = track(scrollChild:CreateTexture(nil, "ARTWORK"))
+			local disabledSep = track(acquire_texture(scrollChild, "ARTWORK"))
 			disabledSep:SetColorTexture(0.4, 0.4, 0.4, 1)
 			disabledSep:SetSize(450, 1)
 			disabledSep:SetPoint("TOPLEFT", 10, yOffset)
 			yOffset = yOffset - 5
 			
-			local disabledLabel = track(scrollChild:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall"))
+			local disabledLabel = track(acquire_fontstring(scrollChild, "OVERLAY", "GameFontNormalSmall"))
 			disabledLabel:SetPoint("TOPLEFT", 10, yOffset)
 			disabledLabel:SetText("|cff888888— Disabled Buffs —|r")
 			yOffset = yOffset - 18
 		end
 		
-		local row = CreateFrame("Frame", nil, scrollChild)
+		local row = acquire_frame("Frame", scrollChild)
 		row:SetSize(450, 30)
 		row:SetPoint("TOPLEFT", 10, yOffset)
 		
 		-- Enabled checkbox
-		local checkbox = CreateFrame("CheckButton", nil, row, "UICheckButtonTemplate")
+		local checkbox = acquire_frame("CheckButton", row, "UICheckButtonTemplate")
 		checkbox:SetSize(24, 24)
 		checkbox:SetPoint("LEFT", 0, 0)
 		checkbox:SetChecked(buffSettings.enabled ~= false)
@@ -1678,7 +1802,7 @@ local function refresh_buffs_tab()
 		end)
 		
 		-- Show Stacks checkbox
-		local stacksCheckbox = CreateFrame("CheckButton", nil, row, "UICheckButtonTemplate")
+		local stacksCheckbox = acquire_frame("CheckButton", row, "UICheckButtonTemplate")
 		stacksCheckbox:SetSize(24, 24)
 		stacksCheckbox:SetPoint("LEFT", 28, 0)
 		stacksCheckbox:SetChecked(buffSettings.showStacks ~= false)
@@ -1701,13 +1825,13 @@ local function refresh_buffs_tab()
 		stacksCheckbox:SetScript("OnLeave", function() GameTooltip:Hide() end)
 		
 		-- Buff icon
-		local icon = row:CreateTexture(nil, "ARTWORK")
+		local icon = acquire_texture(row, "ARTWORK")
 		icon:SetSize(20, 20)
 		icon:SetPoint("LEFT", 56, 0)
 		icon:SetTexture(texture)
 		icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
 		local buffTooltipSpellID = catalogEntry.tooltipSpellID or catalogEntry.spellID or buffKey
-		local iconTip = CreateFrame("Frame", nil, row)
+		local iconTip = acquire_frame("Frame", row)
 		iconTip:SetSize(20, 20)
 		iconTip:SetPoint("LEFT", 56, 0)
 		iconTip:EnableMouse(true)
@@ -1721,7 +1845,7 @@ local function refresh_buffs_tab()
 		iconTip:SetScript("OnLeave", function() GameTooltip:Hide() end)
 		
 		-- Buff name with spell ID (displayID = spell ID when from CDM; matches CDM/spell IDs)
-		local nameText = row:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+		local nameText = acquire_fontstring(row, "OVERLAY", "GameFontNormal")
 		nameText:SetPoint("LEFT", 80, 0)
 		nameText:SetWidth(130)
 		nameText:SetJustifyH("LEFT")
@@ -1732,7 +1856,7 @@ local function refresh_buffs_tab()
 		end
 		
 		-- Max stacks dropdown
-		local maxStacksDropdown = CreateFrame("Frame", nil, row, "UIDropDownMenuTemplate")
+		local maxStacksDropdown = acquire_frame("Frame", row, "UIDropDownMenuTemplate")
 		maxStacksDropdown:SetPoint("LEFT", 200, 0)
 		UIDropDownMenu_SetWidth(maxStacksDropdown, 60)
 		
@@ -1760,7 +1884,7 @@ local function refresh_buffs_tab()
 		UIDropDownMenu_SetSelectedID(maxStacksDropdown, buffSettings.maxStacksDisplay or 5)
 		
 		-- Duration bar checkbox
-		local durationCb = CreateFrame("CheckButton", nil, row, "UICheckButtonTemplate")
+		local durationCb = acquire_frame("CheckButton", row, "UICheckButtonTemplate")
 		durationCb:SetPoint("LEFT", 290, 0)
 		durationCb:SetSize(24, 24)
 		durationCb:SetChecked(buffSettings.showDurationBar == true)
@@ -1774,8 +1898,20 @@ local function refresh_buffs_tab()
 			GCDI.reposition_all()
 		end)
 		
-		-- Threshold dropdown (5% increments)
-		local thresholdDropdown = CreateFrame("Frame", "GCDI_BuffThreshold_" .. buffKey, row, "UIDropDownMenuTemplate")
+		-- Threshold dropdown (5% increments). UIDropDownMenu needs a global name, so
+		-- this one cannot come from the type-keyed pool: reuse the frame already
+		-- registered under this buff's name instead of creating a second one under
+		-- the same name on every refresh.
+		local thresholdName = "GCDI_BuffThreshold_" .. buffKey
+		local thresholdDropdown = _G[thresholdName]
+		if thresholdDropdown then
+			thresholdDropdown:SetParent(row)
+			thresholdDropdown:ClearAllPoints()
+			thresholdDropdown:Show()
+		else
+			thresholdDropdown = CreateFrame("Frame", thresholdName, row, "UIDropDownMenuTemplate")
+		end
+		pool_register(thresholdDropdown)
 		thresholdDropdown:SetPoint("LEFT", 305, -3)
 		UIDropDownMenu_SetWidth(thresholdDropdown, 50)
 		
@@ -1803,7 +1939,7 @@ local function refresh_buffs_tab()
 		UIDropDownMenu_SetText(thresholdDropdown, (buffSettings.durationThreshold or 30) .. "%")
 		
 		-- Reorder buttons
-		local upBtn = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
+		local upBtn = acquire_frame("Button", row, "UIPanelButtonTemplate")
 		upBtn:SetSize(22, 18)
 		upBtn:SetPoint("LEFT", 395, 0)
 		upBtn:SetText("Up")
@@ -1815,7 +1951,7 @@ local function refresh_buffs_tab()
 			GCDI.refresh_options_frame()
 		end)
 		
-		local downBtn = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
+		local downBtn = acquire_frame("Button", row, "UIPanelButtonTemplate")
 		downBtn:SetSize(22, 18)
 		downBtn:SetPoint("LEFT", upBtn, "RIGHT", 2, 0)
 		downBtn:SetText("Dn")
@@ -1827,7 +1963,7 @@ local function refresh_buffs_tab()
 			GCDI.refresh_options_frame()
 		end)
 		
-		local removeBtn = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
+		local removeBtn = acquire_frame("Button", row, "UIPanelButtonTemplate")
 		removeBtn:SetSize(24, 18)
 		removeBtn:SetPoint("LEFT", downBtn, "RIGHT", 2, 0)
 		removeBtn:SetText("X")
@@ -2341,44 +2477,38 @@ refresh_profiles_tab = function()
 	-- Always sync settings reference
 	settings = GCDI.settings
 	
-	-- Clear existing elements
-	for _, element in pairs(profilesTabElements) do
-		if element.Hide then element:Hide() end
-		if element.SetParent then element:SetParent(nil) end
-	end
-	wipe(profilesTabElements)
-	
+	reset_track_list(profilesTabElements)
+
 	local frame = optionsFrame.profilesFrame
-	
+
 	local function track(element)
-		table.insert(profilesTabElements, element)
 		return element
 	end
-	
+
 	local yOffset = -10
 	
 	-- ═══════════════════════════════════════════════════════════════════════════
 	-- PROFILE MANAGEMENT SECTION
 	-- ═══════════════════════════════════════════════════════════════════════════
 	
-	local sectionTitle = track(frame:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge"))
+	local sectionTitle = track(acquire_fontstring(frame, "OVERLAY", "GameFontNormalLarge"))
 	sectionTitle:SetPoint("TOPLEFT", 5, yOffset)
 	sectionTitle:SetText("Profile Management")
 	yOffset = yOffset - 25
 	
-	local sectionDesc = track(frame:CreateFontString(nil, "OVERLAY", "GameFontHighlight"))
+	local sectionDesc = track(acquire_fontstring(frame, "OVERLAY", "GameFontHighlight"))
 	sectionDesc:SetPoint("TOPLEFT", 5, yOffset)
 	sectionDesc:SetText("Load, save, or create profiles to manage different configurations.")
 	sectionDesc:SetTextColor(0.7, 0.7, 0.7)
 	yOffset = yOffset - 30
 	
 	-- Current Profile Dropdown
-	local profileLabel = track(frame:CreateFontString(nil, "OVERLAY", "GameFontNormal"))
+	local profileLabel = track(acquire_fontstring(frame, "OVERLAY", "GameFontNormal"))
 	profileLabel:SetPoint("TOPLEFT", 5, yOffset)
 	profileLabel:SetText("Current Profile:")
 	
 	local profileNames = GCDI.get_profile_names()
-	local profileDropdown = track(CreateFrame("Frame", nil, frame, "UIDropDownMenuTemplate"))
+	local profileDropdown = track(acquire_frame("Frame", frame, "UIDropDownMenuTemplate"))
 	profileDropdown:SetPoint("LEFT", profileLabel, "RIGHT", -5, -2)
 	UIDropDownMenu_SetWidth(profileDropdown, 150)
 	
@@ -2415,7 +2545,7 @@ refresh_profiles_tab = function()
 	-- Buttons row
 	local hasCurrentProfile = settings.currentProfile and settings.currentProfile ~= ""
 	
-	local saveBtn = track(CreateFrame("Button", nil, frame, "UIPanelButtonTemplate"))
+	local saveBtn = track(acquire_frame("Button", frame, "UIPanelButtonTemplate"))
 	saveBtn:SetSize(80, 24)
 	saveBtn:SetPoint("TOPLEFT", 5, yOffset)
 	saveBtn:SetText("Save")
@@ -2438,7 +2568,7 @@ refresh_profiles_tab = function()
 	end)
 	saveBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
 	
-	local deleteBtn = track(CreateFrame("Button", nil, frame, "UIPanelButtonTemplate"))
+	local deleteBtn = track(acquire_frame("Button", frame, "UIPanelButtonTemplate"))
 	deleteBtn:SetSize(80, 24)
 	deleteBtn:SetPoint("LEFT", saveBtn, "RIGHT", 5, 0)
 	deleteBtn:SetText("Delete")
@@ -2461,17 +2591,17 @@ refresh_profiles_tab = function()
 	yOffset = yOffset - 35
 	
 	-- Create New Profile
-	local createLabel = track(frame:CreateFontString(nil, "OVERLAY", "GameFontNormal"))
+	local createLabel = track(acquire_fontstring(frame, "OVERLAY", "GameFontNormal"))
 	createLabel:SetPoint("TOPLEFT", 5, yOffset)
 	createLabel:SetText("Create New:")
 	
-	local createEditBox = track(CreateFrame("EditBox", nil, frame, "InputBoxTemplate"))
+	local createEditBox = track(acquire_frame("EditBox", frame, "InputBoxTemplate"))
 	createEditBox:SetSize(150, 22)
 	createEditBox:SetPoint("LEFT", createLabel, "RIGHT", 10, 0)
 	createEditBox:SetAutoFocus(false)
 	createEditBox:SetMaxLetters(30)
 	
-	local createBtn = track(CreateFrame("Button", nil, frame, "UIPanelButtonTemplate"))
+	local createBtn = track(acquire_frame("Button", frame, "UIPanelButtonTemplate"))
 	createBtn:SetSize(80, 24)
 	createBtn:SetPoint("LEFT", createEditBox, "RIGHT", 5, 0)
 	createBtn:SetText("Create")
@@ -2498,24 +2628,24 @@ refresh_profiles_tab = function()
 	-- EXPORT SECTION
 	-- ═══════════════════════════════════════════════════════════════════════════
 	
-	local sep1 = track(frame:CreateTexture(nil, "ARTWORK"))
+	local sep1 = track(acquire_texture(frame, "ARTWORK"))
 	sep1:SetColorTexture(0.4, 0.4, 0.4, 1)
 	sep1:SetSize(480, 1)
 	sep1:SetPoint("TOPLEFT", 5, yOffset)
 	yOffset = yOffset - 20
 	
-	local exportImportTitle = track(frame:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge"))
+	local exportImportTitle = track(acquire_fontstring(frame, "OVERLAY", "GameFontNormalLarge"))
 	exportImportTitle:SetPoint("TOPLEFT", 5, yOffset)
 	exportImportTitle:SetText("Export / Import")
 	yOffset = yOffset - 25
 	
-	local exportImportDesc = track(frame:CreateFontString(nil, "OVERLAY", "GameFontHighlight"))
+	local exportImportDesc = track(acquire_fontstring(frame, "OVERLAY", "GameFontHighlight"))
 	exportImportDesc:SetPoint("TOPLEFT", 5, yOffset)
 	exportImportDesc:SetText("Share your settings with others or transfer between characters.")
 	exportImportDesc:SetTextColor(0.7, 0.7, 0.7)
 	yOffset = yOffset - 30
 	
-	local exportBtn = track(CreateFrame("Button", nil, frame, "UIPanelButtonTemplate"))
+	local exportBtn = track(acquire_frame("Button", frame, "UIPanelButtonTemplate"))
 	exportBtn:SetSize(120, 28)
 	exportBtn:SetPoint("TOPLEFT", 5, yOffset)
 	exportBtn:SetText("Export Settings")
@@ -2542,7 +2672,7 @@ refresh_profiles_tab = function()
 		end
 	end)
 	
-	local importBtn = track(CreateFrame("Button", nil, frame, "UIPanelButtonTemplate"))
+	local importBtn = track(acquire_frame("Button", frame, "UIPanelButtonTemplate"))
 	importBtn:SetSize(120, 28)
 	importBtn:SetPoint("LEFT", exportBtn, "RIGHT", 10, 0)
 	importBtn:SetText("Import Settings")
@@ -2921,7 +3051,33 @@ local function create_options_frame()
 		GameTooltip:Show()
 	end)
 	previewBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
-	
+
+	-- Experimental: Native Stack Binding (A/B toggle, see CHANGE-TRACKER.md)
+	local nativeStackTitle = settingsFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+	nativeStackTitle:SetPoint("TOPLEFT", 5, -310)
+	nativeStackTitle:SetText("Experimental")
+
+	local nativeStackCheckbox = CreateFrame("CheckButton", nil, settingsFrame, "UICheckButtonTemplate")
+	nativeStackCheckbox:SetSize(24, 24)
+	nativeStackCheckbox:SetPoint("TOPLEFT", 0, -335)
+	nativeStackCheckbox:SetChecked(configs.useNativeStackBinding == true)
+	nativeStackCheckbox:SetScript("OnClick", function(self)
+		configs.useNativeStackBinding = self:GetChecked() and true or false
+		print("|cff00ff00GCDIndicator:|r Native stack binding " .. (configs.useNativeStackBinding and "ON (experimental)" or "OFF (classic)"))
+		if GCDI.rebuild_buff_bars then
+			GCDI.rebuild_buff_bars()
+		end
+	end)
+	local nativeStackLabel = settingsFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+	nativeStackLabel:SetPoint("LEFT", nativeStackCheckbox, "RIGHT", 5, 0)
+	nativeStackLabel:SetText("Use native engine stack binding (A/B test)")
+	local nativeStackHelp = settingsFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+	nativeStackHelp:SetPoint("TOPLEFT", nativeStackLabel, "BOTTOMLEFT", 0, -4)
+	nativeStackHelp:SetWidth(440)
+	nativeStackHelp:SetJustifyH("LEFT")
+	nativeStackHelp:SetText("Alternate buff stack tracking using the 12.1+ AuraContainer engine API instead of the classic C_UnitAuras query. Experimental and untested in combat - see CHANGE-TRACKER.md.")
+	nativeStackHelp:SetTextColor(0.55, 0.55, 0.55)
+
 	-- PROFILES FRAME
 	local profilesFrame = CreateFrame("Frame", nil, optionsFrame)
 	profilesFrame:SetPoint("TOPLEFT", 10, -60)
