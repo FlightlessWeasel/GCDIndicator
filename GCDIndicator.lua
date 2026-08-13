@@ -15,6 +15,7 @@ GCDI.configs = {
 	bgPadding = 2,
 	debugMode = false,
 	useNativeStackBinding = false,  -- experimental A/B toggle, see CHANGE-TRACKER.md
+	compactMode = false,  -- flow-packed spell/item/buff layout, see CHANGE-TRACKER.md
 }
 local configs = GCDI.configs
 
@@ -831,31 +832,46 @@ local function create_spell_bar(spellID, spellName, texture, actionSlot)
 	
 	-- Check if spell is self-cast (no range indicator needed)
 	local isSelfCast = is_spell_self_cast(spellID)
-	
+
+	-- Compact mode drops the icon square entirely (not just hidden) to
+	-- maximize density - the cooldown-clip square becomes the first box
+	-- instead of the second. See CHANGE-TRACKER.md.
+	local compact = configs.compactMode
+
 	-- Calculate container width based on spell settings
-	-- Layout: [pad][icon][2][cooldown][2][range?][2][charge stack?][2][iconChange?][pad]
+	-- Layout: [pad][icon?][2?][cooldown][2][range?][2][charge stack?][2][iconChange?][pad]
 	local chargeWidth = showChargeIndicators and (maxCharges * barSize + (maxCharges - 1) * 2) or 0  -- squares + gaps
 	local extraGap = showChargeIndicators and 2 or 0  -- gap before charges section
 	local iconChangeWidth = trackIcon and (barSize + 2) or 0  -- icon change indicator + gap
 	local rangeWidth = isSelfCast and 0 or (barSize + 2)  -- range indicator + gap (or 0 for self-cast)
-	local containerWidth = (barSize * 2 + 2) + rangeWidth + chargeWidth + extraGap + iconChangeWidth + pad * 2
-	
+	local iconWidth = compact and 0 or (barSize + 2)  -- icon square + gap before cooldown (0 in compact mode)
+	local containerWidth = barSize + iconWidth + rangeWidth + chargeWidth + extraGap + iconChangeWidth + pad * 2
+
 	local container = CreateFrame("Frame", nil, main_frame)
 	container:SetSize(containerWidth, barSize + pad * 2)
-	
+
 	local bg = container:CreateTexture(nil, "BACKGROUND")
 	bg:SetAllPoints()
 	bg:SetColorTexture(0, 0, 0, 1)
-	
+
+	-- Icon texture is always created (icon-change detection reads/writes it
+	-- regardless of mode) but hidden and excluded from layout in compact mode.
 	local icon = container:CreateTexture(nil, "ARTWORK")
 	icon:SetSize(barSize, barSize)
 	icon:SetPoint("LEFT", pad, 0)
 	icon:SetTexture(texture)
 	icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
-	
+	if compact then
+		icon:Hide()
+	end
+
 	local clipContainer = CreateFrame("Frame", nil, container)
 	clipContainer:SetSize(barSize, barSize)
-	clipContainer:SetPoint("LEFT", icon, "RIGHT", 2, 0)
+	if compact then
+		clipContainer:SetPoint("LEFT", pad, 0)
+	else
+		clipContainer:SetPoint("LEFT", icon, "RIGHT", 2, 0)
+	end
 	clipContainer:SetClipsChildren(true)
 	
 	local cdBg = clipContainer:CreateTexture(nil, "BACKGROUND")
@@ -1082,28 +1098,38 @@ local function create_item_bar(itemKey, itemName, texture, itemID, slot)
 	
 	-- Check if we should show charges for this item
 	local showCharges = should_show_item_charges(itemKey)
-	
-	-- Layout: [Icon][Cooldown] or [Icon][Cooldown][Charge]
-	local numSquares = showCharges and 3 or 2
-	local numGaps = showCharges and 4 or 2
+
+	-- Compact mode drops the icon square entirely (see create_spell_bar).
+	local compact = configs.compactMode
+
+	-- Layout: [Icon][Cooldown] or [Icon][Cooldown][Charge] (icon dropped in compact mode)
+	local numSquares = 1 + (compact and 0 or 1) + (showCharges and 1 or 0)  -- cooldown + icon? + charge?
+	local numGaps = ((compact and 0 or 1) + (showCharges and 1 or 0)) * 2  -- one 2px gap per boundary present
 	local container = CreateFrame("Frame", nil, main_frame)
 	container:SetSize((barSize * numSquares + numGaps) + pad * 2, barSize + pad * 2)
-	
+
 	local bg = container:CreateTexture(nil, "BACKGROUND")
 	bg:SetAllPoints()
 	bg:SetColorTexture(0, 0, 0, 1)
-	
+
 	local icon = container:CreateTexture(nil, "ARTWORK")
 	icon:SetSize(barSize, barSize)
 	icon:SetPoint("LEFT", pad, 0)
 	icon:SetTexture(texture)
 	icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
-	
+	if compact then
+		icon:Hide()
+	end
+
 	local clipContainer = CreateFrame("Frame", nil, container)
 	clipContainer:SetSize(barSize, barSize)
-	clipContainer:SetPoint("LEFT", icon, "RIGHT", 2, 0)
+	if compact then
+		clipContainer:SetPoint("LEFT", pad, 0)
+	else
+		clipContainer:SetPoint("LEFT", icon, "RIGHT", 2, 0)
+	end
 	clipContainer:SetClipsChildren(true)
-	
+
 	local barBg = clipContainer:CreateTexture(nil, "BACKGROUND")
 	barBg:SetAllPoints()
 	barBg:SetColorTexture(1, 1, 1, 1)
@@ -1626,31 +1652,43 @@ local function create_buff_bar(buffKey, spellName, texture, tooltipSpellID)
 	
 	-- Check if we should show duration bar for this buff
 	local showDurationBar = GCDI.should_show_duration_bar(buffKey)
-	
-	-- Layout: [Icon][Active Indicator][Stack bar segments?][Duration Bar?]
+
+	-- Compact mode drops the icon square entirely (see create_spell_bar).
+	local compact = configs.compactMode
+
+	-- Layout: [Icon?][Active Indicator][Stack bar segments?][Duration Bar?] (icon dropped in compact mode)
 	local stackWidth = showStacks and maxStacks > 0 and (maxStacks * barSize + (maxStacks - 1) * 2) or 0
 	local extraGap = showStacks and 2 or 0
 	local durationBarWidth = showDurationBar and (barSize + 2) or 0  -- 8x8 clipped indicator
-	local containerWidth = (barSize * 2 + 2) + stackWidth + extraGap + durationBarWidth + pad * 2
-	
+	local iconWidth = compact and 0 or (barSize + 2)  -- icon square + gap before active indicator (0 in compact mode)
+	local containerWidth = barSize + iconWidth + stackWidth + extraGap + durationBarWidth + pad * 2
+
 	local container = CreateFrame("Frame", nil, main_frame)
 	container:SetSize(containerWidth, barSize + pad * 2)
-	
+
 	local bg = container:CreateTexture(nil, "BACKGROUND")
 	bg:SetAllPoints()
 	bg:SetColorTexture(0, 0, 0, 1)
-	
-	-- Icon
+
+	-- Icon texture is always created but hidden and excluded from layout in
+	-- compact mode (mirrors create_spell_bar).
 	local icon = container:CreateTexture(nil, "ARTWORK")
 	icon:SetSize(barSize, barSize)
 	icon:SetPoint("LEFT", pad, 0)
 	icon:SetTexture(texture)
 	icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
-	
+	if compact then
+		icon:Hide()
+	end
+
 	-- Active indicator (shows if buff is active)
 	local activeIndicator = container:CreateTexture(nil, "ARTWORK")
 	activeIndicator:SetSize(barSize, barSize)
-	activeIndicator:SetPoint("LEFT", icon, "RIGHT", 2, 0)
+	if compact then
+		activeIndicator:SetPoint("LEFT", pad, 0)
+	else
+		activeIndicator:SetPoint("LEFT", icon, "RIGHT", 2, 0)
+	end
 	activeIndicator:SetColorTexture(BUFF_COLORS.inactive[1], BUFF_COLORS.inactive[2], BUFF_COLORS.inactive[3], 1)
 	
 	-- Stack bar: StatusBar fill from applications (spell-ID API or CDM cache).
@@ -2601,106 +2639,152 @@ reposition_all = function()
 		end
 	end
 	
-	-- Split into three columns
-	local totalCount = #allSpellsAndItems
-	local itemsPerColumn = math.ceil(totalCount / 3)
-	local splitPoint1 = itemsPerColumn  -- End of first column
-	local splitPoint2 = itemsPerColumn * 2  -- End of second column
-	
-	local col1Y = yOffset
-	local col2Y = yOffset
-	local col3Y = yOffset
-	local col2X = columnWidth + columnGap  -- Second column X position
-	local col3X = (columnWidth + columnGap) * 2  -- Third column X position
-	
-	for i, entry in ipairs(allSpellsAndItems) do
-		entry.container:ClearAllPoints()
-		if i <= splitPoint1 then
-			-- First column (first third)
-			entry.container:SetPoint("TOPLEFT", main_frame.anchor, "TOPLEFT", 0, col1Y)
-			col1Y = col1Y - spellBarHeight - spacing
-		elseif i <= splitPoint2 then
-			-- Second column (second third)
-			entry.container:SetPoint("TOPLEFT", main_frame.anchor, "TOPLEFT", col2X, col2Y)
-			col2Y = col2Y - spellBarHeight - spacing
-		else
-			-- Third column (last third)
-			entry.container:SetPoint("TOPLEFT", main_frame.anchor, "TOPLEFT", col3X, col3Y)
-			col3Y = col3Y - spellBarHeight - spacing
-		end
-		entry.container:Show()
-	end
-	
-	-- Calculate where the columns end (use the lowest of the three)
-	local columnsEndY = math.min(col1Y, col2Y, col3Y)
-	
-	-- 5. BUFFS below the spell/item columns (also in 3 columns)
-	local orderedBuffs = get_ordered_buffs()
-	local buffCount = #orderedBuffs
-	local buffsPerColumn = math.ceil(buffCount / 3)
-	local buffSplit1 = buffsPerColumn
-	local buffSplit2 = buffsPerColumn * 2
-	
-	local buffCol1Y = columnsEndY
-	local buffCol2Y = columnsEndY
-	local buffCol3Y = columnsEndY
-	
-	for i, spellID in ipairs(orderedBuffs) do
-		local data = trackedBuffs[spellID]
-		if data and data.container then
-			data.container:ClearAllPoints()
-			if i <= buffSplit1 then
-				-- First column
-				data.container:SetPoint("TOPLEFT", main_frame.anchor, "TOPLEFT", 0, buffCol1Y)
-				buffCol1Y = buffCol1Y - spellBarHeight - spacing
-			elseif i <= buffSplit2 then
-				-- Second column
-				data.container:SetPoint("TOPLEFT", main_frame.anchor, "TOPLEFT", col2X, buffCol2Y)
-				buffCol2Y = buffCol2Y - spellBarHeight - spacing
-			else
-				-- Third column
-				data.container:SetPoint("TOPLEFT", main_frame.anchor, "TOPLEFT", col3X, buffCol3Y)
-				buffCol3Y = buffCol3Y - spellBarHeight - spacing
-			end
-			data.container:Show()
-		end
-	end
-	
-	-- Calculate final layout bounds
-	-- Height is the lowest Y point reached (most negative)
-	local finalY = math.min(buffCol1Y, buffCol2Y, buffCol3Y)
-	
-	-- Width depends on which columns are actually used
+	local columnsEndY
+	local finalY
 	local maxWidth = resourceBarWidth  -- Start with resource bar width as baseline
-	
-	-- Check how many columns spells/items use
-	if totalCount > 0 then
-		if totalCount > splitPoint2 then
-			-- Using all 3 columns
-			maxWidth = math.max(maxWidth, col3X + columnWidth)
-		elseif totalCount > splitPoint1 then
-			-- Using 2 columns
-			maxWidth = math.max(maxWidth, col2X + columnWidth)
+
+	if configs.compactMode then
+		-- COMPACT MODE: flow boxes left-to-right, wrapping once a row would
+		-- exceed the resource-bar width (200px), with a fixed 2px gap between
+		-- every adjacent box (both within a row and between wrapped rows).
+		-- Spells, items, and buffs are ONE continuous sequence here (buffs do
+		-- not start a new section) - icon squares are also dropped from each
+		-- box in this mode (see create_spell_bar/create_item_bar/
+		-- create_buff_bar). See CHANGE-TRACKER.md.
+		local compactGap = 2
+		local compactRowMaxWidth = 200
+
+		local allEntries = {}
+		for _, entry in ipairs(allSpellsAndItems) do
+			table.insert(allEntries, entry.container)
+		end
+		local orderedBuffs = get_ordered_buffs()
+		for _, spellID in ipairs(orderedBuffs) do
+			local data = trackedBuffs[spellID]
+			if data and data.container then
+				table.insert(allEntries, data.container)
+			end
+		end
+
+		local rowX, rowY, rowWidthUsed = 0, yOffset, 0
+		for _, container in ipairs(allEntries) do
+			local w = container:GetWidth()
+			if rowX > 0 and rowX + w > compactRowMaxWidth then
+				maxWidth = math.max(maxWidth, rowWidthUsed)
+				rowX = 0
+				rowY = rowY - spellBarHeight - compactGap
+			end
+			container:ClearAllPoints()
+			container:SetPoint("TOPLEFT", main_frame.anchor, "TOPLEFT", rowX, rowY)
+			container:Show()
+			rowX = rowX + w + compactGap
+			rowWidthUsed = rowX - compactGap
+		end
+		if #allEntries > 0 then
+			maxWidth = math.max(maxWidth, rowWidthUsed)
+			finalY = rowY - spellBarHeight
 		else
-			-- Using 1 column
-			maxWidth = math.max(maxWidth, columnWidth)
+			finalY = yOffset
+		end
+	else
+		-- Split into three columns
+		local totalCount = #allSpellsAndItems
+		local itemsPerColumn = math.ceil(totalCount / 3)
+		local splitPoint1 = itemsPerColumn  -- End of first column
+		local splitPoint2 = itemsPerColumn * 2  -- End of second column
+
+		local col1Y = yOffset
+		local col2Y = yOffset
+		local col3Y = yOffset
+		local col2X = columnWidth + columnGap  -- Second column X position
+		local col3X = (columnWidth + columnGap) * 2  -- Third column X position
+
+		for i, entry in ipairs(allSpellsAndItems) do
+			entry.container:ClearAllPoints()
+			if i <= splitPoint1 then
+				-- First column (first third)
+				entry.container:SetPoint("TOPLEFT", main_frame.anchor, "TOPLEFT", 0, col1Y)
+				col1Y = col1Y - spellBarHeight - spacing
+			elseif i <= splitPoint2 then
+				-- Second column (second third)
+				entry.container:SetPoint("TOPLEFT", main_frame.anchor, "TOPLEFT", col2X, col2Y)
+				col2Y = col2Y - spellBarHeight - spacing
+			else
+				-- Third column (last third)
+				entry.container:SetPoint("TOPLEFT", main_frame.anchor, "TOPLEFT", col3X, col3Y)
+				col3Y = col3Y - spellBarHeight - spacing
+			end
+			entry.container:Show()
+		end
+
+		-- Calculate where the columns end (use the lowest of the three)
+		columnsEndY = math.min(col1Y, col2Y, col3Y)
+
+		-- 5. BUFFS below the spell/item columns (also in 3 columns)
+		local orderedBuffs = get_ordered_buffs()
+		local buffCount = #orderedBuffs
+		local buffsPerColumn = math.ceil(buffCount / 3)
+		local buffSplit1 = buffsPerColumn
+		local buffSplit2 = buffsPerColumn * 2
+
+		local buffCol1Y = columnsEndY
+		local buffCol2Y = columnsEndY
+		local buffCol3Y = columnsEndY
+
+		for i, spellID in ipairs(orderedBuffs) do
+			local data = trackedBuffs[spellID]
+			if data and data.container then
+				data.container:ClearAllPoints()
+				if i <= buffSplit1 then
+					-- First column
+					data.container:SetPoint("TOPLEFT", main_frame.anchor, "TOPLEFT", 0, buffCol1Y)
+					buffCol1Y = buffCol1Y - spellBarHeight - spacing
+				elseif i <= buffSplit2 then
+					-- Second column
+					data.container:SetPoint("TOPLEFT", main_frame.anchor, "TOPLEFT", col2X, buffCol2Y)
+					buffCol2Y = buffCol2Y - spellBarHeight - spacing
+				else
+					-- Third column
+					data.container:SetPoint("TOPLEFT", main_frame.anchor, "TOPLEFT", col3X, buffCol3Y)
+					buffCol3Y = buffCol3Y - spellBarHeight - spacing
+				end
+				data.container:Show()
+			end
+		end
+
+		-- Calculate final layout bounds
+		-- Height is the lowest Y point reached (most negative)
+		finalY = math.min(buffCol1Y, buffCol2Y, buffCol3Y)
+
+		-- Check how many columns spells/items use
+		if totalCount > 0 then
+			if totalCount > splitPoint2 then
+				-- Using all 3 columns
+				maxWidth = math.max(maxWidth, col3X + columnWidth)
+			elseif totalCount > splitPoint1 then
+				-- Using 2 columns
+				maxWidth = math.max(maxWidth, col2X + columnWidth)
+			else
+				-- Using 1 column
+				maxWidth = math.max(maxWidth, columnWidth)
+			end
+		end
+
+		-- Check how many columns buffs use
+		if buffCount > 0 then
+			if buffCount > buffSplit2 then
+				-- Using all 3 columns
+				maxWidth = math.max(maxWidth, col3X + columnWidth)
+			elseif buffCount > buffSplit1 then
+				-- Using 2 columns
+				maxWidth = math.max(maxWidth, col2X + columnWidth)
+			else
+				-- Using 1 column
+				maxWidth = math.max(maxWidth, columnWidth)
+			end
 		end
 	end
-	
-	-- Check how many columns buffs use
-	if buffCount > 0 then
-		if buffCount > buffSplit2 then
-			-- Using all 3 columns
-			maxWidth = math.max(maxWidth, col3X + columnWidth)
-		elseif buffCount > buffSplit1 then
-			-- Using 2 columns
-			maxWidth = math.max(maxWidth, col2X + columnWidth)
-		else
-			-- Using 1 column
-			maxWidth = math.max(maxWidth, columnWidth)
-		end
-	end
-	
+
 	-- Store bounds (height is positive, representing total vertical space used)
 	layoutBounds.width = maxWidth
 	layoutBounds.height = -finalY  -- Convert negative offset to positive height
@@ -2710,6 +2794,79 @@ reposition_all = function()
 end
 
 GCDI.reposition_all = reposition_all
+
+-- Debug/cross-check export: dumps every currently-shown bar's position
+-- (relative to main_frame.anchor, same coordinate space reposition_all()
+-- positions everything in) and size, so it can be diffed against what the
+-- AHK side computes for the same spell/item/buff list. Not for general use -
+-- purely a diagnostic added to track down compact-mode AHK/addon drift.
+local function export_bar_positions()
+	local lines = {}
+	table.insert(lines, "GCDIndicator bar position export")
+	table.insert(lines, string.format(
+		"compactMode=%s size=%d barHeight=%d bgPadding=%d barSpacing=%d",
+		tostring(configs.compactMode), configs.size, configs.barHeight, configs.bgPadding, configs.barSpacing))
+	table.insert(lines, "kind\tname\tx\ty\tw\th")
+
+	local anchor = main_frame.anchor
+	local anchorLeft = anchor and anchor:GetLeft() or 0
+	local anchorTop = anchor and anchor:GetTop() or 0
+
+	local function add_line(kind, name, frame)
+		if not frame or not frame:IsShown() then return end
+		local left, top = frame:GetLeft(), frame:GetTop()
+		if not left or not top then return end
+		local w, h = frame:GetSize()
+		table.insert(lines, string.format("%s\t%s\tx=%.1f\ty=%.1f\tw=%.1f\th=%.1f",
+			kind, name, left - anchorLeft, anchorTop - top, w, h))
+	end
+
+	if main_frame.gcdcontainer then
+		add_line("gcdrow", "gcdcontainer", main_frame.gcdcontainer)
+	end
+
+	if resourceBars.health then
+		add_line("resource", "health", resourceBars.health.container)
+	end
+	local otherResources = {
+		"mana", "rage", "energy", "focus", "runicPower", "runes",
+		"comboPoints", "soulShards", "holyPower", "chi", "arcaneCharges",
+		"insanity", "maelstrom", "fury", "pain", "astralPower", "essence",
+		"stagger",
+	}
+	for _, name in ipairs(otherResources) do
+		if resourceBars[name] then
+			add_line("resource", name, resourceBars[name].container)
+		end
+	end
+
+	for _, spellID in ipairs(get_ordered_spells()) do
+		local data = trackedSpells[spellID]
+		if data then
+			local catalogEntry = GCDI.spellCatalog[spellID]
+			add_line("spell", (catalogEntry and catalogEntry.name) or tostring(spellID), data.container)
+		end
+	end
+
+	for _, itemKey in ipairs(GCDI.get_ordered_items()) do
+		local data = trackedItems[itemKey]
+		if data then
+			local catalogEntry = GCDI.itemCatalog[itemKey]
+			add_line("item", (catalogEntry and catalogEntry.name) or tostring(itemKey), data.container)
+		end
+	end
+
+	for _, buffKey in ipairs(get_ordered_buffs()) do
+		local data = trackedBuffs[buffKey]
+		if data then
+			local catalogEntry = GCDI.buffCatalog[buffKey]
+			add_line("buff", (catalogEntry and catalogEntry.name) or tostring(buffKey), data.container)
+		end
+	end
+
+	return table.concat(lines, "\n")
+end
+GCDI.export_bar_positions = export_bar_positions
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- SCANNING
@@ -3634,7 +3791,15 @@ local function init()
 	if settings.gcdSettings.useLibRangeCheck == nil then
 		settings.gcdSettings.useLibRangeCheck = false
 	end
-	
+
+	-- Compact mode persists per-character (shared across all profiles/specs,
+	-- matching its "global, not per-profile" design) via GCDIndicator_Settings
+	-- (SavedVariablesPerCharacter). GCDI.configs itself is not saved, so
+	-- bootstrap the live runtime flag from the persisted value here; the
+	-- slash command and options checkbox write both configs.compactMode and
+	-- settings.compactMode so the choice survives reload/logout.
+	configs.compactMode = (settings.compactMode == true)
+
 	-- Initialize catalog managers now that settings are available
 	init_catalog_managers()
 	
@@ -4266,6 +4431,25 @@ SlashCmdList["GCDOPT"] = function(msg)
 		configs.useNativeStackBinding = not configs.useNativeStackBinding
 		print("|cff00ff00GCDIndicator:|r Native stack binding " .. (configs.useNativeStackBinding and "ON (experimental)" or "OFF (classic)"))
 		rebuild_buff_bars()
+	elseif msg == "compact" then
+		-- Flow-packed spell/item/buff layout toggle. See CHANGE-TRACKER.md.
+		configs.compactMode = not configs.compactMode
+		settings.compactMode = configs.compactMode  -- persist (SavedVariablesPerCharacter)
+		print("|cff00ff00GCDIndicator:|r Compact mode " .. (configs.compactMode and "ON" or "OFF"))
+		-- Box layout (icon square present/absent) is baked in at creation
+		-- time, not just position, so toggling needs a full rebuild.
+		rebuild_spell_bars()  -- also rebuilds item bars
+		rebuild_buff_bars()
+	elseif msg == "exportbars" then
+		-- Diagnostic dump of every visible bar's position/size, for
+		-- cross-checking against what the AHK side computes. See
+		-- export_bar_positions() above reposition_all().
+		local text = export_bar_positions()
+		if GCDI.show_export_import_popup then
+			GCDI.show_export_import_popup("export", text, "Bar Position Export")
+		else
+			print("|cff00ff00GCDIndicator:|r " .. text)
+		end
 	elseif msg == "items" then
 		print("|cff00ff00GCDIndicator:|r --- Item Catalog ---")
 		local count = 0

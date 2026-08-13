@@ -31,6 +31,7 @@ local currentTab = "gcd"
 
 -- Forward declarations
 local refresh_profiles_tab
+local switch_tab
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- WIDGET POOL
@@ -275,6 +276,117 @@ local function create_range_dropdown(parent, width, selectedYards, onChange)
 end
 
 -- ═══════════════════════════════════════════════════════════════════════════
+-- SHARED SECTION HEADER (separator line + title + optional description)
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- Every tab breaks its content into labeled sections; this used to be a
+-- hand-copied separator/title/desc block per section with drifting gaps
+-- (25px in one tab, 20px in another). One helper, one set of gap constants.
+
+local SECTION_GAP_SEP_TO_TITLE = 20
+local SECTION_GAP_TITLE_TO_DESC = 25
+local SECTION_GAP_DESC_TO_ROW = 25
+local SECTION_GAP_TITLE_TO_ROW = 25  -- used when there is no description
+
+-- Draws the header starting at yOffset and returns the yOffset for the first
+-- control below it. Pass showSep = false for a tab's very first section
+-- (nothing above it to separate from).
+local function add_section_header(frame, yOffset, title, desc, width, showSep)
+	if showSep ~= false then
+		local sep = acquire_texture(frame, "ARTWORK")
+		sep:SetColorTexture(0.4, 0.4, 0.4, 1)
+		sep:SetSize(width or 480, 1)
+		sep:SetPoint("TOPLEFT", 5, yOffset)
+		yOffset = yOffset - SECTION_GAP_SEP_TO_TITLE
+	end
+
+	local titleFS = acquire_fontstring(frame, "OVERLAY", "GameFontNormalLarge")
+	titleFS:SetPoint("TOPLEFT", 5, yOffset)
+	titleFS:SetText(title)
+
+	if desc then
+		yOffset = yOffset - SECTION_GAP_TITLE_TO_DESC
+		local descFS = acquire_fontstring(frame, "OVERLAY", "GameFontHighlight")
+		descFS:SetPoint("TOPLEFT", 5, yOffset)
+		descFS:SetText(desc)
+		descFS:SetTextColor(0.7, 0.7, 0.7)
+		yOffset = yOffset - SECTION_GAP_DESC_TO_ROW
+	else
+		yOffset = yOffset - SECTION_GAP_TITLE_TO_ROW
+	end
+
+	return yOffset
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- TAB BAR
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- Used to be 7 copy-pasted CreateFrame blocks with hand-guessed widths (45,
+-- 75, 55...) and a background texture only ever touched by hover scripts —
+-- switch_tab() never repainted it, so whichever tab was built with the
+-- lighter initial alpha looked permanently "selected" no matter which tab
+-- was actually open. One table-driven builder sizes each button from its
+-- own label and exposes bg/fontstring so switch_tab can set a real active
+-- state (see the `tabButtons` loop above).
+
+local TAB_DEFS = {
+	{ key = "gcd", text = "GCD" },
+	{ key = "resources", text = "Resources" },
+	{ key = "spells", text = "Spells" },
+	{ key = "items", text = "Items" },
+	{ key = "buffs", text = "Buffs" },
+	{ key = "settings", text = "Settings" },
+	{ key = "profiles", text = "Profiles" },
+}
+
+local TAB_HEIGHT = 24
+local TAB_TEXT_PADDING = 16
+local TAB_GAP = 5
+local TAB_BG_INACTIVE = { 0.15, 0.15, 0.15, 0.8 }
+local TAB_BG_ACTIVE = { 0.3, 0.3, 0.3, 1 }
+local TAB_BG_HOVER = { 0.3, 0.3, 0.3, 0.8 }
+
+local tabButtons = {}  -- key -> button, populated by create_options_frame
+
+local function create_tab_button(parent, def, prevButton)
+	local btn = CreateFrame("Button", nil, parent)
+	btn:SetHeight(TAB_HEIGHT)
+	if prevButton then
+		btn:SetPoint("LEFT", prevButton, "RIGHT", TAB_GAP, 0)
+	else
+		btn:SetPoint("TOPLEFT", 15, -30)
+	end
+	btn:SetNormalFontObject("GameFontNormal")
+	btn:SetHighlightFontObject("GameFontHighlight")
+
+	local fs = btn:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+	fs:SetPoint("CENTER")
+	fs:SetText(def.text)
+	btn:SetFontString(fs)
+	btn:SetWidth(math.max(40, fs:GetStringWidth() + TAB_TEXT_PADDING))
+
+	local bg = btn:CreateTexture(nil, "BACKGROUND")
+	bg:SetAllPoints()
+	bg:SetColorTexture(unpack(TAB_BG_INACTIVE))
+	btn.bg = bg
+
+	btn:SetScript("OnClick", function() switch_tab(def.key) end)
+	btn:SetScript("OnEnter", function()
+		if currentTab ~= def.key then
+			bg:SetColorTexture(unpack(TAB_BG_HOVER))
+		end
+	end)
+	btn:SetScript("OnLeave", function()
+		local color = (currentTab == def.key) and TAB_BG_ACTIVE or TAB_BG_INACTIVE
+		bg:SetColorTexture(unpack(color))
+	end)
+
+	tabButtons[def.key] = btn
+	return btn
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
 -- GCD TAB
 -- ═══════════════════════════════════════════════════════════════════════════
 
@@ -373,23 +485,9 @@ local function refresh_gcd_tab()
 	-- MOB COUNT SETTINGS
 	-- ═══════════════════════════════════════════════════════════════════════════
 	
-	local mobSep = track(acquire_texture(frame, "ARTWORK"))
-	mobSep:SetColorTexture(0.4, 0.4, 0.4, 1)
-	mobSep:SetSize(480, 1)
-	mobSep:SetPoint("TOPLEFT", 5, yOffset)
-	yOffset = yOffset - 20
-	
-	local mobTitle = track(acquire_fontstring(frame, "OVERLAY", "GameFontNormalLarge"))
-	mobTitle:SetPoint("TOPLEFT", 5, yOffset)
-	mobTitle:SetText("Mob Count Settings")
-	yOffset = yOffset - 25
-	
-	local mobDesc = track(acquire_fontstring(frame, "OVERLAY", "GameFontHighlight"))
-	mobDesc:SetPoint("TOPLEFT", 5, yOffset)
-	mobDesc:SetText("Configure the nearby mob count indicator. White = at or above threshold, Black = below.")
-	mobDesc:SetTextColor(0.7, 0.7, 0.7)
-	yOffset = yOffset - 25
-	
+	yOffset = add_section_header(frame, yOffset, "Mob Count Settings",
+		"Configure the nearby mob count indicator. White = at or above threshold, Black = below.")
+
 	-- Mob Count Range dropdown
 	local rangeLabel = track(acquire_fontstring(frame, "OVERLAY", "GameFontNormal"))
 	rangeLabel:SetPoint("TOPLEFT", 10, yOffset)
@@ -506,22 +604,8 @@ local function refresh_gcd_tab()
 	-- RANGE SETTINGS
 	-- ═══════════════════════════════════════════════════════════════════════════
 	
-	local rangeSep = track(acquire_texture(frame, "ARTWORK"))
-	rangeSep:SetColorTexture(0.4, 0.4, 0.4, 1)
-	rangeSep:SetSize(480, 1)
-	rangeSep:SetPoint("TOPLEFT", 5, yOffset)
-	yOffset = yOffset - 20
-	
-	local rangeTitle = track(acquire_fontstring(frame, "OVERLAY", "GameFontNormalLarge"))
-	rangeTitle:SetPoint("TOPLEFT", 5, yOffset)
-	rangeTitle:SetText("Range Settings")
-	yOffset = yOffset - 25
-	
-	local rangeDesc = track(acquire_fontstring(frame, "OVERLAY", "GameFontHighlight"))
-	rangeDesc:SetPoint("TOPLEFT", 5, yOffset)
-	rangeDesc:SetText("Default range for spells without built-in range. Set a spell per range for in-combat checking (assign overrides in Spells tab).")
-	rangeDesc:SetTextColor(0.7, 0.7, 0.7)
-	yOffset = yOffset - 25
+	yOffset = add_section_header(frame, yOffset, "Range Settings",
+		"Default range for spells without built-in range. Set a spell per range for in-combat checking (assign overrides in Spells tab).")
 
 	if settings.gcdSettings.useLibRangeCheck == nil then
 		settings.gcdSettings.useLibRangeCheck = false
@@ -643,23 +727,9 @@ local function refresh_gcd_tab()
 	-- STANCE/FORM COLORS
 	-- ═══════════════════════════════════════════════════════════════════════════
 	
-	local sep1 = track(acquire_texture(frame, "ARTWORK"))
-	sep1:SetColorTexture(0.4, 0.4, 0.4, 1)
-	sep1:SetSize(480, 1)
-	sep1:SetPoint("TOPLEFT", 5, yOffset)
-	yOffset = yOffset - 20
-	
-	local stanceTitle = track(acquire_fontstring(frame, "OVERLAY", "GameFontNormalLarge"))
-	stanceTitle:SetPoint("TOPLEFT", 5, yOffset)
-	stanceTitle:SetText("Stance/Form Colors")
-	yOffset = yOffset - 25
-	
-	local stanceDesc = track(acquire_fontstring(frame, "OVERLAY", "GameFontHighlight"))
-	stanceDesc:SetPoint("TOPLEFT", 5, yOffset)
-	stanceDesc:SetText("The stance indicator changes color based on your current form or stance.")
-	stanceDesc:SetTextColor(0.7, 0.7, 0.7)
-	yOffset = yOffset - 20
-	
+	yOffset = add_section_header(frame, yOffset, "Stance/Form Colors",
+		"The stance indicator changes color based on your current form or stance.")
+
 	-- Get player's class
 	local _, playerClass = UnitClass("player")
 	local formColors = GCDI.FORM_COLORS
@@ -718,16 +788,7 @@ local function refresh_gcd_tab()
 	-- INDICATOR LEGEND
 	-- ═══════════════════════════════════════════════════════════════════════════
 	
-	local sep2 = track(acquire_texture(frame, "ARTWORK"))
-	sep2:SetColorTexture(0.4, 0.4, 0.4, 1)
-	sep2:SetSize(480, 1)
-	sep2:SetPoint("TOPLEFT", 5, yOffset)
-	yOffset = yOffset - 20
-	
-	local legendTitle = track(acquire_fontstring(frame, "OVERLAY", "GameFontNormalLarge"))
-	legendTitle:SetPoint("TOPLEFT", 5, yOffset)
-	legendTitle:SetText("Indicator Legend")
-	yOffset = yOffset - 25
+	yOffset = add_section_header(frame, yOffset, "Indicator Legend")
 	
 	-- GCD Bar legend
 	local gcdLegend = track(acquire_fontstring(frame, "OVERLAY", "GameFontNormal"))
@@ -1992,71 +2053,22 @@ end
 -- TAB SWITCHING
 -- ═══════════════════════════════════════════════════════════════════════════
 
-local function switch_tab(tabName)
+switch_tab = function(tabName)
 	if not optionsFrame then return end
 	currentTab = tabName
-	
-	if optionsFrame.gcdTabBtn then
-		if tabName == "gcd" then
-			optionsFrame.gcdTabBtn:SetNormalFontObject("GameFontHighlight")
-			optionsFrame.gcdTabBtn:GetFontString():SetTextColor(1, 1, 1)
-		else
-			optionsFrame.gcdTabBtn:SetNormalFontObject("GameFontNormal")
-			optionsFrame.gcdTabBtn:GetFontString():SetTextColor(0.7, 0.7, 0.7)
-		end
-	end
-	if optionsFrame.resourcesTabBtn then
-		if tabName == "resources" then
-			optionsFrame.resourcesTabBtn:SetNormalFontObject("GameFontHighlight")
-			optionsFrame.resourcesTabBtn:GetFontString():SetTextColor(1, 1, 1)
-		else
-			optionsFrame.resourcesTabBtn:SetNormalFontObject("GameFontNormal")
-			optionsFrame.resourcesTabBtn:GetFontString():SetTextColor(0.7, 0.7, 0.7)
-		end
-	end
-	if optionsFrame.spellsTabBtn then
-		if tabName == "spells" then
-			optionsFrame.spellsTabBtn:SetNormalFontObject("GameFontHighlight")
-			optionsFrame.spellsTabBtn:GetFontString():SetTextColor(1, 1, 1)
-		else
-			optionsFrame.spellsTabBtn:SetNormalFontObject("GameFontNormal")
-			optionsFrame.spellsTabBtn:GetFontString():SetTextColor(0.7, 0.7, 0.7)
-		end
-	end
-	if optionsFrame.itemsTabBtn then
-		if tabName == "items" then
-			optionsFrame.itemsTabBtn:SetNormalFontObject("GameFontHighlight")
-			optionsFrame.itemsTabBtn:GetFontString():SetTextColor(1, 1, 1)
-		else
-			optionsFrame.itemsTabBtn:SetNormalFontObject("GameFontNormal")
-			optionsFrame.itemsTabBtn:GetFontString():SetTextColor(0.7, 0.7, 0.7)
-		end
-	end
-	if optionsFrame.buffsTabBtn then
-		if tabName == "buffs" then
-			optionsFrame.buffsTabBtn:SetNormalFontObject("GameFontHighlight")
-			optionsFrame.buffsTabBtn:GetFontString():SetTextColor(1, 1, 1)
-		else
-			optionsFrame.buffsTabBtn:SetNormalFontObject("GameFontNormal")
-			optionsFrame.buffsTabBtn:GetFontString():SetTextColor(0.7, 0.7, 0.7)
-		end
-	end
-	if optionsFrame.settingsTabBtn then
-		if tabName == "settings" then
-			optionsFrame.settingsTabBtn:SetNormalFontObject("GameFontHighlight")
-			optionsFrame.settingsTabBtn:GetFontString():SetTextColor(1, 1, 1)
-		else
-			optionsFrame.settingsTabBtn:SetNormalFontObject("GameFontNormal")
-			optionsFrame.settingsTabBtn:GetFontString():SetTextColor(0.7, 0.7, 0.7)
-		end
-	end
-	if optionsFrame.profilesTabBtn then
-		if tabName == "profiles" then
-			optionsFrame.profilesTabBtn:SetNormalFontObject("GameFontHighlight")
-			optionsFrame.profilesTabBtn:GetFontString():SetTextColor(1, 1, 1)
-		else
-			optionsFrame.profilesTabBtn:SetNormalFontObject("GameFontNormal")
-			optionsFrame.profilesTabBtn:GetFontString():SetTextColor(0.7, 0.7, 0.7)
+
+	for _, def in ipairs(TAB_DEFS) do
+		local btn = tabButtons[def.key]
+		if btn then
+			if def.key == tabName then
+				btn:SetNormalFontObject("GameFontHighlight")
+				btn:GetFontString():SetTextColor(1, 1, 1)
+				btn.bg:SetColorTexture(unpack(TAB_BG_ACTIVE))
+			else
+				btn:SetNormalFontObject("GameFontNormal")
+				btn:GetFontString():SetTextColor(0.7, 0.7, 0.7)
+				btn.bg:SetColorTexture(unpack(TAB_BG_INACTIVE))
+			end
 		end
 	end
 
@@ -2075,8 +2087,8 @@ local function switch_tab(tabName)
 	if optionsFrame.buffsScrollFrame then
 		optionsFrame.buffsScrollFrame:SetShown(tabName == "buffs")
 	end
-	if optionsFrame.settingsFrame then
-		optionsFrame.settingsFrame:SetShown(tabName == "settings")
+	if optionsFrame.settingsScrollFrame then
+		optionsFrame.settingsScrollFrame:SetShown(tabName == "settings")
 	end
 	if optionsFrame.profilesFrame then
 		optionsFrame.profilesFrame:SetShown(tabName == "profiles")
@@ -2346,7 +2358,7 @@ local deserialize_compact = LibProfiles.deserialize
 -- Export/Import popup window
 local exportImportFrame = nil
 
-local function show_export_import_popup(mode, initialText)
+local function show_export_import_popup(mode, initialText, titleOverride)
 	if not exportImportFrame then
 		exportImportFrame = CreateFrame("Frame", "GCDIExportImport", UIParent, "BasicFrameTemplateWithInset")
 		exportImportFrame:SetSize(500, 350)
@@ -2450,9 +2462,9 @@ local function show_export_import_popup(mode, initialText)
 		exportImportFrame.helpText = helpText
 	end
 	
-	exportImportFrame.TitleText:SetText(mode == "export" and "Export Settings" or "Import Settings")
+	exportImportFrame.TitleText:SetText(titleOverride or (mode == "export" and "Export Settings" or "Import Settings"))
 	exportImportFrame.editBox:SetText(initialText or "")
-	
+
 	if mode == "export" then
 		exportImportFrame.importBtn:Hide()
 		exportImportFrame.selectAllBtn:Show()
@@ -2465,9 +2477,10 @@ local function show_export_import_popup(mode, initialText)
 		exportImportFrame.helpText:SetText("Click in box, Ctrl+V to paste, then Import")
 		exportImportFrame.editBox:SetFocus()
 	end
-	
+
 	exportImportFrame:Show()
 end
+GCDI.show_export_import_popup = show_export_import_popup
 
 local profilesTabElements = {}
 
@@ -2737,154 +2750,13 @@ local function create_options_frame()
 	
 	optionsFrame.TitleText:SetText("GCDIndicator Options")
 	
-	-- TAB BUTTONS (moved up since profiles is now a tab)
-	local tabY = -30
-	
-	-- GCD TAB (first tab)
-	local gcdTabBtn = CreateFrame("Button", nil, optionsFrame)
-	gcdTabBtn:SetSize(45, 24)
-	gcdTabBtn:SetPoint("TOPLEFT", 15, tabY)
-	gcdTabBtn:SetNormalFontObject("GameFontHighlight")
-	gcdTabBtn:SetHighlightFontObject("GameFontHighlight")
-	
-	local gcdTabText = gcdTabBtn:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-	gcdTabText:SetPoint("CENTER")
-	gcdTabText:SetText("GCD")
-	gcdTabBtn:SetFontString(gcdTabText)
-	
-	local gcdTabBg = gcdTabBtn:CreateTexture(nil, "BACKGROUND")
-	gcdTabBg:SetAllPoints()
-	gcdTabBg:SetColorTexture(0.2, 0.2, 0.2, 0.8)
-	
-	gcdTabBtn:SetScript("OnClick", function() switch_tab("gcd") end)
-	gcdTabBtn:SetScript("OnEnter", function() gcdTabBg:SetColorTexture(0.3, 0.3, 0.3, 0.8) end)
-	gcdTabBtn:SetScript("OnLeave", function() gcdTabBg:SetColorTexture(0.2, 0.2, 0.2, 0.8) end)
-	optionsFrame.gcdTabBtn = gcdTabBtn
-	
-	-- RESOURCES TAB (second tab)
-	local resourcesTabBtn = CreateFrame("Button", nil, optionsFrame)
-	resourcesTabBtn:SetSize(75, 24)
-	resourcesTabBtn:SetPoint("LEFT", gcdTabBtn, "RIGHT", 5, 0)
-	resourcesTabBtn:SetNormalFontObject("GameFontNormal")
-	resourcesTabBtn:SetHighlightFontObject("GameFontHighlight")
-	
-	local resourcesTabText = resourcesTabBtn:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-	resourcesTabText:SetPoint("CENTER")
-	resourcesTabText:SetText("Resources")
-	resourcesTabBtn:SetFontString(resourcesTabText)
-	
-	local resourcesTabBg = resourcesTabBtn:CreateTexture(nil, "BACKGROUND")
-	resourcesTabBg:SetAllPoints()
-	resourcesTabBg:SetColorTexture(0.15, 0.15, 0.15, 0.8)
-	
-	resourcesTabBtn:SetScript("OnClick", function() switch_tab("resources") end)
-	resourcesTabBtn:SetScript("OnEnter", function() resourcesTabBg:SetColorTexture(0.3, 0.3, 0.3, 0.8) end)
-	resourcesTabBtn:SetScript("OnLeave", function() resourcesTabBg:SetColorTexture(0.15, 0.15, 0.15, 0.8) end)
-	optionsFrame.resourcesTabBtn = resourcesTabBtn
-	
-	local spellsTabBtn = CreateFrame("Button", nil, optionsFrame)
-	spellsTabBtn:SetSize(55, 24)
-	spellsTabBtn:SetPoint("LEFT", resourcesTabBtn, "RIGHT", 5, 0)
-	spellsTabBtn:SetNormalFontObject("GameFontNormal")
-	spellsTabBtn:SetHighlightFontObject("GameFontHighlight")
-	
-	local spellsTabText = spellsTabBtn:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-	spellsTabText:SetPoint("CENTER")
-	spellsTabText:SetText("Spells")
-	spellsTabBtn:SetFontString(spellsTabText)
-	
-	local spellsTabBg = spellsTabBtn:CreateTexture(nil, "BACKGROUND")
-	spellsTabBg:SetAllPoints()
-	spellsTabBg:SetColorTexture(0.15, 0.15, 0.15, 0.8)
-	
-	spellsTabBtn:SetScript("OnClick", function() switch_tab("spells") end)
-	spellsTabBtn:SetScript("OnEnter", function() spellsTabBg:SetColorTexture(0.3, 0.3, 0.3, 0.8) end)
-	spellsTabBtn:SetScript("OnLeave", function() spellsTabBg:SetColorTexture(0.15, 0.15, 0.15, 0.8) end)
-	optionsFrame.spellsTabBtn = spellsTabBtn
-	
-	local itemsTabBtn = CreateFrame("Button", nil, optionsFrame)
-	itemsTabBtn:SetSize(50, 24)
-	itemsTabBtn:SetPoint("LEFT", spellsTabBtn, "RIGHT", 5, 0)
-	itemsTabBtn:SetNormalFontObject("GameFontNormal")
-	itemsTabBtn:SetHighlightFontObject("GameFontHighlight")
-	
-	local itemsTabText = itemsTabBtn:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-	itemsTabText:SetPoint("CENTER")
-	itemsTabText:SetText("Items")
-	itemsTabBtn:SetFontString(itemsTabText)
-	
-	local itemsTabBg = itemsTabBtn:CreateTexture(nil, "BACKGROUND")
-	itemsTabBg:SetAllPoints()
-	itemsTabBg:SetColorTexture(0.15, 0.15, 0.15, 0.8)
-	
-	itemsTabBtn:SetScript("OnClick", function() switch_tab("items") end)
-	itemsTabBtn:SetScript("OnEnter", function() itemsTabBg:SetColorTexture(0.3, 0.3, 0.3, 0.8) end)
-	itemsTabBtn:SetScript("OnLeave", function() itemsTabBg:SetColorTexture(0.15, 0.15, 0.15, 0.8) end)
-	optionsFrame.itemsTabBtn = itemsTabBtn
-	
-	-- BUFFS TAB
-	local buffsTabBtn = CreateFrame("Button", nil, optionsFrame)
-	buffsTabBtn:SetSize(60, 24)
-	buffsTabBtn:SetPoint("LEFT", itemsTabBtn, "RIGHT", 5, 0)
-	buffsTabBtn:SetNormalFontObject("GameFontNormal")
-	buffsTabBtn:SetHighlightFontObject("GameFontHighlight")
-	
-	local buffsTabText = buffsTabBtn:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-	buffsTabText:SetPoint("CENTER")
-	buffsTabText:SetText("Buffs")
-	buffsTabBtn:SetFontString(buffsTabText)
-	
-	local buffsTabBg = buffsTabBtn:CreateTexture(nil, "BACKGROUND")
-	buffsTabBg:SetAllPoints()
-	buffsTabBg:SetColorTexture(0.15, 0.15, 0.15, 0.8)
-	
-	buffsTabBtn:SetScript("OnClick", function() switch_tab("buffs") end)
-	buffsTabBtn:SetScript("OnEnter", function() buffsTabBg:SetColorTexture(0.3, 0.3, 0.3, 0.8) end)
-	buffsTabBtn:SetScript("OnLeave", function() buffsTabBg:SetColorTexture(0.15, 0.15, 0.15, 0.8) end)
-	optionsFrame.buffsTabBtn = buffsTabBtn
-	
-	-- SETTINGS TAB
-	local settingsTabBtn = CreateFrame("Button", nil, optionsFrame)
-	settingsTabBtn:SetSize(70, 24)
-	settingsTabBtn:SetPoint("LEFT", buffsTabBtn, "RIGHT", 5, 0)
-	settingsTabBtn:SetNormalFontObject("GameFontNormal")
-	settingsTabBtn:SetHighlightFontObject("GameFontHighlight")
-	
-	local settingsTabText = settingsTabBtn:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-	settingsTabText:SetPoint("CENTER")
-	settingsTabText:SetText("Settings")
-	settingsTabBtn:SetFontString(settingsTabText)
-	
-	local settingsTabBg = settingsTabBtn:CreateTexture(nil, "BACKGROUND")
-	settingsTabBg:SetAllPoints()
-	settingsTabBg:SetColorTexture(0.15, 0.15, 0.15, 0.8)
-	
-	settingsTabBtn:SetScript("OnClick", function() switch_tab("settings") end)
-	settingsTabBtn:SetScript("OnEnter", function() settingsTabBg:SetColorTexture(0.3, 0.3, 0.3, 0.8) end)
-	settingsTabBtn:SetScript("OnLeave", function() settingsTabBg:SetColorTexture(0.15, 0.15, 0.15, 0.8) end)
-	optionsFrame.settingsTabBtn = settingsTabBtn
-	
-	-- PROFILES TAB
-	local profilesTabBtn = CreateFrame("Button", nil, optionsFrame)
-	profilesTabBtn:SetSize(70, 24)
-	profilesTabBtn:SetPoint("LEFT", settingsTabBtn, "RIGHT", 5, 0)
-	profilesTabBtn:SetNormalFontObject("GameFontNormal")
-	profilesTabBtn:SetHighlightFontObject("GameFontHighlight")
-	
-	local profilesTabText = profilesTabBtn:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-	profilesTabText:SetPoint("CENTER")
-	profilesTabText:SetText("Profiles")
-	profilesTabBtn:SetFontString(profilesTabText)
-	
-	local profilesTabBg = profilesTabBtn:CreateTexture(nil, "BACKGROUND")
-	profilesTabBg:SetAllPoints()
-	profilesTabBg:SetColorTexture(0.15, 0.15, 0.15, 0.8)
-	
-	profilesTabBtn:SetScript("OnClick", function() switch_tab("profiles") end)
-	profilesTabBtn:SetScript("OnEnter", function() profilesTabBg:SetColorTexture(0.3, 0.3, 0.3, 0.8) end)
-	profilesTabBtn:SetScript("OnLeave", function() profilesTabBg:SetColorTexture(0.15, 0.15, 0.15, 0.8) end)
-	optionsFrame.profilesTabBtn = profilesTabBtn
-	
+	-- TAB BUTTONS: table-driven, see create_tab_button. Width is derived from
+	-- each label's own text width instead of hand-picked per-tab numbers.
+	local prevTabBtn = nil
+	for _, def in ipairs(TAB_DEFS) do
+		prevTabBtn = create_tab_button(optionsFrame, def, prevTabBtn)
+	end
+
 	-- GCD SCROLL FRAME (shown by default)
 	local gcdScrollFrame = CreateFrame("ScrollFrame", nil, optionsFrame, "UIPanelScrollFrameTemplate")
 	gcdScrollFrame:SetPoint("TOPLEFT", 10, -60)
@@ -2944,26 +2816,41 @@ local function create_options_frame()
 	buffsScrollFrame:SetScrollChild(buffsScrollChild)
 	optionsFrame.buffsScrollChild = buffsScrollChild
 	
-	-- SETTINGS FRAME
-	local settingsFrame = CreateFrame("Frame", nil, optionsFrame)
-	settingsFrame:SetPoint("TOPLEFT", 10, -60)
-	settingsFrame:SetPoint("BOTTOMRIGHT", -30, 40)
-	settingsFrame:Hide()
+	-- SETTINGS SCROLL FRAME
+	-- Used to be a plain fixed-size Frame (no scrolling), unlike every other
+	-- tab - content past the bottom edge just got silently clipped instead of
+	-- being reachable. Same ScrollFrame + scroll-child pattern as the other
+	-- tabs now; the settings widgets below are unchanged, just reparented.
+	local settingsScrollFrame = CreateFrame("ScrollFrame", nil, optionsFrame, "UIPanelScrollFrameTemplate")
+	settingsScrollFrame:SetPoint("TOPLEFT", 10, -60)
+	settingsScrollFrame:SetPoint("BOTTOMRIGHT", -30, 40)
+	settingsScrollFrame:Hide()
+	optionsFrame.settingsScrollFrame = settingsScrollFrame
+
+	local settingsFrame = CreateFrame("Frame", nil, settingsScrollFrame)
+	settingsFrame:SetSize(500, 650)
+	settingsScrollFrame:SetScrollChild(settingsFrame)
 	optionsFrame.settingsFrame = settingsFrame
 	
-	local settingsTitle = settingsFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
-	settingsTitle:SetPoint("TOPLEFT", 5, -10)
-	settingsTitle:SetText("Frame Position")
-	
-	local settingsDesc = settingsFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-	settingsDesc:SetPoint("TOPLEFT", 5, -35)
-	settingsDesc:SetText("Use these buttons to move or reset the GCD indicator bars.")
-	settingsDesc:SetTextColor(0.8, 0.8, 0.8)
-	
+	-- Settings tab used to place every widget at a hand-measured absolute Y
+	-- (-70, -150, -175, -220...) instead of the yOffset-accumulator pattern
+	-- every other tab uses, so gaps between blocks drifted (42px here, 17px
+	-- there) purely by feel, and the "Experimental" block was visibly bolted
+	-- onto the bottom without adjusting anything around it. Same accumulator
+	-- + section-header helper as the other tabs now.
+	local SETTINGS_BUTTON_HEIGHT = 28
+	local SETTINGS_BUTTON_GAP = 10
+	local SETTINGS_BLOCK_GAP = 20
+
+	local sYOffset = -10
+
+	sYOffset = add_section_header(settingsFrame, sYOffset, "Frame Position",
+		"Use these buttons to move or reset the GCD indicator bars.", 500, false)
+
 	-- Move Frame Button
 	local moveBtn = CreateFrame("Button", nil, settingsFrame, "UIPanelButtonTemplate")
-	moveBtn:SetSize(150, 28)
-	moveBtn:SetPoint("TOPLEFT", 5, -70)
+	moveBtn:SetSize(150, SETTINGS_BUTTON_HEIGHT)
+	moveBtn:SetPoint("TOPLEFT", 5, sYOffset)
 	moveBtn:SetText("Move Frame")
 	moveBtn:SetScript("OnClick", function()
 		if GCDI.toggle_move_mode then
@@ -2980,11 +2867,12 @@ local function create_options_frame()
 		GameTooltip:Show()
 	end)
 	moveBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
-	
+	sYOffset = sYOffset - (SETTINGS_BUTTON_HEIGHT + SETTINGS_BUTTON_GAP)
+
 	-- Reset Position Button
 	local resetBtn = CreateFrame("Button", nil, settingsFrame, "UIPanelButtonTemplate")
-	resetBtn:SetSize(150, 28)
-	resetBtn:SetPoint("TOPLEFT", moveBtn, "BOTTOMLEFT", 0, -10)
+	resetBtn:SetSize(150, SETTINGS_BUTTON_HEIGHT)
+	resetBtn:SetPoint("TOPLEFT", 5, sYOffset)
 	resetBtn:SetText("Reset Position")
 	resetBtn:SetScript("OnClick", function()
 		if GCDI.reset_position then
@@ -2999,15 +2887,14 @@ local function create_options_frame()
 		GameTooltip:Show()
 	end)
 	resetBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
-	
+	sYOffset = sYOffset - (SETTINGS_BUTTON_HEIGHT + SETTINGS_BLOCK_GAP)
+
 	-- Minimap Button Toggle
-	local minimapTitle = settingsFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
-	minimapTitle:SetPoint("TOPLEFT", 5, -150)
-	minimapTitle:SetText("Minimap Button")
-	
+	sYOffset = add_section_header(settingsFrame, sYOffset, "Minimap Button", nil, 500)
+
 	local minimapToggleBtn = CreateFrame("Button", nil, settingsFrame, "UIPanelButtonTemplate")
-	minimapToggleBtn:SetSize(150, 28)
-	minimapToggleBtn:SetPoint("TOPLEFT", 5, -175)
+	minimapToggleBtn:SetSize(150, SETTINGS_BUTTON_HEIGHT)
+	minimapToggleBtn:SetPoint("TOPLEFT", 5, sYOffset)
 	minimapToggleBtn:SetText("Toggle Minimap Icon")
 	minimapToggleBtn:SetScript("OnClick", function()
 		if GCDI.ToggleMinimapButton then
@@ -3023,20 +2910,15 @@ local function create_options_frame()
 		GameTooltip:Show()
 	end)
 	minimapToggleBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
-	
+	sYOffset = sYOffset - (SETTINGS_BUTTON_HEIGHT + SETTINGS_BLOCK_GAP)
+
 	-- Preview Mode Section
-	local previewTitle = settingsFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
-	previewTitle:SetPoint("TOPLEFT", 5, -220)
-	previewTitle:SetText("Preview Mode")
-	
-	local previewDesc = settingsFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-	previewDesc:SetPoint("TOPLEFT", 5, -245)
-	previewDesc:SetText("Show all bars filled with visible colors for positioning.")
-	previewDesc:SetTextColor(0.8, 0.8, 0.8)
-	
+	sYOffset = add_section_header(settingsFrame, sYOffset, "Preview Mode",
+		"Show all bars filled with visible colors for positioning.", 500)
+
 	local previewBtn = CreateFrame("Button", nil, settingsFrame, "UIPanelButtonTemplate")
-	previewBtn:SetSize(150, 28)
-	previewBtn:SetPoint("TOPLEFT", 5, -270)
+	previewBtn:SetSize(150, SETTINGS_BUTTON_HEIGHT)
+	previewBtn:SetPoint("TOPLEFT", 5, sYOffset)
 	previewBtn:SetText("Toggle Preview")
 	previewBtn:SetScript("OnClick", function()
 		if GCDI.toggle_preview_mode then
@@ -3051,15 +2933,14 @@ local function create_options_frame()
 		GameTooltip:Show()
 	end)
 	previewBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
+	sYOffset = sYOffset - (SETTINGS_BUTTON_HEIGHT + SETTINGS_BLOCK_GAP)
 
 	-- Experimental: Native Stack Binding (A/B toggle, see CHANGE-TRACKER.md)
-	local nativeStackTitle = settingsFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
-	nativeStackTitle:SetPoint("TOPLEFT", 5, -310)
-	nativeStackTitle:SetText("Experimental")
+	sYOffset = add_section_header(settingsFrame, sYOffset, "Experimental", nil, 500)
 
 	local nativeStackCheckbox = CreateFrame("CheckButton", nil, settingsFrame, "UICheckButtonTemplate")
 	nativeStackCheckbox:SetSize(24, 24)
-	nativeStackCheckbox:SetPoint("TOPLEFT", 0, -335)
+	nativeStackCheckbox:SetPoint("TOPLEFT", 0, sYOffset)
 	nativeStackCheckbox:SetChecked(configs.useNativeStackBinding == true)
 	nativeStackCheckbox:SetScript("OnClick", function(self)
 		configs.useNativeStackBinding = self:GetChecked() and true or false
@@ -3077,6 +2958,58 @@ local function create_options_frame()
 	nativeStackHelp:SetJustifyH("LEFT")
 	nativeStackHelp:SetText("Alternate buff stack tracking using the 12.1+ AuraContainer engine API instead of the classic C_UnitAuras query. Experimental and untested in combat - see CHANGE-TRACKER.md.")
 	nativeStackHelp:SetTextColor(0.55, 0.55, 0.55)
+	sYOffset = sYOffset - (SETTINGS_BUTTON_HEIGHT + 24 + SETTINGS_BLOCK_GAP)
+
+	-- Compact Mode (flow-packed spell/item/buff layout, see CHANGE-TRACKER.md)
+	local compactModeCheckbox = CreateFrame("CheckButton", nil, settingsFrame, "UICheckButtonTemplate")
+	compactModeCheckbox:SetSize(24, 24)
+	compactModeCheckbox:SetPoint("TOPLEFT", 0, sYOffset)
+	compactModeCheckbox:SetChecked(configs.compactMode == true)
+	compactModeCheckbox:SetScript("OnClick", function(self)
+		configs.compactMode = self:GetChecked() and true or false
+		if settings then
+			settings.compactMode = configs.compactMode  -- persist (SavedVariablesPerCharacter)
+		end
+		print("|cff00ff00GCDIndicator:|r Compact mode " .. (configs.compactMode and "ON" or "OFF"))
+		-- Box layout (icon square present/absent) is baked in at creation
+		-- time, not just position, so toggling needs a full rebuild.
+		if GCDI.rebuild_spell_bars then
+			GCDI.rebuild_spell_bars()  -- also rebuilds item bars
+		end
+		if GCDI.rebuild_buff_bars then
+			GCDI.rebuild_buff_bars()
+		end
+	end)
+	local compactModeLabel = settingsFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+	compactModeLabel:SetPoint("LEFT", compactModeCheckbox, "RIGHT", 5, 0)
+	compactModeLabel:SetText("Compact layout (flow spells/items and buffs left-to-right)")
+	local compactModeHelp = settingsFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+	compactModeHelp:SetPoint("TOPLEFT", compactModeLabel, "BOTTOMLEFT", 0, -4)
+	compactModeHelp:SetWidth(440)
+	compactModeHelp:SetJustifyH("LEFT")
+	compactModeHelp:SetText("Packs spell, item, and buff boxes into one continuous left-to-right flow with a 2px gap, wrapping to a new row instead of using 3 fixed columns. Icon squares are dropped to save space. Also update the AHK CompactMode toggle to match, or pixel reads will desync.")
+	compactModeHelp:SetTextColor(0.55, 0.55, 0.55)
+	sYOffset = sYOffset - (SETTINGS_BUTTON_HEIGHT + 24 + SETTINGS_BLOCK_GAP)
+
+	-- Export bar positions (diagnostic: cross-check against what the AHK
+	-- side computes for the same spell/item/buff list, see
+	-- export_bar_positions() in GCDIndicator.lua)
+	local exportBarsBtn = CreateFrame("Button", nil, settingsFrame, "UIPanelButtonTemplate")
+	exportBarsBtn:SetSize(180, SETTINGS_BUTTON_HEIGHT)
+	exportBarsBtn:SetPoint("TOPLEFT", 0, sYOffset)
+	exportBarsBtn:SetText("Export Bar Positions")
+	exportBarsBtn:SetScript("OnClick", function()
+		if GCDI.export_bar_positions then
+			show_export_import_popup("export", GCDI.export_bar_positions(), "Bar Position Export")
+		end
+	end)
+	exportBarsBtn:SetScript("OnEnter", function(self)
+		GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+		GameTooltip:SetText("Export Bar Positions")
+		GameTooltip:AddLine("Dumps every visible bar's position/size for cross-checking against the AHK script.", 1, 1, 1, true)
+		GameTooltip:Show()
+	end)
+	exportBarsBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
 
 	-- PROFILES FRAME
 	local profilesFrame = CreateFrame("Frame", nil, optionsFrame)
@@ -3093,9 +3026,8 @@ local function create_options_frame()
 	closeBtn:SetScript("OnClick", function() optionsFrame:Hide() end)
 	
 	table.insert(UISpecialFrames, "GCDIndicatorOptions")
-	
-	currentTab = "gcd"
-	refresh_options_frame()
+
+	switch_tab("gcd")
 	optionsFrame:Show()
 end
 
