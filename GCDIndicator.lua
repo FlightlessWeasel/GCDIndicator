@@ -603,6 +603,35 @@ end
 
 GCDI.should_track_spell_icon = should_track_spell_icon
 
+-- Off-GCD is rare (most spells trigger the GCD), so this defaults false
+-- (on-GCD) unless the user explicitly flags a spell otherwise. Metadata
+-- only - doesn't affect the addon's own cooldown-swipe display (that's
+-- already GCD-agnostic); exists so the companion-script config export
+-- (export_ahk_config) can generate an accurate hasGCD field instead of
+-- leaving it manual.
+local function is_spell_off_gcd(spellID)
+	if not settings then return false end
+	local spellSettings = settings.spellSettings[spellID]
+	if spellSettings and spellSettings.offGCD == true then
+		return true
+	end
+	return false
+end
+
+GCDI.is_spell_off_gcd = is_spell_off_gcd
+
+-- Same as is_spell_off_gcd but for the Items tab/catalog.
+local function is_item_off_gcd(itemKey)
+	if not settings then return false end
+	local itemSettings = settings.itemSettings[itemKey]
+	if itemSettings and itemSettings.offGCD == true then
+		return true
+	end
+	return false
+end
+
+GCDI.is_item_off_gcd = is_item_off_gcd
+
 -- Check if spell is configured as self-cast (no range indicator needed)
 local function is_spell_self_cast(spellID)
 	if not settings then return false end
@@ -2798,8 +2827,9 @@ GCDI.reposition_all = reposition_all
 -- Debug/cross-check export: dumps every currently-shown bar's position
 -- (relative to main_frame.anchor, same coordinate space reposition_all()
 -- positions everything in) and size, so it can be diffed against what the
--- AHK side computes for the same spell/item/buff list. Not for general use -
--- purely a diagnostic added to track down compact-mode AHK/addon drift.
+-- companion script computes for the same spell/item/buff list. Not for
+-- general use - purely a diagnostic added to track down compact-mode
+-- companion-script/addon drift.
 local function export_bar_positions()
 	local lines = {}
 	table.insert(lines, "GCDIndicator bar position export")
@@ -2867,6 +2897,240 @@ local function export_bar_positions()
 	return table.concat(lines, "\n")
 end
 GCDI.export_bar_positions = export_bar_positions
+
+local function ahk_string_escape(s)
+	return (tostring(s or ""):gsub('"', '\\"'))
+end
+
+-- Companion-script names are squished CamelCase with no punctuation (e.g.
+-- "SunderingRoar", "FrenziedRegen"), and buffs are suffixed "Buff" to avoid
+-- colliding with a same-named spell's cooldown entry (e.g. "IronfurBuff" vs.
+-- the "Ironfur" spell, both of which would otherwise share the bare name
+-- "Ironfur" in the companion script's per-name pixel-state tracking). The
+-- addon's catalog names are full WoW spell/item names with spaces and
+-- punctuation ("Sundering Roar", "Incarnation: Guardian of Ursoc"), so
+-- normalize them to match before exporting.
+local function ahk_normalize_name(name, isBuff)
+	local clean = tostring(name or ""):gsub("[^%w]", "")
+	if isBuff and not clean:find("Buff") then
+		clean = clean .. "Buff"
+	end
+	return clean
+end
+
+-- Resource bars: name -> live power-type lookup, reusing the exact
+-- Enum.PowerType each resource's own update function already uses elsewhere
+-- in this file (search "Enum.PowerType." to cross-check), so this doesn't
+-- risk misremembering an enum ID. "stagger" (Brewmaster Monk) has no power
+-- type at all - it's computed as a % of max health - so it's left out here.
+local GCDI_RESOURCE_POWER_TYPE = {
+	rage = Enum.PowerType.Rage,
+	energy = Enum.PowerType.Energy,
+	mana = Enum.PowerType.Mana,
+	focus = Enum.PowerType.Focus,
+	runicPower = Enum.PowerType.RunicPower,
+	insanity = Enum.PowerType.Insanity,
+	maelstrom = Enum.PowerType.Maelstrom,
+	fury = Enum.PowerType.Fury,
+	pain = Enum.PowerType.Pain,
+	astralPower = Enum.PowerType.LunarPower,
+	comboPoints = Enum.PowerType.ComboPoints,
+	runes = Enum.PowerType.Runes,
+	soulShards = Enum.PowerType.SoulShards,
+	holyPower = Enum.PowerType.HolyPower,
+	chi = Enum.PowerType.Chi,
+	arcaneCharges = Enum.PowerType.ArcaneCharges,
+	essence = Enum.PowerType.Essence,
+}
+-- Resources the companion script's resource-type map reads as discrete
+-- segments/pips (config shape { name, charges }) rather than a continuous
+-- fill (config shape { name, min, max }) - mirrors that map's "type" field.
+local GCDI_RESOURCE_IS_CHARGES = {
+	runes = true, comboPoints = true, soulShards = true, holyPower = true,
+	chi = true, arcaneCharges = true, essence = true,
+}
+-- Same fixed display order reposition_all() uses (health first, then this list).
+local GCDI_RESOURCE_ORDER = {
+	"mana", "rage", "energy", "focus", "runicPower", "runes",
+	"comboPoints", "soulShards", "holyPower", "chi", "arcaneCharges",
+	"insanity", "maelstrom", "fury", "pain", "astralPower", "essence",
+	"stagger",
+}
+
+-- Workflow export: generates companion-script array-literal text matching
+-- the companion script's spell/buff/resource list shape, from the live
+-- addon state - paste over the companion script's config to keep it in
+-- sync instead of hand-editing every time spells, items, buffs, resources,
+-- or their order change. Order matches get_ordered_spells()/
+-- GCDI.get_ordered_items()/get_ordered_buffs() - the same order
+-- reposition_all() uses, so this also fixes the class of order-mismatch bug
+-- documented in CHANGE-TRACKER.md's compact-mode entry.
+--
+-- What this CANNOT derive (the addon has no concept of these - fill in by
+-- hand after pasting):
+--   - key: the physical keybind the rotation script presses.
+--   - chargeColor/chargeBlackThreshold per-item overrides (e.g. dim charge
+--     pips on some potions/trinkets) - pure companion-script-side
+--     pixel-brightness tuning with no addon-side equivalent at all. If your
+--     existing config has these on an item, copy them back in after pasting
+--     or you'll lose that item's charge detection.
+--   - Global bar / stance list (GetXGlobalBarConfig) - not exported. It's
+--     static per class/spec (doesn't change with your settings), so
+--     there's little to keep in sync there.
+-- What this derives from a user-set per-spell/item flag ("Off GCD" checkbox
+-- on the Spells/Items tabs, settings.spellSettings[spellID].offGCD /
+-- settings.itemSettings[itemKey].offGCD - defaults false/on-GCD, since
+-- off-GCD is rare): hasGCD (spells and items) - emitted as `hasGCD: false`
+-- only for entries flagged off-GCD; omitted otherwise (the companion
+-- script's own default is true). There's no reliable static WoW API for
+-- "does this spell trigger the GCD" - the only real detection is
+-- retroactive (cast it, then check if the GCD spell's cooldown started at
+-- the same moment), which isn't useful for a one-shot config generator -
+-- so this is game-knowledge you flag by hand once, not something
+-- auto-detected.
+-- What this infers, not confirms (see CHANGE-TRACKER.md - the mapping
+-- between should_track_spell_icon()/should_show_duration_bar() and the
+-- companion script's hasProc/hasPandemic fields is a structural guess based
+-- on box ordering, not verified in-game):
+--   - hasProc (spells): from should_track_spell_icon(spellID).
+--   - hasPandemic (buffs): from GCDI.should_show_duration_bar(buffKey).
+-- What's a live snapshot, not a stable config value: resource max/charge
+-- counts below reflect UnitPowerMax() at the moment you export - some (rage
+-- especially, via talents like Vengeance) can change with talents/buffs, so
+-- treat these as a starting point to verify, not gospel.
+-- Name normalization (see ahk_normalize_name): the addon's catalog names
+-- are full WoW names with spaces/punctuation ("Sundering Roar"); exported
+-- names strip everything but letters/digits to match the companion
+-- script's squished-CamelCase convention, and buffs get a "Buff" suffix
+-- (if not already present) so a buff never collides with a same-named
+-- spell's entry (e.g. "IronfurBuff" vs. the "Ironfur" spell).
+-- variant: "Primary" or "Secondary" - which spec slot this dump represents
+-- (the companion script's dual-spec structure: GetPrimaryXList() vs.
+-- GetSecondaryXList()/GetSecondaryResourceConfig()). The addon only ever
+-- reflects whatever spec/build is currently active in-game, so the caller
+-- must say which slot that corresponds to; defaults to "Primary" if omitted
+-- or unrecognized.
+local function export_ahk_config(variant)
+	if variant ~= "Primary" and variant ~= "Secondary" then
+		variant = "Primary"
+	end
+	local lines = {}
+	table.insert(lines, "; Generated by GCDIndicator /gcdopt exportrotation (" .. variant .. ") - paste over Get" .. variant .. "SpellList()/Get" .. variant .. "BuffList()/Get" .. variant .. "ResourceConfig() in your companion script.")
+	table.insert(lines, "; key/chargeColor/chargeBlackThreshold are NOT derived from the addon - fill them in by hand.")
+	table.insert(lines, "; hasGCD: false is only emitted for spells/items flagged 'Off GCD' in the Spells/Items tabs - defaults true (on-GCD) otherwise.")
+	table.insert(lines, "; Names are stripped of spaces/punctuation to match your companion script's naming style; buffs get a 'Buff' suffix so they don't collide with a same-named spell.")
+	table.insert(lines, "; hasProc/hasPandemic are inferred (trackIcon/duration-bar), not confirmed - see CHANGE-TRACKER.md.")
+	table.insert(lines, "; Resource max/charges values are a live snapshot (e.g. rage max can change with talents) - verify, don't assume stable.")
+	table.insert(lines, "")
+	table.insert(lines, "Get" .. variant .. "SpellList() {")
+	table.insert(lines, "\treturn [")
+
+	for _, spellID in ipairs(get_ordered_spells()) do
+		local catalogEntry = GCDI.spellCatalog[spellID]
+		if catalogEntry and GCDI.is_spell_enabled(spellID) then
+			local actionSlot = GCDI.get_action_slot_for_spell(spellID)
+			local chargeInfo = gcdi_get_spell_charge_info(spellID, actionSlot)
+			local maxCharges = gcdi_effective_max_charge_pips(spellID, chargeInfo)
+			local isSelfCast = is_spell_self_cast(spellID)
+			local trackIcon = should_track_spell_icon(spellID)
+
+			local parts = {
+				string.format('name: "%s"', ahk_string_escape(ahk_normalize_name(catalogEntry.name, false))),
+				'key: "TODO"',
+				"hasRange: " .. tostring(not isSelfCast),
+			}
+			if maxCharges > 1 then
+				table.insert(parts, "hasCharges: true")
+				table.insert(parts, "maxCharges: " .. maxCharges)
+			end
+			if trackIcon then
+				table.insert(parts, "hasProc: true")
+			end
+			if is_spell_off_gcd(spellID) then
+				table.insert(parts, "hasGCD: false")
+			end
+			table.insert(lines, "\t\t{ " .. table.concat(parts, ", ") .. " },")
+		end
+	end
+
+	for _, itemKey in ipairs(GCDI.get_ordered_items()) do
+		local catalogEntry = GCDI.itemCatalog[itemKey]
+		if catalogEntry then
+			local parts = {
+				string.format('name: "%s"', ahk_string_escape(ahk_normalize_name(catalogEntry.name, false))),
+				'key: "TODO"',
+				"hasRange: false",
+				"isItem: true",
+			}
+			if should_show_item_charges(itemKey) then
+				table.insert(parts, "hasCharges: true")
+				table.insert(parts, "maxCharges: 1")
+			end
+			if is_item_off_gcd(itemKey) then
+				table.insert(parts, "hasGCD: false")
+			end
+			table.insert(lines, "\t\t{ " .. table.concat(parts, ", ") .. " },")
+		end
+	end
+
+	table.insert(lines, "\t]")
+	table.insert(lines, "}")
+	table.insert(lines, "")
+	table.insert(lines, "Get" .. variant .. "BuffList() {")
+	table.insert(lines, "\treturn [")
+
+	for _, buffKey in ipairs(get_ordered_buffs()) do
+		local catalogEntry = GCDI.buffCatalog[buffKey]
+		if catalogEntry then
+			local showStacks = GCDI.should_show_buff_stacks(buffKey)
+			local maxStacks = GCDI.get_buff_max_stacks_display(buffKey)
+
+			local parts = { string.format('name: "%s"', ahk_string_escape(ahk_normalize_name(catalogEntry.name, true))) }
+			if showStacks and maxStacks > 0 then
+				table.insert(parts, "hasStacks: true")
+				table.insert(parts, "maxStacks: " .. maxStacks)
+			end
+			if GCDI.should_show_duration_bar(buffKey) then
+				table.insert(parts, "hasPandemic: true")
+			end
+			table.insert(lines, "\t\t{ " .. table.concat(parts, ", ") .. " },")
+		end
+	end
+
+	table.insert(lines, "\t]")
+	table.insert(lines, "}")
+	table.insert(lines, "")
+	table.insert(lines, "Get" .. variant .. "ResourceConfig() {")
+	table.insert(lines, "\treturn [")
+
+	if gcdi_is_resource_enabled("health") then
+		table.insert(lines, '\t\t{ name: "health", min: 0, max: 100 },')
+	end
+	for _, name in ipairs(GCDI_RESOURCE_ORDER) do
+		if gcdi_is_resource_enabled(name) then
+			if name == "stagger" then
+				-- No power type - computed as a % of max health, not exportable as min/max/charges.
+				table.insert(lines, string.format('\t\t{ name: "%s" },  ; TODO stagger has no power type, fill in manually', name))
+			else
+				local powerType = GCDI_RESOURCE_POWER_TYPE[name]
+				local liveMax = powerType and UnitPowerMax("player", powerType) or nil
+				if GCDI_RESOURCE_IS_CHARGES[name] then
+					table.insert(lines, string.format('\t\t{ name: "%s", charges: %s },  ; live snapshot, verify',
+						name, liveMax and tostring(liveMax) or '"TODO"'))
+				else
+					table.insert(lines, string.format('\t\t{ name: "%s", min: 0, max: %s },  ; live snapshot, verify',
+						name, liveMax and tostring(liveMax) or '"TODO"'))
+				end
+			end
+		end
+	end
+
+	table.insert(lines, "\t]")
+	table.insert(lines, "}")
+
+	return table.concat(lines, "\n")
+end
+GCDI.export_ahk_config = export_ahk_config
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- SCANNING
@@ -4442,7 +4706,7 @@ SlashCmdList["GCDOPT"] = function(msg)
 		rebuild_buff_bars()
 	elseif msg == "exportbars" then
 		-- Diagnostic dump of every visible bar's position/size, for
-		-- cross-checking against what the AHK side computes. See
+		-- cross-checking against what the companion script computes. See
 		-- export_bar_positions() above reposition_all().
 		local text = export_bar_positions()
 		if GCDI.show_export_import_popup then
@@ -4450,6 +4714,14 @@ SlashCmdList["GCDOPT"] = function(msg)
 		else
 			print("|cff00ff00GCDIndicator:|r " .. text)
 		end
+	elseif msg == "exportrotation" then
+		-- Companion-script config export: generates SpellList/BuffList
+		-- array text from the live catalog/settings state. See
+		-- export_ahk_config() above reposition_all(). Asks Primary vs.
+		-- Secondary first (see the GCDI_EXPORT_ROTATION_CONFIG popup in
+		-- LibGCDI-Options.lua) since the addon only reflects whichever
+		-- spec/build is currently active.
+		StaticPopup_Show("GCDI_EXPORT_ROTATION_CONFIG")
 	elseif msg == "items" then
 		print("|cff00ff00GCDIndicator:|r --- Item Catalog ---")
 		local count = 0

@@ -34,6 +34,27 @@ windows). See `README.md` for the user-facing feature list and slash commands.
   anything it references; add an entry any time you gate new work behind a
   config toggle for A/B testing rather than committing to one approach.
 
+## Companion project: AHK rotation scripts
+
+`../AHK` (sibling repo, not part of this one) contains AutoHotkey v2 scripts
+that read this addon's HUD via screen-pixel sampling (no IPC/file/memory
+channel — pixels only) and drive class rotations from it. See `../AHK/CLAUDE.md`
+for the full pixel protocol. The practical implication for this repo: **any
+change to `GCDI.configs` (size/barHeight/bgPadding/barSpacing), bar/row/column
+layout, or indicator colors (`RESOURCE_COLORS`, status/range/buff/charge
+colors) desyncs the AHK scripts' pixel reads silently** (no crash — wrong
+`CanCast`/stack reads instead). If you touch any of those, flag it to the user
+and check `../AHK/CLAUDE.md`'s mapping table for what needs mirroring on the
+AHK side.
+
+**No mention of AHK inside `GCDIndicator.lua`/`Libs/LibGCDI-Options/LibGCDI-Options.lua`** —
+not in code comments, and not in anything user-visible (chat `print()`
+messages, `GameTooltip` text, button/checkbox labels, slash-command output).
+Refer to it generically as "the companion script" instead. This constraint
+is specific to those two Lua files; this file (`CLAUDE.md`) and
+`CHANGE-TRACKER.md` are developer-only docs, never shipped or rendered
+in-game, and may keep naming AHK explicitly (e.g. the section above).
+
 ## Critical constraints
 
 - **No live WoW client or Lua interpreter in this dev environment.** All

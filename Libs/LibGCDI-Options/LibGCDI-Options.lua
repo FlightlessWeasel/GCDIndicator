@@ -1066,9 +1066,13 @@ local function refresh_spells_tab()
 	local chargePipsHeader = track(acquire_fontstring(scrollChild, "OVERLAY", "GameFontNormalSmall"))
 	chargePipsHeader:SetPoint("TOPLEFT", 354, yOffset)
 	chargePipsHeader:SetText("Charge pips")
-	
+
+	local gcdHeader = track(acquire_fontstring(scrollChild, "OVERLAY", "GameFontNormalSmall"))
+	gcdHeader:SetPoint("TOPLEFT", 468, yOffset)  -- checkbox at row LEFT 468, clear of pip dropdown hit rect
+	gcdHeader:SetText("GCD")
+
 	local orderHeader = track(acquire_fontstring(scrollChild, "OVERLAY", "GameFontNormalSmall"))
-	orderHeader:SetPoint("TOPLEFT", 468, yOffset)  -- clear of pip dropdown hit rect
+	orderHeader:SetPoint("TOPLEFT", 510, yOffset)  -- clear of the "GCD" header text
 	orderHeader:SetText("Order")
 	yOffset = yOffset - 20
 	
@@ -1087,7 +1091,7 @@ local function refresh_spells_tab()
 		
 		-- Ensure spell has settings entry
 		if not settings.spellSettings[spellID] then
-			settings.spellSettings[spellID] = { enabled = true, rangeFallbackYards = nil, selfCast = false, hasNativeRange = nil, trackIcon = false, chargePipOverride = nil }
+			settings.spellSettings[spellID] = { enabled = true, rangeFallbackYards = nil, selfCast = false, hasNativeRange = nil, trackIcon = false, chargePipOverride = nil, offGCD = false }
 		end
 		local spellSettings = settings.spellSettings[spellID]
 		
@@ -1120,9 +1124,9 @@ local function refresh_spells_tab()
 		hasNativeRange = hasNativeRange or false
 		
 		local row = acquire_frame("Frame", scrollChild)
-		row:SetSize(540, 30)
+		row:SetSize(600, 30)
 		row:SetPoint("TOPLEFT", 10, yOffset)
-		
+
 		-- Enabled checkbox
 		local checkbox = acquire_frame("CheckButton", row, "UICheckButtonTemplate")
 		checkbox:SetSize(24, 24)
@@ -1189,7 +1193,30 @@ local function refresh_spells_tab()
 			GameTooltip:Show()
 		end)
 		trackIconCheckbox:SetScript("OnLeave", function() GameTooltip:Hide() end)
-		
+
+		-- Off GCD checkbox. Metadata only: doesn't affect the addon's own
+		-- display, only feeds the companion-script config export's hasGCD
+		-- field (see is_spell_off_gcd in GCDIndicator.lua).
+		local offGcdCheckbox = acquire_frame("CheckButton", row, "UICheckButtonTemplate")
+		offGcdCheckbox:SetSize(24, 24)
+		offGcdCheckbox:SetPoint("LEFT", 468, 0)
+		offGcdCheckbox:SetChecked(spellSettings.offGCD == true)
+		offGcdCheckbox:SetScript("OnClick", function(self)
+			if not GCDI.settings.spellSettings[spellID] then
+				GCDI.settings.spellSettings[spellID] = {}
+			end
+			GCDI.settings.spellSettings[spellID].offGCD = self:GetChecked()
+			GCDI.auto_save_to_profile()
+		end)
+		offGcdCheckbox:SetScript("OnEnter", function(self)
+			GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+			GameTooltip:SetText("Off GCD")
+			GameTooltip:AddLine("Check if this spell does NOT trigger the global cooldown.", 1, 1, 1, true)
+			GameTooltip:AddLine("Rare - most spells are on GCD. Used only by the companion-script config export (hasGCD field).", 0.7, 0.7, 0.7, true)
+			GameTooltip:Show()
+		end)
+		offGcdCheckbox:SetScript("OnLeave", function() GameTooltip:Hide() end)
+
 		-- Spell icon
 		local icon = acquire_texture(row, "ARTWORK")
 		icon:SetSize(20, 20)
@@ -1392,7 +1419,7 @@ local function refresh_spells_tab()
 		-- Reorder buttons
 		local upBtn = acquire_frame("Button", row, "UIPanelButtonTemplate")
 		upBtn:SetSize(22, 18)
-		upBtn:SetPoint("LEFT", 468, 0)
+		upBtn:SetPoint("LEFT", 510, 0)
 		upBtn:SetText("Up")
 		upBtn:SetNormalFontObject("GameFontNormalSmall")
 		upBtn:SetHighlightFontObject("GameFontHighlightSmall")
@@ -1486,10 +1513,14 @@ local function refresh_items_tab()
 	local itemNameHeader = track(acquire_fontstring(scrollChild, "OVERLAY", "GameFontNormalSmall"))
 	itemNameHeader:SetPoint("TOPLEFT", 70, yOffset)
 	itemNameHeader:SetText("Item")
-	
+
 	local orderHeader = track(acquire_fontstring(scrollChild, "OVERLAY", "GameFontNormalSmall"))
 	orderHeader:SetPoint("TOPLEFT", 350, yOffset)
 	orderHeader:SetText("Order")
+
+	local gcdHeader = track(acquire_fontstring(scrollChild, "OVERLAY", "GameFontNormalSmall"))
+	gcdHeader:SetPoint("TOPLEFT", 430, yOffset)  -- checkbox at row LEFT 420, clear of the Up/Dn/Bot reorder buttons
+	gcdHeader:SetText("GCD")
 	yOffset = yOffset - 20
 	
 	-- Create rows
@@ -1520,7 +1551,7 @@ local function refresh_items_tab()
 		local itemSettings = settings.itemSettings and settings.itemSettings[itemKey]
 		if not itemSettings then
 			if not settings.itemSettings then settings.itemSettings = {} end
-			settings.itemSettings[itemKey] = { enabled = true }
+			settings.itemSettings[itemKey] = { enabled = true, offGCD = false }
 			itemSettings = settings.itemSettings[itemKey]
 		end
 		
@@ -1541,9 +1572,9 @@ local function refresh_items_tab()
 		end
 		
 		local row = acquire_frame("Frame", scrollChild)
-		row:SetSize(450, 30)
+		row:SetSize(480, 30)
 		row:SetPoint("TOPLEFT", 10, yOffset)
-		
+
 		-- Enabled checkbox
 		local checkbox = acquire_frame("CheckButton", row, "UICheckButtonTemplate")
 		checkbox:SetSize(24, 24)
@@ -1662,7 +1693,30 @@ local function refresh_items_tab()
 			GCDI.move_item_to_bottom(itemKey)
 			GCDI.refresh_options_frame()
 		end)
-		
+
+		-- Off GCD checkbox. Metadata only: doesn't affect the addon's own
+		-- display, only feeds the companion-script config export's hasGCD
+		-- field (see is_item_off_gcd in GCDIndicator.lua).
+		local offGcdCheckbox = acquire_frame("CheckButton", row, "UICheckButtonTemplate")
+		offGcdCheckbox:SetSize(24, 24)
+		offGcdCheckbox:SetPoint("LEFT", 420, 0)
+		offGcdCheckbox:SetChecked(itemSettings.offGCD == true)
+		offGcdCheckbox:SetScript("OnClick", function(self)
+			if not GCDI.settings.itemSettings[itemKey] then
+				GCDI.settings.itemSettings[itemKey] = {}
+			end
+			GCDI.settings.itemSettings[itemKey].offGCD = self:GetChecked()
+			GCDI.auto_save_to_profile()
+		end)
+		offGcdCheckbox:SetScript("OnEnter", function(self)
+			GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+			GameTooltip:SetText("Off GCD")
+			GameTooltip:AddLine("Check if this item does NOT trigger the global cooldown.", 1, 1, 1, true)
+			GameTooltip:AddLine("Rare - most on-use items are on GCD. Used only by the companion-script config export (hasGCD field).", 0.7, 0.7, 0.7, true)
+			GameTooltip:Show()
+		end)
+		offGcdCheckbox:SetScript("OnLeave", function() GameTooltip:Hide() end)
+
 		itemRows[i] = row
 		yOffset = yOffset - 35
 	end
@@ -2129,6 +2183,34 @@ StaticPopupDialogs["GCDI_DELETE_PROFILE_CONFIRM"] = {
 			if GCDI.refresh_options_frame then
 				GCDI.refresh_options_frame()
 			end
+		end
+	end,
+	timeout = 0,
+	whileDead = true,
+	hideOnEscape = true,
+	preferredIndex = 3,
+}
+
+-- Export rotation config: ask which spec slot (Primary/Secondary) this
+-- export represents - the addon only ever reflects whichever spec/build is
+-- currently active in-game, so the user has to say which companion-script
+-- function block (GetPrimaryXList vs GetSecondaryXList) it should replace.
+-- Note: Escape (hideOnEscape) triggers OnCancel, same as clicking
+-- "Secondary" - there's no true no-op "cancel" option here, but either
+-- choice is harmless (just opens a copyable text popup, doesn't change any
+-- setting), so this is a rough edge, not a real risk.
+StaticPopupDialogs["GCDI_EXPORT_ROTATION_CONFIG"] = {
+	text = "Export current spells/items/buffs/resources as which spec slot?",
+	button1 = "Primary",
+	button2 = "Secondary",
+	OnAccept = function()
+		if GCDI.export_ahk_config and GCDI.show_export_import_popup then
+			GCDI.show_export_import_popup("export", GCDI.export_ahk_config("Primary"), "Rotation Config Export (Primary)")
+		end
+	end,
+	OnCancel = function()
+		if GCDI.export_ahk_config and GCDI.show_export_import_popup then
+			GCDI.show_export_import_popup("export", GCDI.export_ahk_config("Secondary"), "Rotation Config Export (Secondary)")
 		end
 	end,
 	timeout = 0,
@@ -2739,7 +2821,7 @@ local function create_options_frame()
 	
 	-- Main frame
 	optionsFrame = CreateFrame("Frame", "GCDIndicatorOptions", UIParent, "BasicFrameTemplateWithInset")
-	optionsFrame:SetSize(590, 500)
+	optionsFrame:SetSize(670, 500)
 	optionsFrame:SetPoint("CENTER")
 	optionsFrame:SetMovable(true)
 	optionsFrame:EnableMouse(true)
@@ -2788,7 +2870,7 @@ local function create_options_frame()
 	optionsFrame.spellsScrollFrame = spellsScrollFrame
 	
 	local spellsScrollChild = CreateFrame("Frame", nil, spellsScrollFrame)
-	spellsScrollChild:SetSize(540, 600)
+	spellsScrollChild:SetSize(600, 600)
 	spellsScrollFrame:SetScrollChild(spellsScrollChild)
 	optionsFrame.spellsScrollChild = spellsScrollChild
 	
@@ -2800,7 +2882,7 @@ local function create_options_frame()
 	optionsFrame.itemsScrollFrame = itemsScrollFrame
 	
 	local itemsScrollChild = CreateFrame("Frame", nil, itemsScrollFrame)
-	itemsScrollChild:SetSize(450, 600)
+	itemsScrollChild:SetSize(480, 600)
 	itemsScrollFrame:SetScrollChild(itemsScrollChild)
 	optionsFrame.itemsScrollChild = itemsScrollChild
 	
@@ -2987,12 +3069,12 @@ local function create_options_frame()
 	compactModeHelp:SetPoint("TOPLEFT", compactModeLabel, "BOTTOMLEFT", 0, -4)
 	compactModeHelp:SetWidth(440)
 	compactModeHelp:SetJustifyH("LEFT")
-	compactModeHelp:SetText("Packs spell, item, and buff boxes into one continuous left-to-right flow with a 2px gap, wrapping to a new row instead of using 3 fixed columns. Icon squares are dropped to save space. Also update the AHK CompactMode toggle to match, or pixel reads will desync.")
+	compactModeHelp:SetText("Packs spell, item, and buff boxes into one continuous left-to-right flow with a 2px gap, wrapping to a new row instead of using 3 fixed columns. Icon squares are dropped to save space. Also update your companion script's compact mode toggle to match, or pixel reads will desync.")
 	compactModeHelp:SetTextColor(0.55, 0.55, 0.55)
 	sYOffset = sYOffset - (SETTINGS_BUTTON_HEIGHT + 24 + SETTINGS_BLOCK_GAP)
 
-	-- Export bar positions (diagnostic: cross-check against what the AHK
-	-- side computes for the same spell/item/buff list, see
+	-- Export bar positions (diagnostic: cross-check against what the
+	-- companion script computes for the same spell/item/buff list, see
 	-- export_bar_positions() in GCDIndicator.lua)
 	local exportBarsBtn = CreateFrame("Button", nil, settingsFrame, "UIPanelButtonTemplate")
 	exportBarsBtn:SetSize(180, SETTINGS_BUTTON_HEIGHT)
@@ -3006,10 +3088,31 @@ local function create_options_frame()
 	exportBarsBtn:SetScript("OnEnter", function(self)
 		GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
 		GameTooltip:SetText("Export Bar Positions")
-		GameTooltip:AddLine("Dumps every visible bar's position/size for cross-checking against the AHK script.", 1, 1, 1, true)
+		GameTooltip:AddLine("Dumps every visible bar's position/size for cross-checking against your companion script.", 1, 1, 1, true)
 		GameTooltip:Show()
 	end)
 	exportBarsBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
+
+	-- Export rotation config (generates spell/item/buff/resource array text
+	-- from the live catalog/settings state, to paste into a companion
+	-- rotation script instead of hand-maintaining it - see
+	-- export_ahk_config() in GCDIndicator.lua)
+	local exportAhkBtn = CreateFrame("Button", nil, settingsFrame, "UIPanelButtonTemplate")
+	exportAhkBtn:SetSize(180, SETTINGS_BUTTON_HEIGHT)
+	exportAhkBtn:SetPoint("LEFT", exportBarsBtn, "RIGHT", 10, 0)
+	exportAhkBtn:SetText("Export Rotation Config")
+	exportAhkBtn:SetScript("OnClick", function()
+		StaticPopup_Show("GCDI_EXPORT_ROTATION_CONFIG")
+	end)
+	exportAhkBtn:SetScript("OnEnter", function(self)
+		GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+		GameTooltip:SetText("Export Rotation Config")
+		GameTooltip:AddLine("Generates spell/item/buff array text from your current spells/items/buffs and their order.", 1, 1, 1, true)
+		GameTooltip:AddLine("Asks whether to label it Primary or Secondary spec first.", 1, 1, 1, true)
+		GameTooltip:AddLine("key/hasGCD fields still need to be filled in by hand - the addon has no concept of rotation keybinds.", 0.8, 0.6, 0.2, true)
+		GameTooltip:Show()
+	end)
+	exportAhkBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
 
 	-- PROFILES FRAME
 	local profilesFrame = CreateFrame("Frame", nil, optionsFrame)
