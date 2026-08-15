@@ -439,6 +439,8 @@ local function refresh_gcd_tab()
 			showGcd = true,
 			showCombat = true,
 			showAggro = true,
+			showMobCount = true,
+			showDispel = true,
 		}
 	end
 	
@@ -492,7 +494,7 @@ local function refresh_gcd_tab()
 	local rangeLabel = track(acquire_fontstring(frame, "OVERLAY", "GameFontNormal"))
 	rangeLabel:SetPoint("TOPLEFT", 10, yOffset)
 	rangeLabel:SetText("Detection Range:")
-	
+
 	local rangeDropdown = track(acquire_frame("Frame", frame, "UIDropDownMenuTemplate"))
 	rangeDropdown:SetPoint("LEFT", rangeLabel, "RIGHT", -5, -2)
 	UIDropDownMenu_SetWidth(rangeDropdown, 100)
@@ -638,12 +640,12 @@ local function refresh_gcd_tab()
 	local RANGE_DROPDOWN_WIDTH = 165
 	local RANGE_LABEL_GAP = 8
 	local RANGE_LABEL_WIDTH = RANGE_DROPDOWN_LEFT - RANGE_LABEL_GAP - 10
-	
+
 	local globalLabel = track(acquire_fontstring(frame, "OVERLAY", "GameFontNormalSmall"))
 	globalLabel:SetWidth(RANGE_LABEL_WIDTH)
 	globalLabel:SetJustifyH("RIGHT")
 	globalLabel:SetText("Global Range:")
-	
+
 	local globalDropdown = track(create_range_dropdown(frame, RANGE_DROPDOWN_WIDTH, settings.globalRangeFallbackYards or 5, function(yards)
 		settings.globalRangeFallbackYards = yards
 		GCDI.UpdateRangeIndicators()

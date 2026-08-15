@@ -1678,7 +1678,7 @@ local function create_buff_bar(buffKey, spellName, texture, tooltipSpellID)
 	local showStacks = GCDI.should_show_buff_stacks(buffKey)
 	-- Max segments + bar width: options only. Live stack count is never used to size the bar.
 	local maxStacks = GCDI.get_buff_max_stacks_display(buffKey)
-	
+
 	-- Check if we should show duration bar for this buff
 	local showDurationBar = GCDI.should_show_duration_bar(buffKey)
 
@@ -1724,16 +1724,16 @@ local function create_buff_bar(buffKey, spellName, texture, tooltipSpellID)
 	local stackBar = nil
 	local stackBarMax = nil
 	local lastElement = activeIndicator
-	
+
 	if showStacks and maxStacks > 0 then
 		stackBarMax = maxStacks
 		local separatorWidth = 2
 		local stackBarWidth = maxStacks * barSize + (maxStacks - 1) * separatorWidth
-		
+
 		local stackArea = CreateFrame("Frame", nil, container)
 		stackArea:SetSize(stackBarWidth, barSize)
 		stackArea:SetPoint("LEFT", activeIndicator, "RIGHT", 2, 0)
-		
+
 		local sb = CreateFrame("StatusBar", nil, stackArea)
 		sb:SetPoint("TOPLEFT", stackArea, "TOPLEFT", 0, 0)
 		sb:SetPoint("BOTTOMRIGHT", stackArea, "BOTTOMRIGHT", 0, 0)
@@ -1745,11 +1745,11 @@ local function create_buff_bar(buffKey, spellName, texture, tooltipSpellID)
 		sb:SetStatusBarColor(BUFF_COLORS.stackSegment[1], BUFF_COLORS.stackSegment[2], BUFF_COLORS.stackSegment[3], 1)
 		sb:SetMinMaxValues(0, maxStacks)
 		sb:SetValue(0)
-		
+
 		local separatorFrame = CreateFrame("Frame", nil, stackArea)
 		separatorFrame:SetAllPoints(stackArea)
 		separatorFrame:SetFrameLevel(stackArea:GetFrameLevel() + 10)
-		
+
 		local separators = {}
 		for i = 1, 9 do
 			local sep = separatorFrame:CreateTexture(nil, "OVERLAY")
@@ -1758,7 +1758,7 @@ local function create_buff_bar(buffKey, spellName, texture, tooltipSpellID)
 			sep:Hide()
 			separators[i] = sep
 		end
-		
+
 		stackBar = {
 			bar = sb,
 			separatorFrame = separatorFrame,
@@ -2544,7 +2544,7 @@ end
 update_dispel_indicator = function()
 	if previewMode then return end
 	if not main_frame or not main_frame.dispelbar then return end
-	
+
 	local hasDispel = player_has_dispellable_debuff_on_self()
 
 	-- Driven by UNIT_AURA plus a low-rate safety poll; only repaint on transition.
@@ -3878,6 +3878,7 @@ local function on_event(self, event, arg1, arg2, ...)
 		update_range_indicators()
 		detect_native_range_for_spells()  -- Auto-detect native range when targeting
 		update_aggro_indicator()
+		update_dispel_indicator()
 		
 	elseif event == "UNIT_THREAT_SITUATION_UPDATE" then
 		update_aggro_indicator()
@@ -3894,6 +3895,9 @@ local function on_event(self, event, arg1, arg2, ...)
 		if arg1 == "player" then
 			-- Defer: see schedule_update_all_buff_bars_after_aura (CooldownViewer taint / secret spellID compare)
 			schedule_update_all_buff_bars_after_aura()
+		end
+		if arg1 == "player" then
+			update_dispel_indicator()
 		end
 		
 	elseif event == "UNIT_SPELLCAST_SUCCEEDED" then
@@ -4188,6 +4192,7 @@ local function init()
 	sep6:SetPoint("LEFT", mobcountbar, "RIGHT", 0, 0)
 	sep6:SetColorTexture(0, 0, 0, 1)
 	
+	-- 7th indicator: player has a dispellable debuff (see player_has_dispellable_debuff_on_self above)
 	local dispelbar = CreateFrame("StatusBar", nil, gcdCombatContainer)
 	dispelbar:SetStatusBarTexture("Interface\\Buttons\\WHITE8X8")
 	dispelbar:GetStatusBarTexture():SetHorizTile(false)
@@ -4263,6 +4268,7 @@ local function init()
 	update_all_resources()
 	update_stance_indicator()
 	update_aggro_indicator()
+	update_dispel_indicator()
 	
 	local events = {
 		"SPELL_UPDATE_COOLDOWN",
@@ -4611,7 +4617,7 @@ function GCDI.toggle_preview_mode()
 		if main_frame.stanceIndicator then
 			main_frame.stanceIndicator:SetColorTexture(0.5, 0.3, 0, 1)  -- Bear form color
 		end
-		
+
 		print("|cff00ff00GCDIndicator:|r Preview mode |cff00ff00ON|r - All bars filled")
 		if configs.debugMode and resourceBars.health and resourceBars.health.healAbsorbBar then
 			print("|cff888888GCDIndicator:|r Debug: health 60/100 + heal absorb 25 (plain numbers for layout; real secrets only come from combat APIs)|r")
@@ -4659,6 +4665,8 @@ function GCDI.toggle_preview_mode()
 		
 		-- Update aggro indicator
 		update_aggro_indicator()
+		update_mob_count_indicator()
+		update_dispel_indicator()
 		
 		-- Force update all tracked elements
 		update_all_spell_bars()
