@@ -5,16 +5,9 @@ on:
     types:
       - opened
       - synchronize
-  pull_request_review:
-    types:
-      - submitted
 
 permissions:
   pull-requests: write
-
-concurrency:
-  group: copilot-review-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
 
 jobs:
   request-review:
@@ -27,39 +20,9 @@ jobs:
       - uses: actions/github-script@v7
         with:
           script: |
-            if (!context.payload.pull_request.draft) {
-              await github.graphql(
-                `mutation($pullRequestId: ID!) {
-                  convertPullRequestToDraft(input: {pullRequestId: $pullRequestId}) {
-                    pullRequest { id }
-                  }
-                }`,
-                {pullRequestId: context.payload.pull_request.node_id},
-              );
-            }
-
             await github.rest.pulls.requestReviewers({
               owner: context.repo.owner,
               repo: context.repo.repo,
               pull_number: context.payload.pull_request.number,
               reviewers: ["copilot-pull-request-reviewer[bot]"],
             });
-  release-review-gate:
-    name: Release Copilot Review Gate
-    if: >-
-      github.event_name == 'pull_request_review' &&
-      github.event.pull_request.head.repo.full_name == github.repository &&
-      github.event.review.user.login == 'copilot-pull-request-reviewer[bot]'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/github-script@v7
-        with:
-          script: |
-            await github.graphql(
-              `mutation($pullRequestId: ID!) {
-                markPullRequestReadyForReview(input: {pullRequestId: $pullRequestId}) {
-                  pullRequest { id }
-                }
-              }`,
-              {pullRequestId: context.payload.pull_request.node_id},
-            );
