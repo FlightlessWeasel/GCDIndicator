@@ -31,6 +31,7 @@ local currentTab = "gcd"
 
 -- Forward declarations
 local refresh_profiles_tab
+local refresh_settings_tab
 local switch_tab
 
 -- ═══════════════════════════════════════════════════════════════════════════
@@ -190,6 +191,201 @@ local function reset_track_list(list)
 	wipe(list)
 	activeTrackList = list
 	return list
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- REORDERABLE ROWS (shared by Spells/Items/Buffs tabs)
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- Replaces the old per-tab Up/Down/Bottom button triplet with one drag-handle
+-- implementation shared by all three tabs. A drag never calls
+-- refresh_options_frame()/reset_track_list() - it only SetPoints the row
+-- frames already on screen; the catalog is written once, on drop.
+
+-- Every row in every list tab (Resources/Spells/Items/Buffs) is anchored at
+-- this same scrollChild x. Column-header FontStrings sit directly on the
+-- scrollChild (no row wrapper), so a header aligning with a row control at
+-- row-relative offset N must be placed at ROW_BASE_X + N, not N alone - each
+-- tab's *_COLUMNS table below stores the row-relative N; header code adds
+-- this. Was previously two independently hand-typed numbers per column (one
+-- in the header code, one in the row code) that drifted out of sync -
+-- several were off by exactly this value.
+local ROW_BASE_X = 10
+
+-- Resolves a column-header's absolute x from a *_COLUMNS entry:
+--   { x = N }             -- header sits directly above the row control (ROW_BASE_X + N)
+--   { x = N, headerX = M } -- header is deliberately nudged (e.g. centered over a
+--                             narrow checkbox) - M is an absolute scrollChild x
+local function header_x(column)
+	return column.headerX or (ROW_BASE_X + column.x)
+end
+
+-- A frame created from UIDropDownMenuTemplate and resized via
+-- UIDropDownMenu_SetWidth(dropdown, N) actually renders N + 50px wide, not N -
+-- verified against Blizzard's own UIDropDownMenu.lua: SetWidth sets
+-- `frame:SetWidth(width + UIDROPDOWNMENU_DEFAULT_WIDTH_PADDING * 2)` and that
+-- constant is 25. Every dropdown column in this file must budget this true
+-- width (not the SetWidth argument) for the next column's start position, or
+-- it silently overlaps its neighbor - this is what caused the Charge Pips/GCD
+-- and Buffs Max Stacks/Dur/Threshold overlaps.
+local DROPDOWN_WIDTH_PADDING = 50
+
+-- Centers a header FontString over a dropdown column's true rendered width
+-- (column.width + DROPDOWN_WIDTH_PADDING), rather than guessing a left-nudge
+-- to line up with the dropdown's internal (right-justified, variable-length)
+-- selected-text label - the dropdown's actual left/right visual edges are the
+-- only fixed, computable reference point.
+local function center_header_over_dropdown(header, column)
+	header:SetWidth(column.width + DROPDOWN_WIDTH_PADDING)
+	header:SetJustifyH("CENTER")
+end
+
+-- Draws the "— Disabled X —" separator + label immediately before the first
+-- disabled row in an ordered list; returns the updated yOffset. Was
+-- copy-pasted identically (bar width/label aside) in all three tabs.
+local function add_disabled_section_separator(scrollChild, yOffset, width, label)
+	yOffset = yOffset - 10
+	local sep = acquire_texture(scrollChild, "ARTWORK")
+	sep:SetColorTexture(0.4, 0.4, 0.4, 1)
+	sep:SetSize(width, 1)
+	sep:SetPoint("TOPLEFT", 10, yOffset)
+	yOffset = yOffset - 5
+
+	local sepLabel = acquire_fontstring(scrollChild, "OVERLAY", "GameFontNormalSmall")
+	sepLabel:SetPoint("TOPLEFT", 10, yOffset)
+	sepLabel:SetText("|cff888888— Disabled " .. label .. " —|r")
+	yOffset = yOffset - 18
+	return yOffset
+end
+
+-- Finds the fixed row slot (from `slotYs`, captured once at layout time - see
+-- below) whose Y is closest to `y`. Slots aren't perfectly evenly spaced (the
+-- disabled-section separator inserts an extra gap), so this is a nearest-slot
+-- scan rather than arithmetic off a fixed row height - correct regardless of
+-- that gap, at the cost of an O(n) scan per drag tick (tab lists are small).
+local function nearest_slot_index(slotYs, y)
+	local bestIndex, bestDist = 1, math.abs(slotYs[1] - y)
+	for k = 2, #slotYs do
+		local dist = math.abs(slotYs[k] - y)
+		if dist < bestDist then
+			bestIndex, bestDist = k, dist
+		end
+	end
+	return bestIndex
+end
+
+-- Adds a drag grip to `row` and wires the reorder gesture.
+--   rows, ids   - parallel arrays for every row currently in this tab's list
+--                 (index i in `rows` <-> index i in `ids`), mutated in place
+--                 as the dragged row passes its siblings.
+--   index       - this row's starting index into rows/ids.
+--   slotYs      - the fixed TOPLEFT y-offset for each visual slot 1..#rows,
+--                 captured from the actual yOffset used when each row was
+--                 first laid out this refresh (so it already accounts for
+--                 the disabled-section gap).
+--   commitFn    - GCDI.commit_spell_order/commit_item_order/commit_buff_order;
+--                 called once with the final `ids` order on drop.
+--   onDropRefresh - the tab's own refresh_*_tab function; called once on drop
+--                 to resync everything a drag doesn't update live (disabled-
+--                 section placement, row backing data, etc).
+local function add_row_drag_handle(row, rows, ids, index, slotYs, commitFn, onDropRefresh)
+	local grip = acquire_frame("Button", row)
+	grip:SetSize(20, 18)
+	grip:EnableMouse(true)
+	grip:RegisterForDrag("LeftButton")
+
+	-- Hamburger-style grip icon (3 horizontal bars) instead of a bordered
+	-- button with "|||" text. Drawn manually with plain color textures
+	-- (no known stable Blizzard hamburger-icon atlas to depend on) and cached
+	-- on the button itself so they're created once and just repositioned on
+	-- every pool reuse, rather than going through acquire_texture/the tab's
+	-- track list - their content never varies row to row.
+	local bars = grip.__gripBars
+	if not bars then
+		bars = {}
+		for barIndex = 1, 3 do
+			local bar = grip:CreateTexture(nil, "ARTWORK")
+			bar:SetSize(12, 2)
+			bars[barIndex] = bar
+		end
+		grip.__gripBars = bars
+	end
+	for barIndex, bar in ipairs(bars) do
+		bar:ClearAllPoints()
+		bar:SetPoint("CENTER", grip, "CENTER", 0, 6 - (barIndex - 1) * 6)
+		bar:SetColorTexture(0.82, 0.82, 0.82, 1)
+	end
+
+	grip:SetScript("OnEnter", function(self)
+		for _, bar in ipairs(bars) do bar:SetColorTexture(1, 1, 1, 1) end
+		GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+		GameTooltip:SetText("Drag to reorder")
+		GameTooltip:Show()
+	end)
+	grip:SetScript("OnLeave", function()
+		for _, bar in ipairs(bars) do bar:SetColorTexture(0.82, 0.82, 0.82, 1) end
+		GameTooltip:Hide()
+	end)
+
+	local currentIndex = index
+	local dragging = false
+	local liftedFromLevel = nil
+
+	grip:SetScript("OnDragStart", function()
+		if dragging then return end
+		dragging = true
+
+		local _, cursorY0 = GetCursorPosition()
+		local startCursorY = cursorY0 / row:GetEffectiveScale()
+		local startSlotY = slotYs[currentIndex]
+		liftedFromLevel = row:GetFrameLevel()
+		row:SetFrameLevel(math.min(liftedFromLevel + 50, 65535))
+
+		row:SetScript("OnUpdate", function()
+			local _, cursorY = GetCursorPosition()
+			local localY = cursorY / row:GetEffectiveScale()
+			local newY = startSlotY + (localY - startCursorY)
+			row:SetPoint("TOPLEFT", 10, newY)
+
+			local target = nearest_slot_index(slotYs, newY)
+
+			while currentIndex < target do
+				local otherRow = rows[currentIndex + 1]
+				rows[currentIndex], rows[currentIndex + 1] = rows[currentIndex + 1], rows[currentIndex]
+				ids[currentIndex], ids[currentIndex + 1] = ids[currentIndex + 1], ids[currentIndex]
+				currentIndex = currentIndex + 1
+				otherRow:SetPoint("TOPLEFT", 10, slotYs[currentIndex - 1])
+			end
+			while currentIndex > target do
+				local otherRow = rows[currentIndex - 1]
+				rows[currentIndex], rows[currentIndex - 1] = rows[currentIndex - 1], rows[currentIndex]
+				ids[currentIndex], ids[currentIndex - 1] = ids[currentIndex - 1], ids[currentIndex]
+				currentIndex = currentIndex - 1
+				otherRow:SetPoint("TOPLEFT", 10, slotYs[currentIndex + 1])
+			end
+		end)
+	end)
+
+	grip:SetScript("OnDragStop", function()
+		-- WoW auto-fires OnDragStop a second time if the dragged frame gets
+		-- Hidden while still mid-drag (e.g. commitFn's rebuild - via
+		-- onDropRefresh below - pool-releasing this very row). Without this
+		-- guard the second call re-runs the frame-level restore and
+		-- underflows SetFrameLevel below 0.
+		if not dragging then return end
+		dragging = false
+
+		row:SetScript("OnUpdate", nil)
+		row:SetPoint("TOPLEFT", 10, slotYs[currentIndex])
+		if liftedFromLevel then
+			row:SetFrameLevel(liftedFromLevel)
+			liftedFromLevel = nil
+		end
+		commitFn(ids)
+		if onDropRefresh then onDropRefresh() end
+	end)
+
+	return grip
 end
 
 -- ═══════════════════════════════════════════════════════════════════════════
@@ -818,27 +1014,44 @@ end
 -- RESOURCES TAB
 -- ═══════════════════════════════════════════════════════════════════════════
 
+-- classTokens: classFileName values (UnitClass("player")'s 2nd return, e.g.
+-- "MAGE"/"DEATHKNIGHT"/"DEMONHUNTER" - verified token spelling, no separators)
+-- that can ever use this resource, across all of that class's specs/forms.
+-- nil means every class (health only). Used to hide options-UI rows the
+-- current character's class can never see, not to gate the HUD display
+-- itself - a Druid still gets every listed resource since forms can't be
+-- known statically the way class can.
 local RESOURCE_NAMES = {
-	{ key = "health", name = "Health", color = {0, 0.8, 0}, barType = "continuous", powerType = nil, classes = "All" },
-	{ key = "mana", name = "Mana", color = {0, 0.5, 1}, barType = "continuous", powerType = Enum.PowerType.Mana, classes = "Mage, Priest, Warlock, Paladin, Druid, Shaman, Monk, Evoker" },
-	{ key = "rage", name = "Rage", color = {0.8, 0, 0}, barType = "continuous", powerType = Enum.PowerType.Rage, classes = "Warrior, Druid (Bear)" },
-	{ key = "energy", name = "Energy", color = {1, 0.85, 0}, barType = "continuous", powerType = Enum.PowerType.Energy, classes = "Rogue, Druid (Cat), Monk" },
-	{ key = "focus", name = "Focus", color = {1, 0.5, 0.2}, barType = "continuous", powerType = Enum.PowerType.Focus, classes = "Hunter" },
-	{ key = "runicPower", name = "Runic Power", color = {0, 0.82, 1}, barType = "continuous", powerType = Enum.PowerType.RunicPower, classes = "Death Knight" },
-	{ key = "runes", name = "Runes", color = {0.8, 0.2, 0.2}, barType = "charges", powerType = Enum.PowerType.Runes, classes = "Death Knight" },
-	{ key = "comboPoints", name = "Combo Points", color = {1, 0.5, 0}, barType = "charges", powerType = Enum.PowerType.ComboPoints, classes = "Rogue, Druid (Cat)" },
-	{ key = "soulShards", name = "Soul Shards", color = {0.58, 0.51, 0.79}, barType = "charges", powerType = Enum.PowerType.SoulShards, classes = "Warlock" },
-	{ key = "holyPower", name = "Holy Power", color = {0.95, 0.9, 0.6}, barType = "charges", powerType = Enum.PowerType.HolyPower, classes = "Paladin" },
-	{ key = "chi", name = "Chi", color = {0.71, 1, 0.92}, barType = "charges", powerType = Enum.PowerType.Chi, classes = "Monk (Windwalker)" },
-	{ key = "arcaneCharges", name = "Arcane Charges", color = {0.1, 0.1, 0.98}, barType = "charges", powerType = Enum.PowerType.ArcaneCharges, classes = "Mage (Arcane)" },
-	{ key = "insanity", name = "Insanity", color = {0.4, 0, 0.8}, barType = "continuous", powerType = Enum.PowerType.Insanity, classes = "Priest (Shadow)" },
-	{ key = "maelstrom", name = "Maelstrom", color = {0, 0.5, 1}, barType = "continuous", powerType = Enum.PowerType.Maelstrom, classes = "Shaman (Elemental)" },
-	{ key = "fury", name = "Fury", color = {0.79, 0.26, 0.99}, barType = "continuous", powerType = Enum.PowerType.Fury, classes = "Demon Hunter (Havoc)" },
-	{ key = "pain", name = "Pain", color = {1, 0.61, 0}, barType = "continuous", powerType = Enum.PowerType.Pain, classes = "Demon Hunter (Vengeance)" },
-	{ key = "astralPower", name = "Astral Power", color = {0.3, 0.52, 0.9}, barType = "continuous", powerType = Enum.PowerType.LunarPower, classes = "Druid (Balance)" },
-	{ key = "essence", name = "Essence", color = {0.27, 0.84, 0.76}, barType = "charges", powerType = Enum.PowerType.Essence, classes = "Evoker" },
-	{ key = "stagger", name = "Stagger", color = {0.35, 0.90, 0.55}, barType = "continuous", powerType = nil, classes = "Monk (Brewmaster)" },
+	{ key = "health", name = "Health", color = {0, 0.8, 0}, barType = "continuous", powerType = nil, classes = "All", classTokens = nil },
+	{ key = "mana", name = "Mana", color = {0, 0.5, 1}, barType = "continuous", powerType = Enum.PowerType.Mana, classes = "Mage, Priest, Warlock, Paladin, Druid, Shaman, Monk, Evoker", classTokens = { "MAGE", "PRIEST", "WARLOCK", "PALADIN", "DRUID", "SHAMAN", "MONK", "EVOKER" } },
+	{ key = "rage", name = "Rage", color = {0.8, 0, 0}, barType = "continuous", powerType = Enum.PowerType.Rage, classes = "Warrior, Druid (Bear)", classTokens = { "WARRIOR", "DRUID" } },
+	{ key = "energy", name = "Energy", color = {1, 0.85, 0}, barType = "continuous", powerType = Enum.PowerType.Energy, classes = "Rogue, Druid (Cat), Monk", classTokens = { "ROGUE", "DRUID", "MONK" } },
+	{ key = "focus", name = "Focus", color = {1, 0.5, 0.2}, barType = "continuous", powerType = Enum.PowerType.Focus, classes = "Hunter", classTokens = { "HUNTER" } },
+	{ key = "runicPower", name = "Runic Power", color = {0, 0.82, 1}, barType = "continuous", powerType = Enum.PowerType.RunicPower, classes = "Death Knight", classTokens = { "DEATHKNIGHT" } },
+	{ key = "runes", name = "Runes", color = {0.8, 0.2, 0.2}, barType = "charges", powerType = Enum.PowerType.Runes, classes = "Death Knight", classTokens = { "DEATHKNIGHT" } },
+	{ key = "comboPoints", name = "Combo Points", color = {1, 0.5, 0}, barType = "charges", powerType = Enum.PowerType.ComboPoints, classes = "Rogue, Druid (Cat)", classTokens = { "ROGUE", "DRUID" } },
+	{ key = "soulShards", name = "Soul Shards", color = {0.58, 0.51, 0.79}, barType = "charges", powerType = Enum.PowerType.SoulShards, classes = "Warlock", classTokens = { "WARLOCK" } },
+	{ key = "holyPower", name = "Holy Power", color = {0.95, 0.9, 0.6}, barType = "charges", powerType = Enum.PowerType.HolyPower, classes = "Paladin", classTokens = { "PALADIN" } },
+	{ key = "chi", name = "Chi", color = {0.71, 1, 0.92}, barType = "charges", powerType = Enum.PowerType.Chi, classes = "Monk (Windwalker)", classTokens = { "MONK" } },
+	{ key = "arcaneCharges", name = "Arcane Charges", color = {0.1, 0.1, 0.98}, barType = "charges", powerType = Enum.PowerType.ArcaneCharges, classes = "Mage (Arcane)", classTokens = { "MAGE" } },
+	{ key = "insanity", name = "Insanity", color = {0.4, 0, 0.8}, barType = "continuous", powerType = Enum.PowerType.Insanity, classes = "Priest (Shadow)", classTokens = { "PRIEST" } },
+	{ key = "maelstrom", name = "Maelstrom", color = {0, 0.5, 1}, barType = "continuous", powerType = Enum.PowerType.Maelstrom, classes = "Shaman (Elemental)", classTokens = { "SHAMAN" } },
+	{ key = "fury", name = "Fury", color = {0.79, 0.26, 0.99}, barType = "continuous", powerType = Enum.PowerType.Fury, classes = "Demon Hunter (Havoc)", classTokens = { "DEMONHUNTER" } },
+	{ key = "pain", name = "Pain", color = {1, 0.61, 0}, barType = "continuous", powerType = Enum.PowerType.Pain, classes = "Demon Hunter (Vengeance)", classTokens = { "DEMONHUNTER" } },
+	{ key = "astralPower", name = "Astral Power", color = {0.3, 0.52, 0.9}, barType = "continuous", powerType = Enum.PowerType.LunarPower, classes = "Druid (Balance)", classTokens = { "DRUID" } },
+	{ key = "essence", name = "Essence", color = {0.27, 0.84, 0.76}, barType = "charges", powerType = Enum.PowerType.Essence, classes = "Evoker", classTokens = { "EVOKER" } },
+	{ key = "stagger", name = "Stagger", color = {0.35, 0.90, 0.55}, barType = "continuous", powerType = nil, classes = "Monk (Brewmaster)", classTokens = { "MONK" } },
 }
+
+-- true if `resource` applies to `classToken` (UnitClass("player")'s 2nd
+-- return value); nil classTokens (health) always applies.
+local function resource_applies_to_class(resource, classToken)
+	if not resource.classTokens then return true end
+	for _, token in ipairs(resource.classTokens) do
+		if token == classToken then return true end
+	end
+	return false
+end
 
 local function refresh_resources_tab()
 	if not optionsFrame or not optionsFrame.resourcesScrollChild then return end
@@ -883,108 +1096,128 @@ local function refresh_resources_tab()
 		end
 	end
 	
+	-- Single source of truth for this tab's column x-offsets (row-relative -
+	-- rows themselves sit at ROW_BASE_X). Both the headers below and the
+	-- per-row controls in the loop read from this table, so they cannot
+	-- drift out of sync the way independently hand-typed numbers did before.
+	local RESOURCES_COLUMNS = {
+		checkbox = 0,
+		swatch = 29,  -- checkbox (0-24) + 5 gap
+		name = 55,    -- swatch (29-45) + 10 gap
+		max = 150,
+		type = 195,
+		class = 255,
+	}
+
 	-- Column headers
 	local nameHeader = track(acquire_fontstring(scrollChild, "OVERLAY", "GameFontNormalSmall"))
-	nameHeader:SetPoint("TOPLEFT", 55, yOffset)
+	nameHeader:SetPoint("TOPLEFT", ROW_BASE_X + RESOURCES_COLUMNS.name, yOffset)
 	nameHeader:SetText("Resource")
-	
+
 	local maxHeader = track(acquire_fontstring(scrollChild, "OVERLAY", "GameFontNormalSmall"))
-	maxHeader:SetPoint("TOPLEFT", 160, yOffset)
+	maxHeader:SetPoint("TOPLEFT", ROW_BASE_X + RESOURCES_COLUMNS.max, yOffset)
 	maxHeader:SetWidth(40)
 	maxHeader:SetJustifyH("CENTER")
 	maxHeader:SetText("Max")
-	
+
 	local typeHeader = track(acquire_fontstring(scrollChild, "OVERLAY", "GameFontNormalSmall"))
-	typeHeader:SetPoint("TOPLEFT", 205, yOffset)
+	typeHeader:SetPoint("TOPLEFT", ROW_BASE_X + RESOURCES_COLUMNS.type, yOffset)
 	typeHeader:SetWidth(55)
 	typeHeader:SetJustifyH("CENTER")
 	typeHeader:SetText("Type")
-	
+
 	local classHeader = track(acquire_fontstring(scrollChild, "OVERLAY", "GameFontNormalSmall"))
-	classHeader:SetPoint("TOPLEFT", 265, yOffset)
+	classHeader:SetPoint("TOPLEFT", ROW_BASE_X + RESOURCES_COLUMNS.class, yOffset)
 	classHeader:SetText("Class")
 	yOffset = yOffset - 20
-	
-	-- Create checkbox for each resource
+
+	-- Only list resources the current character's class can ever use (across
+	-- specs/forms - see resource_applies_to_class); classID is unused here,
+	-- only the classFileName token.
+	local _, playerClassToken = UnitClass("player")
+
+	-- Create checkbox for each resource this class can use
 	for _, resource in ipairs(RESOURCE_NAMES) do
-		local row = track(acquire_frame("Frame", scrollChild))
-		row:SetSize(520, 30)
-		row:SetPoint("TOPLEFT", 10, yOffset)
-		
-		-- Enabled checkbox
-		local checkbox = acquire_frame("CheckButton", row, "UICheckButtonTemplate")
-		checkbox:SetSize(24, 24)
-		checkbox:SetPoint("LEFT", 0, 0)
-		
-		-- Default to enabled if not set (stagger defaults off — Brewmaster-only bar)
-		local isEnabled = settings.resourceSettings[resource.key]
-		if isEnabled == nil then
-			isEnabled = (resource.key ~= "stagger")
-			settings.resourceSettings[resource.key] = isEnabled
+		if resource_applies_to_class(resource, playerClassToken) then
+			local row = track(acquire_frame("Frame", scrollChild))
+			row:SetSize(520, 30)
+			row:SetPoint("TOPLEFT", 10, yOffset)
+
+			-- Enabled checkbox
+			local checkbox = acquire_frame("CheckButton", row, "UICheckButtonTemplate")
+			checkbox:SetSize(24, 24)
+			checkbox:SetPoint("LEFT", RESOURCES_COLUMNS.checkbox, 0)
+
+			-- Default to enabled if not set (stagger defaults off — Brewmaster-only bar)
+			local isEnabled = settings.resourceSettings[resource.key]
+			if isEnabled == nil then
+				isEnabled = (resource.key ~= "stagger")
+				settings.resourceSettings[resource.key] = isEnabled
+			end
+			checkbox:SetChecked(isEnabled)
+
+			checkbox:SetScript("OnClick", function(self)
+				settings.resourceSettings[resource.key] = self:GetChecked()
+				GCDI.auto_save_to_profile()
+				GCDI.reposition_all()
+			end)
+
+			-- Color swatch
+			local colorSwatch = acquire_texture(row, "ARTWORK")
+			colorSwatch:SetSize(16, 16)
+			colorSwatch:SetPoint("LEFT", RESOURCES_COLUMNS.swatch, 0)
+			colorSwatch:SetColorTexture(resource.color[1], resource.color[2], resource.color[3], 1)
+
+			-- Resource name (width capped so long names can't run into the Max column)
+			local nameText = acquire_fontstring(row, "OVERLAY", "GameFontNormal")
+			nameText:SetPoint("LEFT", RESOURCES_COLUMNS.name, 0)
+			nameText:SetWidth(RESOURCES_COLUMNS.max - RESOURCES_COLUMNS.name - 8)
+			nameText:SetJustifyH("LEFT")
+			nameText:SetText(resource.name)
+
+			-- Get max value
+			local maxValue = 0
+			if resource.key == "health" or resource.key == "stagger" then
+				local rawMax = UnitHealthMax("player")
+				maxValue = tonumber(rawMax) or 0
+			elseif resource.powerType then
+				local rawMax = UnitPowerMax("player", resource.powerType)
+				maxValue = tonumber(rawMax) or 0
+			end
+
+			-- Max value display (centered)
+			local maxText = acquire_fontstring(row, "OVERLAY", "GameFontNormalSmall")
+			maxText:SetPoint("LEFT", RESOURCES_COLUMNS.max, 0)
+			maxText:SetWidth(40)
+			maxText:SetJustifyH("CENTER")
+			if maxValue > 0 then
+				maxText:SetText("|cffffffff" .. formatNumber(maxValue) .. "|r")
+			else
+				maxText:SetText("|cff666666-|r")
+			end
+
+			-- Bar type display (centered)
+			local typeText = acquire_fontstring(row, "OVERLAY", "GameFontNormalSmall")
+			typeText:SetPoint("LEFT", RESOURCES_COLUMNS.type, 0)
+			typeText:SetWidth(55)
+			typeText:SetJustifyH("CENTER")
+			if resource.barType == "charges" then
+				typeText:SetText("|cff00ccffCharges|r")
+			else
+				typeText:SetText("|cff88ff88Bar|r")
+			end
+
+			-- Class display
+			local classText = acquire_fontstring(row, "OVERLAY", "GameFontNormalSmall")
+			classText:SetPoint("LEFT", RESOURCES_COLUMNS.class, 0)
+			classText:SetWidth(200)
+			classText:SetJustifyH("LEFT")
+			classText:SetText("|cff888888" .. (resource.classes or "") .. "|r")
+
+			yOffset = yOffset - 35
 		end
-		checkbox:SetChecked(isEnabled)
-		
-		checkbox:SetScript("OnClick", function(self)
-			settings.resourceSettings[resource.key] = self:GetChecked()
-			GCDI.auto_save_to_profile()
-			GCDI.reposition_all()
-		end)
-		
-		-- Color swatch
-		local colorSwatch = acquire_texture(row, "ARTWORK")
-		colorSwatch:SetSize(16, 16)
-		colorSwatch:SetPoint("LEFT", checkbox, "RIGHT", 5, 0)
-		colorSwatch:SetColorTexture(resource.color[1], resource.color[2], resource.color[3], 1)
-		
-		-- Resource name
-		local nameText = acquire_fontstring(row, "OVERLAY", "GameFontNormal")
-		nameText:SetPoint("LEFT", colorSwatch, "RIGHT", 10, 0)
-		nameText:SetWidth(110)
-		nameText:SetJustifyH("LEFT")
-		nameText:SetText(resource.name)
-		
-		-- Get max value
-		local maxValue = 0
-		if resource.key == "health" or resource.key == "stagger" then
-			local rawMax = UnitHealthMax("player")
-			maxValue = tonumber(rawMax) or 0
-		elseif resource.powerType then
-			local rawMax = UnitPowerMax("player", resource.powerType)
-			maxValue = tonumber(rawMax) or 0
-		end
-		
-		-- Max value display (centered)
-		local maxText = acquire_fontstring(row, "OVERLAY", "GameFontNormalSmall")
-		maxText:SetPoint("LEFT", 150, 0)
-		maxText:SetWidth(40)
-		maxText:SetJustifyH("CENTER")
-		if maxValue > 0 then
-			maxText:SetText("|cffffffff" .. formatNumber(maxValue) .. "|r")
-		else
-			maxText:SetText("|cff666666-|r")
-		end
-		
-		-- Bar type display (centered)
-		local typeText = acquire_fontstring(row, "OVERLAY", "GameFontNormalSmall")
-		typeText:SetPoint("LEFT", 195, 0)
-		typeText:SetWidth(55)
-		typeText:SetJustifyH("CENTER")
-		if resource.barType == "charges" then
-			typeText:SetText("|cff00ccffCharges|r")
-		else
-			typeText:SetText("|cff88ff88Bar|r")
-		end
-		
-		-- Class display
-		local classText = acquire_fontstring(row, "OVERLAY", "GameFontNormalSmall")
-		classText:SetPoint("LEFT", 255, 0)
-		classText:SetWidth(200)
-		classText:SetJustifyH("LEFT")
-		classText:SetText("|cff888888" .. (resource.classes or "") .. "|r")
-		
-		yOffset = yOffset - 35
 	end
-	
+
 	scrollChild:SetHeight(math.abs(yOffset) + 20)
 end
 
@@ -1038,80 +1271,98 @@ local function refresh_spells_tab()
 	rescanSpellsBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
 	
 	yOffset = yOffset - 35
-	
-	-- Column headers (row starts at x=10, so add 10 to row-relative positions)
+
+	-- Single source of truth for this tab's column x-offsets (row-relative -
+	-- rows themselves sit at ROW_BASE_X). Both the headers below and the
+	-- per-row controls further down read from this table, so they cannot
+	-- drift out of sync the way independently hand-typed numbers did before.
+	-- headerX overrides are deliberate visual nudges (centering a short label
+	-- over a narrow checkbox, or clearing a dropdown's arrow/padding before
+	-- its text) - see header_x().
+	-- Dropdown columns (range, chargePips) store `width` = the value passed to
+	-- UIDropDownMenu_SetWidth, not the dropdown's true rendered width (that's
+	-- width + DROPDOWN_WIDTH_PADDING) - see center_header_over_dropdown. Every
+	-- column after a dropdown starts DROPDOWN_WIDTH_PADDING further right than
+	-- the SetWidth argument alone would suggest, plus an 8px gap.
+	local SPELLS_COLUMNS = {
+		enabled    = { x = 0,   headerX = 14 },  -- centers "On" over the checkbox
+		selfCast   = { x = 28,  headerX = 40 },  -- centers "Self" over the checkbox
+		trackIcon  = { x = 56,  headerX = 70 },  -- centers "Ico" over the checkbox
+		icon       = { x = 84 },
+		name       = { x = 108 },
+		native     = { x = 200 },
+		range      = { x = 213, width = 110 },   -- true rendered width 160 (213-373)
+		chargePips = { x = 381, width = 68 },     -- 373 + 8px gap; true rendered width 118 (381-499)
+		gcd        = { x = 507 },                 -- 499 + 8px gap
+		drag       = { x = 539 },                 -- 507+24 (checkbox) + 8px gap
+	}
+
+	-- Column headers
 	local enabledHeader = track(acquire_fontstring(scrollChild, "OVERLAY", "GameFontNormalSmall"))
-	enabledHeader:SetPoint("TOPLEFT", 14, yOffset)  -- checkbox at row LEFT 0, centered
+	enabledHeader:SetPoint("TOPLEFT", header_x(SPELLS_COLUMNS.enabled), yOffset)
 	enabledHeader:SetText("On")
-	
+
 	local selfCastHeader = track(acquire_fontstring(scrollChild, "OVERLAY", "GameFontNormalSmall"))
-	selfCastHeader:SetPoint("TOPLEFT", 40, yOffset)  -- checkbox at row LEFT 28, centered
+	selfCastHeader:SetPoint("TOPLEFT", header_x(SPELLS_COLUMNS.selfCast), yOffset)
 	selfCastHeader:SetText("Self")
-	
+
 	local iconTrackHeader = track(acquire_fontstring(scrollChild, "OVERLAY", "GameFontNormalSmall"))
-	iconTrackHeader:SetPoint("TOPLEFT", 70, yOffset)  -- checkbox at row LEFT 56, centered
+	iconTrackHeader:SetPoint("TOPLEFT", header_x(SPELLS_COLUMNS.trackIcon), yOffset)
 	iconTrackHeader:SetText("Ico")
-	
+
 	local spellNameHeader = track(acquire_fontstring(scrollChild, "OVERLAY", "GameFontNormalSmall"))
-	spellNameHeader:SetPoint("TOPLEFT", 94, yOffset)  -- icon at row LEFT 84
+	spellNameHeader:SetPoint("TOPLEFT", header_x(SPELLS_COLUMNS.icon), yOffset)
 	spellNameHeader:SetText("Spell")
-	
+
 	local nativeHeader = track(acquire_fontstring(scrollChild, "OVERLAY", "GameFontNormalSmall"))
-	nativeHeader:SetPoint("TOPLEFT", 210, yOffset)  -- indicator at row LEFT 200
+	nativeHeader:SetPoint("TOPLEFT", header_x(SPELLS_COLUMNS.native), yOffset)
 	nativeHeader:SetText("|cff00ff00N|r")
-	
+
 	local rangeHeader = track(acquire_fontstring(scrollChild, "OVERLAY", "GameFontNormalSmall"))
-	rangeHeader:SetPoint("TOPLEFT", 240, yOffset)  -- dropdown at row LEFT 213 (+ dropdown padding)
+	rangeHeader:SetPoint("TOPLEFT", header_x(SPELLS_COLUMNS.range), yOffset)
+	center_header_over_dropdown(rangeHeader, SPELLS_COLUMNS.range)
 	rangeHeader:SetText("Range Override")
-	
-	-- Charge pip column must start after UIDropDownMenuTemplate for range (LEFT 213 + text width + arrow ~35px).
+
 	local chargePipsHeader = track(acquire_fontstring(scrollChild, "OVERLAY", "GameFontNormalSmall"))
-	chargePipsHeader:SetPoint("TOPLEFT", 354, yOffset)
+	chargePipsHeader:SetPoint("TOPLEFT", header_x(SPELLS_COLUMNS.chargePips), yOffset)
+	center_header_over_dropdown(chargePipsHeader, SPELLS_COLUMNS.chargePips)
 	chargePipsHeader:SetText("Charge pips")
 
 	local gcdHeader = track(acquire_fontstring(scrollChild, "OVERLAY", "GameFontNormalSmall"))
-	gcdHeader:SetPoint("TOPLEFT", 468, yOffset)  -- checkbox at row LEFT 468, clear of pip dropdown hit rect
+	gcdHeader:SetPoint("TOPLEFT", header_x(SPELLS_COLUMNS.gcd), yOffset)
 	gcdHeader:SetText("GCD")
 
 	local orderHeader = track(acquire_fontstring(scrollChild, "OVERLAY", "GameFontNormalSmall"))
-	orderHeader:SetPoint("TOPLEFT", 510, yOffset)  -- clear of the "GCD" header text
+	orderHeader:SetPoint("TOPLEFT", header_x(SPELLS_COLUMNS.drag), yOffset)
 	orderHeader:SetText("Order")
 	yOffset = yOffset - 20
 	
 	-- Create rows for each spell
 	local orderedSpells = GCDI.get_all_catalog_spells_ordered()
 	local disabledSectionStarted = false
-	
+	local slotYs = {}
+
 	for i, spellID in ipairs(orderedSpells) do
 		local catalogEntry = GCDI.spellCatalog[spellID]
 		if not catalogEntry then
 			break
 		end
-		
+
 		local spellName = catalogEntry.name
 		local texture = catalogEntry.texture
-		
+
 		-- Ensure spell has settings entry
 		if not settings.spellSettings[spellID] then
 			settings.spellSettings[spellID] = { enabled = true, rangeFallbackYards = nil, selfCast = false, hasNativeRange = nil, trackIcon = false, chargePipOverride = nil, offGCD = false }
 		end
 		local spellSettings = settings.spellSettings[spellID]
-		
+
 		-- Add separator before first disabled spell
 		if not GCDI.is_spell_enabled(spellID) and not disabledSectionStarted then
 			disabledSectionStarted = true
-			yOffset = yOffset - 10
-			local disabledSep = track(acquire_texture(scrollChild, "ARTWORK"))
-			disabledSep:SetColorTexture(0.4, 0.4, 0.4, 1)
-			disabledSep:SetSize(530, 1)
-			disabledSep:SetPoint("TOPLEFT", 10, yOffset)
-			yOffset = yOffset - 5
-			
-			local disabledLabel = track(acquire_fontstring(scrollChild, "OVERLAY", "GameFontNormalSmall"))
-			disabledLabel:SetPoint("TOPLEFT", 10, yOffset)
-			disabledLabel:SetText("|cff888888— Disabled Spells —|r")
-			yOffset = yOffset - 18
+			yOffset = add_disabled_section_separator(scrollChild, yOffset, 590, "Spells")
 		end
+		slotYs[i] = yOffset
 		
 		-- Check native range
 		local spellData = GCDI.trackedSpells[spellID]
@@ -1124,7 +1375,7 @@ local function refresh_spells_tab()
 			spellSettings.hasNativeRange = hasNativeRange
 		end
 		hasNativeRange = hasNativeRange or false
-		
+
 		local row = acquire_frame("Frame", scrollChild)
 		row:SetSize(600, 30)
 		row:SetPoint("TOPLEFT", 10, yOffset)
@@ -1132,7 +1383,7 @@ local function refresh_spells_tab()
 		-- Enabled checkbox
 		local checkbox = acquire_frame("CheckButton", row, "UICheckButtonTemplate")
 		checkbox:SetSize(24, 24)
-		checkbox:SetPoint("LEFT", 0, 0)
+		checkbox:SetPoint("LEFT", SPELLS_COLUMNS.enabled.x, 0)
 		checkbox:SetChecked(spellSettings.enabled ~= false)
 		checkbox:SetScript("OnClick", function(self)
 			local newValue = self:GetChecked()
@@ -1154,7 +1405,7 @@ local function refresh_spells_tab()
 		-- Self-Cast checkbox
 		local selfCastCheckbox = acquire_frame("CheckButton", row, "UICheckButtonTemplate")
 		selfCastCheckbox:SetSize(24, 24)
-		selfCastCheckbox:SetPoint("LEFT", 28, 0)
+		selfCastCheckbox:SetPoint("LEFT", SPELLS_COLUMNS.selfCast.x, 0)
 		selfCastCheckbox:SetChecked(spellSettings.selfCast == true)
 		selfCastCheckbox:SetScript("OnClick", function(self)
 			if not GCDI.settings.spellSettings[spellID] then
@@ -1177,7 +1428,7 @@ local function refresh_spells_tab()
 		-- Track Icon checkbox
 		local trackIconCheckbox = acquire_frame("CheckButton", row, "UICheckButtonTemplate")
 		trackIconCheckbox:SetSize(24, 24)
-		trackIconCheckbox:SetPoint("LEFT", 56, 0)
+		trackIconCheckbox:SetPoint("LEFT", SPELLS_COLUMNS.trackIcon.x, 0)
 		trackIconCheckbox:SetChecked(spellSettings.trackIcon == true)
 		trackIconCheckbox:SetScript("OnClick", function(self)
 			if not GCDI.settings.spellSettings[spellID] then
@@ -1201,7 +1452,7 @@ local function refresh_spells_tab()
 		-- field (see is_spell_off_gcd in GCDIndicator.lua).
 		local offGcdCheckbox = acquire_frame("CheckButton", row, "UICheckButtonTemplate")
 		offGcdCheckbox:SetSize(24, 24)
-		offGcdCheckbox:SetPoint("LEFT", 468, 0)
+		offGcdCheckbox:SetPoint("LEFT", SPELLS_COLUMNS.gcd.x, 0)
 		offGcdCheckbox:SetChecked(spellSettings.offGCD == true)
 		offGcdCheckbox:SetScript("OnClick", function(self)
 			if not GCDI.settings.spellSettings[spellID] then
@@ -1222,12 +1473,12 @@ local function refresh_spells_tab()
 		-- Spell icon
 		local icon = acquire_texture(row, "ARTWORK")
 		icon:SetSize(20, 20)
-		icon:SetPoint("LEFT", 84, 0)
+		icon:SetPoint("LEFT", SPELLS_COLUMNS.icon.x, 0)
 		icon:SetTexture(texture)
 		icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
 		local iconTip = acquire_frame("Frame", row)
 		iconTip:SetSize(20, 20)
-		iconTip:SetPoint("LEFT", 84, 0)
+		iconTip:SetPoint("LEFT", SPELLS_COLUMNS.icon.x, 0)
 		iconTip:EnableMouse(true)
 		iconTip:SetScript("OnEnter", function(self)
 			GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
@@ -1238,23 +1489,23 @@ local function refresh_spells_tab()
 		
 		-- Spell name
 		local nameText = acquire_fontstring(row, "OVERLAY", "GameFontNormal")
-		nameText:SetPoint("LEFT", 108, 0)
+		nameText:SetPoint("LEFT", SPELLS_COLUMNS.name.x, 0)
 		nameText:SetWidth(90)
 		nameText:SetJustifyH("LEFT")
 		nameText:SetText(spellName)
-		
+
 		-- Native range indicator
 		local rangeIndicatorText = acquire_fontstring(row, "OVERLAY", "GameFontNormalSmall")
-		rangeIndicatorText:SetPoint("LEFT", 200, 0)
+		rangeIndicatorText:SetPoint("LEFT", SPELLS_COLUMNS.native.x, 0)
 		if spellSettings.hasNativeRange then
 			rangeIndicatorText:SetText("|cff00ff00N|r")
 		else
 			rangeIndicatorText:SetText("|cff888888-|r")
 		end
-		
-		-- Tooltip for indicator (same position as the indicator text)
+
+		-- Tooltip for indicator (2px left of the indicator text, to widen the hit area)
 		local indicatorTooltip = acquire_frame("Frame", row)
-		indicatorTooltip:SetPoint("LEFT", 198, 0)
+		indicatorTooltip:SetPoint("LEFT", SPELLS_COLUMNS.native.x - 2, 0)
 		indicatorTooltip:SetSize(24, 24)
 		indicatorTooltip:SetScript("OnEnter", function(self)
 			GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
@@ -1272,8 +1523,15 @@ local function refresh_spells_tab()
 		
 		-- Range dropdown
 		local rangeDropdown = acquire_frame("Frame", row, "UIDropDownMenuTemplate")
-		rangeDropdown:SetPoint("LEFT", 213, 0)
-		UIDropDownMenu_SetWidth(rangeDropdown, 110)
+		rangeDropdown:SetPoint("LEFT", SPELLS_COLUMNS.range.x, 0)
+		UIDropDownMenu_SetWidth(rangeDropdown, SPELLS_COLUMNS.range.width)
+		rangeDropdown:HookScript("OnEnter", function(self)
+			GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+			GameTooltip:SetText("Range override")
+			GameTooltip:AddLine("Force this spell to use a specific range bracket for the green/red range square, instead of native or global fallback range checking.", 1, 1, 1, true)
+			GameTooltip:Show()
+		end)
+		rangeDropdown:HookScript("OnLeave", function() GameTooltip:Hide() end)
 		
 		local function initSpellRangeDropdown(self, level)
 			local info = UIDropDownMenu_CreateInfo()
@@ -1360,8 +1618,8 @@ local function refresh_spells_tab()
 		
 		-- Charge pip count override (when max charges are secret or missing; e.g. Keg Smash = 2 pips)
 		local chgDropdown = track(acquire_frame("Frame", row, "UIDropDownMenuTemplate"))
-		chgDropdown:SetPoint("LEFT", 354, 0)
-		UIDropDownMenu_SetWidth(chgDropdown, 68)
+		chgDropdown:SetPoint("LEFT", SPELLS_COLUMNS.chargePips.x, 0)
+		UIDropDownMenu_SetWidth(chgDropdown, SPELLS_COLUMNS.chargePips.width)
 		
 		local function initChargePipDropdown(self, level)
 			local info = UIDropDownMenu_CreateInfo()
@@ -1418,47 +1676,48 @@ local function refresh_spells_tab()
 		end)
 		chgDropdown:HookScript("OnLeave", function() GameTooltip:Hide() end)
 		
-		-- Reorder buttons
-		local upBtn = acquire_frame("Button", row, "UIPanelButtonTemplate")
-		upBtn:SetSize(22, 18)
-		upBtn:SetPoint("LEFT", 510, 0)
-		upBtn:SetText("Up")
-		upBtn:SetNormalFontObject("GameFontNormalSmall")
-		upBtn:SetHighlightFontObject("GameFontHighlightSmall")
-		upBtn:SetEnabled(i > 1)
-		upBtn:SetScript("OnClick", function()
-			GCDI.move_spell_in_order(spellID, -1)
+		spellRows[i] = row
+
+		-- Drag handle (replaces the old Up/Down buttons) + Top/Bottom
+		-- quick-action arrows for jumping straight to either end of a long list.
+		local gripBtn = add_row_drag_handle(row, spellRows, orderedSpells, i, slotYs, GCDI.commit_spell_order, refresh_spells_tab)
+		gripBtn:SetPoint("LEFT", SPELLS_COLUMNS.drag.x, 0)
+
+		local topBtn = acquire_frame("Button", row, "UIPanelScrollUpButtonTemplate")
+		topBtn:SetSize(18, 16)
+		topBtn:SetPoint("LEFT", gripBtn, "RIGHT", 2, 0)
+		topBtn:SetEnabled(i > 1)
+		topBtn:SetScript("OnClick", function()
+			GCDI.move_spell_to_top(spellID)
 			GCDI.refresh_options_frame()
 		end)
-		
-		local downBtn = acquire_frame("Button", row, "UIPanelButtonTemplate")
-		downBtn:SetSize(22, 18)
-		downBtn:SetPoint("LEFT", upBtn, "RIGHT", 2, 0)
-		downBtn:SetText("Dn")
-		downBtn:SetNormalFontObject("GameFontNormalSmall")
-		downBtn:SetHighlightFontObject("GameFontHighlightSmall")
-		downBtn:SetEnabled(i < #orderedSpells)
-		downBtn:SetScript("OnClick", function()
-			GCDI.move_spell_in_order(spellID, 1)
-			GCDI.refresh_options_frame()
+		topBtn:SetScript("OnEnter", function(self)
+			GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+			GameTooltip:SetText("Move to top")
+			GameTooltip:AddLine("Jumps this spell to the start of the list - faster than dragging across a long, scrolled list.", 1, 1, 1, true)
+			GameTooltip:Show()
 		end)
-		
-		local bottomBtn = acquire_frame("Button", row, "UIPanelButtonTemplate")
-		bottomBtn:SetSize(24, 18)
-		bottomBtn:SetPoint("LEFT", downBtn, "RIGHT", 2, 0)
-		bottomBtn:SetText("Bot")
-		bottomBtn:SetNormalFontObject("GameFontNormalSmall")
-		bottomBtn:SetHighlightFontObject("GameFontHighlightSmall")
+		topBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
+
+		local bottomBtn = acquire_frame("Button", row, "UIPanelScrollDownButtonTemplate")
+		bottomBtn:SetSize(18, 16)
+		bottomBtn:SetPoint("LEFT", topBtn, "RIGHT", 2, 0)
 		bottomBtn:SetEnabled(i < #orderedSpells)
 		bottomBtn:SetScript("OnClick", function()
 			GCDI.move_spell_to_bottom(spellID)
 			GCDI.refresh_options_frame()
 		end)
-		
-		spellRows[i] = row
+		bottomBtn:SetScript("OnEnter", function(self)
+			GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+			GameTooltip:SetText("Move to bottom")
+			GameTooltip:AddLine("Jumps this spell to the end of the list - faster than dragging across a long, scrolled list.", 1, 1, 1, true)
+			GameTooltip:Show()
+		end)
+		bottomBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
+
 		yOffset = yOffset - 35
 	end
-	
+
 	scrollChild:SetHeight(math.abs(yOffset) + 20)
 end
 
@@ -1503,32 +1762,52 @@ local function refresh_items_tab()
 	rescanItemsBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
 	yOffset = yOffset - 30
 	
+	-- Single source of truth for this tab's column x-offsets (row-relative -
+	-- rows themselves sit at ROW_BASE_X). See SPELLS_COLUMNS above / header_x()
+	-- for how headerX overrides work.
+	local ITEMS_COLUMNS = {
+		enabled = { x = 0 },
+		charges = { x = 28 },
+		icon    = { x = 56, headerX = 70 },  -- header nudged toward the name column
+		name    = { x = 80, width = 160 },   -- capped so a long item name can't run into the Type column
+		type    = { x = 248, width = 90 },   -- name's end (240) + 8px gap
+		drag    = { x = 346 },               -- type's end (338) + 8px gap
+		gcd     = { x = 420 },
+	}
+
 	-- Column headers
 	local enabledHeader = track(acquire_fontstring(scrollChild, "OVERLAY", "GameFontNormalSmall"))
-	enabledHeader:SetPoint("TOPLEFT", 10, yOffset)
+	enabledHeader:SetPoint("TOPLEFT", header_x(ITEMS_COLUMNS.enabled), yOffset)
 	enabledHeader:SetText("On")
-	
+
 	local chargesHeader = track(acquire_fontstring(scrollChild, "OVERLAY", "GameFontNormalSmall"))
-	chargesHeader:SetPoint("TOPLEFT", 38, yOffset)
+	chargesHeader:SetPoint("TOPLEFT", header_x(ITEMS_COLUMNS.charges), yOffset)
 	chargesHeader:SetText("Chg")
-	
+
 	local itemNameHeader = track(acquire_fontstring(scrollChild, "OVERLAY", "GameFontNormalSmall"))
-	itemNameHeader:SetPoint("TOPLEFT", 70, yOffset)
+	itemNameHeader:SetPoint("TOPLEFT", header_x(ITEMS_COLUMNS.icon), yOffset)
 	itemNameHeader:SetText("Item")
 
+	local itemTypeHeader = track(acquire_fontstring(scrollChild, "OVERLAY", "GameFontNormalSmall"))
+	itemTypeHeader:SetPoint("TOPLEFT", header_x(ITEMS_COLUMNS.type), yOffset)
+	itemTypeHeader:SetWidth(ITEMS_COLUMNS.type.width)
+	itemTypeHeader:SetJustifyH("CENTER")
+	itemTypeHeader:SetText("Type")
+
 	local orderHeader = track(acquire_fontstring(scrollChild, "OVERLAY", "GameFontNormalSmall"))
-	orderHeader:SetPoint("TOPLEFT", 350, yOffset)
+	orderHeader:SetPoint("TOPLEFT", header_x(ITEMS_COLUMNS.drag), yOffset)
 	orderHeader:SetText("Order")
 
 	local gcdHeader = track(acquire_fontstring(scrollChild, "OVERLAY", "GameFontNormalSmall"))
-	gcdHeader:SetPoint("TOPLEFT", 430, yOffset)  -- checkbox at row LEFT 420, clear of the Up/Dn/Bot reorder buttons
+	gcdHeader:SetPoint("TOPLEFT", header_x(ITEMS_COLUMNS.gcd), yOffset)  -- clear of the drag handle/Bot button
 	gcdHeader:SetText("GCD")
 	yOffset = yOffset - 20
 	
 	-- Create rows
 	local orderedItems = GCDI.get_all_catalog_items_ordered()
 	local disabledSectionStarted = false
-	
+	local slotYs = {}
+
 	if #orderedItems == 0 then
 		local noItemsText = track(acquire_fontstring(scrollChild, "OVERLAY", "GameFontNormal"))
 		noItemsText:SetPoint("TOPLEFT", 10, yOffset)
@@ -1560,19 +1839,10 @@ local function refresh_items_tab()
 		-- Separator before disabled items
 		if not GCDI.is_item_enabled(itemKey) and not disabledSectionStarted then
 			disabledSectionStarted = true
-			yOffset = yOffset - 10
-			local disabledSep = track(acquire_texture(scrollChild, "ARTWORK"))
-			disabledSep:SetColorTexture(0.4, 0.4, 0.4, 1)
-			disabledSep:SetSize(450, 1)
-			disabledSep:SetPoint("TOPLEFT", 10, yOffset)
-			yOffset = yOffset - 5
-			
-			local disabledLabel = track(acquire_fontstring(scrollChild, "OVERLAY", "GameFontNormalSmall"))
-			disabledLabel:SetPoint("TOPLEFT", 10, yOffset)
-			disabledLabel:SetText("|cff888888— Disabled Items —|r")
-			yOffset = yOffset - 18
+			yOffset = add_disabled_section_separator(scrollChild, yOffset, 450, "Items")
 		end
-		
+		slotYs[i] = yOffset
+
 		local row = acquire_frame("Frame", scrollChild)
 		row:SetSize(480, 30)
 		row:SetPoint("TOPLEFT", 10, yOffset)
@@ -1580,7 +1850,7 @@ local function refresh_items_tab()
 		-- Enabled checkbox
 		local checkbox = acquire_frame("CheckButton", row, "UICheckButtonTemplate")
 		checkbox:SetSize(24, 24)
-		checkbox:SetPoint("LEFT", 0, 0)
+		checkbox:SetPoint("LEFT", ITEMS_COLUMNS.enabled.x, 0)
 		checkbox:SetChecked(itemSettings.enabled ~= false)
 		checkbox:SetScript("OnClick", function(self)
 			local newValue = self:GetChecked()
@@ -1602,7 +1872,7 @@ local function refresh_items_tab()
 		-- Show Charges checkbox
 		local chargesCheckbox = acquire_frame("CheckButton", row, "UICheckButtonTemplate")
 		chargesCheckbox:SetSize(24, 24)
-		chargesCheckbox:SetPoint("LEFT", 28, 0)
+		chargesCheckbox:SetPoint("LEFT", ITEMS_COLUMNS.charges.x, 0)
 		chargesCheckbox:SetChecked(itemSettings.showCharges == true)
 		chargesCheckbox:SetScript("OnClick", function(self)
 			if not GCDI.settings.itemSettings[itemKey] then
@@ -1625,12 +1895,12 @@ local function refresh_items_tab()
 		-- Item icon
 		local icon = acquire_texture(row, "ARTWORK")
 		icon:SetSize(20, 20)
-		icon:SetPoint("LEFT", 56, 0)
+		icon:SetPoint("LEFT", ITEMS_COLUMNS.icon.x, 0)
 		icon:SetTexture(texture)
 		icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
 		local iconTip = acquire_frame("Frame", row)
 		iconTip:SetSize(20, 20)
-		iconTip:SetPoint("LEFT", 56, 0)
+		iconTip:SetPoint("LEFT", ITEMS_COLUMNS.icon.x, 0)
 		iconTip:EnableMouse(true)
 		iconTip:SetScript("OnEnter", function(self)
 			GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
@@ -1643,65 +1913,70 @@ local function refresh_items_tab()
 		end)
 		iconTip:SetScript("OnLeave", function() GameTooltip:Hide() end)
 		
-		-- Item name
+		-- Item name (was going right up to the Type column's start - capped so
+		-- a long name can't run under it or the drag handle)
 		local nameText = acquire_fontstring(row, "OVERLAY", "GameFontNormal")
-		nameText:SetPoint("LEFT", 80, 0)
-		nameText:SetWidth(220)
+		nameText:SetPoint("LEFT", ITEMS_COLUMNS.name.x, 0)
+		nameText:SetWidth(ITEMS_COLUMNS.name.width)
 		nameText:SetJustifyH("LEFT")
 		nameText:SetText(itemName)
-		
-		-- Type indicator
+
+		-- Type indicator (centered in its own column, was unpositioned/overlapping)
 		local typeText = acquire_fontstring(row, "OVERLAY", "GameFontNormalSmall")
-		typeText:SetPoint("LEFT", 290, 0)
+		typeText:SetPoint("LEFT", ITEMS_COLUMNS.type.x, 0)
+		typeText:SetWidth(ITEMS_COLUMNS.type.width)
+		typeText:SetJustifyH("CENTER")
 		if catalogEntry.slot then
 			typeText:SetText("|cff00ff00Trinket|r")
 		else
 			typeText:SetText("|cffffcc00Consumable|r")
 		end
 		
-		-- Reorder buttons
-		local upBtn = acquire_frame("Button", row, "UIPanelButtonTemplate")
-		upBtn:SetSize(22, 18)
-		upBtn:SetPoint("LEFT", 345, 0)
-		upBtn:SetText("Up")
-		upBtn:SetNormalFontObject("GameFontNormalSmall")
-		upBtn:SetHighlightFontObject("GameFontHighlightSmall")
-		upBtn:SetEnabled(i > 1)
-		upBtn:SetScript("OnClick", function()
-			GCDI.move_item_in_order(itemKey, -1)
+		itemRows[i] = row
+
+		-- Drag handle (replaces the old Up/Down buttons) + Top/Bottom
+		-- quick-action arrows for jumping straight to either end of a long list.
+		local gripBtn = add_row_drag_handle(row, itemRows, orderedItems, i, slotYs, GCDI.commit_item_order, refresh_items_tab)
+		gripBtn:SetPoint("LEFT", ITEMS_COLUMNS.drag.x, 0)
+
+		local topBtn = acquire_frame("Button", row, "UIPanelScrollUpButtonTemplate")
+		topBtn:SetSize(18, 16)
+		topBtn:SetPoint("LEFT", gripBtn, "RIGHT", 2, 0)
+		topBtn:SetEnabled(i > 1)
+		topBtn:SetScript("OnClick", function()
+			GCDI.move_item_to_top(itemKey)
 			GCDI.refresh_options_frame()
 		end)
-		
-		local downBtn = acquire_frame("Button", row, "UIPanelButtonTemplate")
-		downBtn:SetSize(22, 18)
-		downBtn:SetPoint("LEFT", upBtn, "RIGHT", 2, 0)
-		downBtn:SetText("Dn")
-		downBtn:SetNormalFontObject("GameFontNormalSmall")
-		downBtn:SetHighlightFontObject("GameFontHighlightSmall")
-		downBtn:SetEnabled(i < #orderedItems)
-		downBtn:SetScript("OnClick", function()
-			GCDI.move_item_in_order(itemKey, 1)
-			GCDI.refresh_options_frame()
+		topBtn:SetScript("OnEnter", function(self)
+			GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+			GameTooltip:SetText("Move to top")
+			GameTooltip:AddLine("Jumps this item to the start of the list - faster than dragging across a long, scrolled list.", 1, 1, 1, true)
+			GameTooltip:Show()
 		end)
-		
-		local bottomBtn = acquire_frame("Button", row, "UIPanelButtonTemplate")
-		bottomBtn:SetSize(24, 18)
-		bottomBtn:SetPoint("LEFT", downBtn, "RIGHT", 2, 0)
-		bottomBtn:SetText("Bot")
-		bottomBtn:SetNormalFontObject("GameFontNormalSmall")
-		bottomBtn:SetHighlightFontObject("GameFontHighlightSmall")
+		topBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
+
+		local bottomBtn = acquire_frame("Button", row, "UIPanelScrollDownButtonTemplate")
+		bottomBtn:SetSize(18, 16)
+		bottomBtn:SetPoint("LEFT", topBtn, "RIGHT", 2, 0)
 		bottomBtn:SetEnabled(i < #orderedItems)
 		bottomBtn:SetScript("OnClick", function()
 			GCDI.move_item_to_bottom(itemKey)
 			GCDI.refresh_options_frame()
 		end)
+		bottomBtn:SetScript("OnEnter", function(self)
+			GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+			GameTooltip:SetText("Move to bottom")
+			GameTooltip:AddLine("Jumps this item to the end of the list - faster than dragging across a long, scrolled list.", 1, 1, 1, true)
+			GameTooltip:Show()
+		end)
+		bottomBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
 
 		-- Off GCD checkbox. Metadata only: doesn't affect the addon's own
 		-- display, only feeds the companion-script config export's hasGCD
 		-- field (see is_item_off_gcd in GCDIndicator.lua).
 		local offGcdCheckbox = acquire_frame("CheckButton", row, "UICheckButtonTemplate")
 		offGcdCheckbox:SetSize(24, 24)
-		offGcdCheckbox:SetPoint("LEFT", 420, 0)
+		offGcdCheckbox:SetPoint("LEFT", ITEMS_COLUMNS.gcd.x, 0)
 		offGcdCheckbox:SetChecked(itemSettings.offGCD == true)
 		offGcdCheckbox:SetScript("OnClick", function(self)
 			if not GCDI.settings.itemSettings[itemKey] then
@@ -1719,10 +1994,9 @@ local function refresh_items_tab()
 		end)
 		offGcdCheckbox:SetScript("OnLeave", function() GameTooltip:Hide() end)
 
-		itemRows[i] = row
 		yOffset = yOffset - 35
 	end
-	
+
 	scrollChild:SetHeight(math.abs(yOffset) + 20)
 end
 
@@ -1811,44 +2085,66 @@ local function refresh_buffs_tab()
 	-- Separator
 	local sep = track(acquire_texture(scrollChild, "ARTWORK"))
 	sep:SetColorTexture(0.4, 0.4, 0.4, 1)
-	sep:SetSize(450, 1)
+	sep:SetSize(540, 1)
 	sep:SetPoint("TOPLEFT", 10, yOffset)
 	yOffset = yOffset - 15
 	
+	-- Single source of truth for this tab's column x-offsets (row-relative -
+	-- rows themselves sit at ROW_BASE_X). See SPELLS_COLUMNS above / header_x()
+	-- for how headerX overrides work.
+	-- maxStacks/threshold store `width` = the value passed to
+	-- UIDropDownMenu_SetWidth, not the dropdown's true rendered width (that's
+	-- width + DROPDOWN_WIDTH_PADDING) - see center_header_over_dropdown. This
+	-- tab previously had maxStacks/duration/threshold/drag all overlapping
+	-- each other because that padding wasn't budgeted for.
+	local BUFFS_COLUMNS = {
+		enabled   = { x = 0 },
+		stacks    = { x = 28 },
+		icon      = { x = 56, headerX = 70 },   -- header nudged toward the name column
+		name      = { x = 80, width = 110 },    -- capped so a long buff name can't run into Max Stacks
+		maxStacks = { x = 198, width = 60 },    -- name's end (190) + 8px gap; true rendered width 110 (198-308)
+		duration  = { x = 316 },                -- 308 + 8px gap
+		threshold = { x = 348, width = 50 },    -- 316+24 (checkbox) + 8px gap; true rendered width 100 (348-448)
+		drag      = { x = 456 },                -- 448 + 8px gap
+	}
+
 	-- Column headers
 	local enabledHeader = track(acquire_fontstring(scrollChild, "OVERLAY", "GameFontNormalSmall"))
-	enabledHeader:SetPoint("TOPLEFT", 10, yOffset)
+	enabledHeader:SetPoint("TOPLEFT", header_x(BUFFS_COLUMNS.enabled), yOffset)
 	enabledHeader:SetText("On")
-	
+
 	local stacksHeader = track(acquire_fontstring(scrollChild, "OVERLAY", "GameFontNormalSmall"))
-	stacksHeader:SetPoint("TOPLEFT", 38, yOffset)
+	stacksHeader:SetPoint("TOPLEFT", header_x(BUFFS_COLUMNS.stacks), yOffset)
 	stacksHeader:SetText("Stk")
-	
+
 	local buffNameHeader = track(acquire_fontstring(scrollChild, "OVERLAY", "GameFontNormalSmall"))
-	buffNameHeader:SetPoint("TOPLEFT", 70, yOffset)
+	buffNameHeader:SetPoint("TOPLEFT", header_x(BUFFS_COLUMNS.icon), yOffset)
 	buffNameHeader:SetText("Buff (ID)")
-	
+
 	local maxStacksHeader = track(acquire_fontstring(scrollChild, "OVERLAY", "GameFontNormalSmall"))
-	maxStacksHeader:SetPoint("TOPLEFT", 220, yOffset)
+	maxStacksHeader:SetPoint("TOPLEFT", header_x(BUFFS_COLUMNS.maxStacks), yOffset)
+	center_header_over_dropdown(maxStacksHeader, BUFFS_COLUMNS.maxStacks)
 	maxStacksHeader:SetText("Max Stacks")
-	
+
 	local durationHeader = track(acquire_fontstring(scrollChild, "OVERLAY", "GameFontNormalSmall"))
-	durationHeader:SetPoint("TOPLEFT", 295, yOffset)
+	durationHeader:SetPoint("TOPLEFT", header_x(BUFFS_COLUMNS.duration), yOffset)
 	durationHeader:SetText("Dur")
-	
+
 	local thresholdHeader = track(acquire_fontstring(scrollChild, "OVERLAY", "GameFontNormalSmall"))
-	thresholdHeader:SetPoint("TOPLEFT", 325, yOffset)
+	thresholdHeader:SetPoint("TOPLEFT", header_x(BUFFS_COLUMNS.threshold), yOffset)
+	center_header_over_dropdown(thresholdHeader, BUFFS_COLUMNS.threshold)
 	thresholdHeader:SetText("Thr%")
-	
+
 	local orderHeader = track(acquire_fontstring(scrollChild, "OVERLAY", "GameFontNormalSmall"))
-	orderHeader:SetPoint("TOPLEFT", 400, yOffset)
+	orderHeader:SetPoint("TOPLEFT", header_x(BUFFS_COLUMNS.drag), yOffset)
 	orderHeader:SetText("Order")
 	yOffset = yOffset - 20
 	
 	-- Create rows
 	local orderedBuffs = GCDI.get_all_catalog_buffs_ordered()
 	local disabledSectionStarted = false
-	
+	local slotYs = {}
+
 	if #orderedBuffs == 0 then
 		local noBuffsText = track(acquire_fontstring(scrollChild, "OVERLAY", "GameFontNormal"))
 		noBuffsText:SetPoint("TOPLEFT", 10, yOffset)
@@ -1882,27 +2178,18 @@ local function refresh_buffs_tab()
 		-- Separator before disabled buffs
 		if not GCDI.is_buff_enabled(buffKey) and not disabledSectionStarted then
 			disabledSectionStarted = true
-			yOffset = yOffset - 10
-			local disabledSep = track(acquire_texture(scrollChild, "ARTWORK"))
-			disabledSep:SetColorTexture(0.4, 0.4, 0.4, 1)
-			disabledSep:SetSize(450, 1)
-			disabledSep:SetPoint("TOPLEFT", 10, yOffset)
-			yOffset = yOffset - 5
-			
-			local disabledLabel = track(acquire_fontstring(scrollChild, "OVERLAY", "GameFontNormalSmall"))
-			disabledLabel:SetPoint("TOPLEFT", 10, yOffset)
-			disabledLabel:SetText("|cff888888— Disabled Buffs —|r")
-			yOffset = yOffset - 18
+			yOffset = add_disabled_section_separator(scrollChild, yOffset, 540, "Buffs")
 		end
-		
+		slotYs[i] = yOffset
+
 		local row = acquire_frame("Frame", scrollChild)
-		row:SetSize(450, 30)
+		row:SetSize(540, 30)
 		row:SetPoint("TOPLEFT", 10, yOffset)
 		
 		-- Enabled checkbox
 		local checkbox = acquire_frame("CheckButton", row, "UICheckButtonTemplate")
 		checkbox:SetSize(24, 24)
-		checkbox:SetPoint("LEFT", 0, 0)
+		checkbox:SetPoint("LEFT", BUFFS_COLUMNS.enabled.x, 0)
 		checkbox:SetChecked(buffSettings.enabled ~= false)
 		checkbox:SetScript("OnClick", function(self)
 			if not GCDI.settings.buffSettings then
@@ -1921,7 +2208,7 @@ local function refresh_buffs_tab()
 		-- Show Stacks checkbox
 		local stacksCheckbox = acquire_frame("CheckButton", row, "UICheckButtonTemplate")
 		stacksCheckbox:SetSize(24, 24)
-		stacksCheckbox:SetPoint("LEFT", 28, 0)
+		stacksCheckbox:SetPoint("LEFT", BUFFS_COLUMNS.stacks.x, 0)
 		stacksCheckbox:SetChecked(buffSettings.showStacks ~= false)
 		stacksCheckbox:SetScript("OnClick", function(self)
 			if not GCDI.settings.buffSettings[buffKey] then
@@ -1944,13 +2231,13 @@ local function refresh_buffs_tab()
 		-- Buff icon
 		local icon = acquire_texture(row, "ARTWORK")
 		icon:SetSize(20, 20)
-		icon:SetPoint("LEFT", 56, 0)
+		icon:SetPoint("LEFT", BUFFS_COLUMNS.icon.x, 0)
 		icon:SetTexture(texture)
 		icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
 		local buffTooltipSpellID = catalogEntry.tooltipSpellID or catalogEntry.spellID or buffKey
 		local iconTip = acquire_frame("Frame", row)
 		iconTip:SetSize(20, 20)
-		iconTip:SetPoint("LEFT", 56, 0)
+		iconTip:SetPoint("LEFT", BUFFS_COLUMNS.icon.x, 0)
 		iconTip:EnableMouse(true)
 		iconTip:SetScript("OnEnter", function(self)
 			if buffTooltipSpellID and buffTooltipSpellID > 0 then
@@ -1961,10 +2248,11 @@ local function refresh_buffs_tab()
 		end)
 		iconTip:SetScript("OnLeave", function() GameTooltip:Hide() end)
 		
-		-- Buff name with spell ID (displayID = spell ID when from CDM; matches CDM/spell IDs)
+		-- Buff name with spell ID (displayID = spell ID when from CDM; matches
+		-- CDM/spell IDs). Width capped so a long name can't run into Max Stacks.
 		local nameText = acquire_fontstring(row, "OVERLAY", "GameFontNormal")
-		nameText:SetPoint("LEFT", 80, 0)
-		nameText:SetWidth(130)
+		nameText:SetPoint("LEFT", BUFFS_COLUMNS.name.x, 0)
+		nameText:SetWidth(BUFFS_COLUMNS.name.width)
 		nameText:SetJustifyH("LEFT")
 		nameText:SetText(buffName .. " |cff888888(" .. displayID .. ")|r")
 		if catalogEntry.spellID and buffKey ~= catalogEntry.spellID then
@@ -1974,9 +2262,16 @@ local function refresh_buffs_tab()
 		
 		-- Max stacks dropdown
 		local maxStacksDropdown = acquire_frame("Frame", row, "UIDropDownMenuTemplate")
-		maxStacksDropdown:SetPoint("LEFT", 200, 0)
-		UIDropDownMenu_SetWidth(maxStacksDropdown, 60)
-		
+		maxStacksDropdown:SetPoint("LEFT", BUFFS_COLUMNS.maxStacks.x, 0)
+		UIDropDownMenu_SetWidth(maxStacksDropdown, BUFFS_COLUMNS.maxStacks.width)
+		maxStacksDropdown:HookScript("OnEnter", function(self)
+			GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+			GameTooltip:SetText("Max stacks")
+			GameTooltip:AddLine("How many stack segments the stack bar shows for this buff (only matters when Stk is checked).", 1, 1, 1, true)
+			GameTooltip:Show()
+		end)
+		maxStacksDropdown:HookScript("OnLeave", function() GameTooltip:Hide() end)
+
 		local function initMaxStacksDropdown(self, level)
 			local currentBuffSettings = GCDI.settings.buffSettings and GCDI.settings.buffSettings[buffKey] or {}
 			for stacks = 1, 10 do
@@ -2002,7 +2297,7 @@ local function refresh_buffs_tab()
 		
 		-- Duration bar checkbox
 		local durationCb = acquire_frame("CheckButton", row, "UICheckButtonTemplate")
-		durationCb:SetPoint("LEFT", 290, 0)
+		durationCb:SetPoint("LEFT", BUFFS_COLUMNS.duration.x, 0)
 		durationCb:SetSize(24, 24)
 		durationCb:SetChecked(buffSettings.showDurationBar == true)
 		durationCb:SetScript("OnClick", function(self)
@@ -2014,6 +2309,13 @@ local function refresh_buffs_tab()
 			GCDI.rebuild_buff_bars()
 			GCDI.reposition_all()
 		end)
+		durationCb:SetScript("OnEnter", function(self)
+			GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+			GameTooltip:SetText("Show pandemic indicator")
+			GameTooltip:AddLine("Adds a small indicator next to this buff/DoT that flips color once its remaining duration drops below the Thr% threshold to the right - the refresh (pandemic) window.", 1, 1, 1, true)
+			GameTooltip:Show()
+		end)
+		durationCb:SetScript("OnLeave", function() GameTooltip:Hide() end)
 		
 		-- Threshold dropdown (5% increments). UIDropDownMenu needs a global name, so
 		-- this one cannot come from the type-keyed pool: reuse the frame already
@@ -2029,9 +2331,16 @@ local function refresh_buffs_tab()
 			thresholdDropdown = CreateFrame("Frame", thresholdName, row, "UIDropDownMenuTemplate")
 		end
 		pool_register(thresholdDropdown)
-		thresholdDropdown:SetPoint("LEFT", 305, -3)
-		UIDropDownMenu_SetWidth(thresholdDropdown, 50)
-		
+		thresholdDropdown:SetPoint("LEFT", BUFFS_COLUMNS.threshold.x, -3)
+		UIDropDownMenu_SetWidth(thresholdDropdown, BUFFS_COLUMNS.threshold.width)
+		thresholdDropdown:HookScript("OnEnter", function(self)
+			GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+			GameTooltip:SetText("Pandemic threshold")
+			GameTooltip:AddLine("The duration-bar indicator (Dur checkbox) flips color once this buff/DoT has this % or less of its duration remaining - the window where refreshing it doesn't waste time.", 1, 1, 1, true)
+			GameTooltip:Show()
+		end)
+		thresholdDropdown:HookScript("OnLeave", function() GameTooltip:Hide() end)
+
 		local function initThresholdDropdown(self, level)
 			local currentThreshold = buffSettings.durationThreshold or 30
 			for pct = 5, 95, 5 do
@@ -2055,34 +2364,50 @@ local function refresh_buffs_tab()
 		UIDropDownMenu_Initialize(thresholdDropdown, initThresholdDropdown)
 		UIDropDownMenu_SetText(thresholdDropdown, (buffSettings.durationThreshold or 30) .. "%")
 		
-		-- Reorder buttons
-		local upBtn = acquire_frame("Button", row, "UIPanelButtonTemplate")
-		upBtn:SetSize(22, 18)
-		upBtn:SetPoint("LEFT", 395, 0)
-		upBtn:SetText("Up")
-		upBtn:SetNormalFontObject("GameFontNormalSmall")
-		upBtn:SetHighlightFontObject("GameFontHighlightSmall")
-		upBtn:SetEnabled(i > 1)
-		upBtn:SetScript("OnClick", function()
-			GCDI.move_buff_in_order(buffKey, -1)
+		buffRows[i] = row
+
+		-- Drag handle (replaces the old Up/Down buttons) + Top/Bottom
+		-- quick-action arrows for jumping straight to either end of a long list
+		-- (buffs previously had no bottom shortcut at all - added here for
+		-- parity with Spells/Items).
+		local gripBtn = add_row_drag_handle(row, buffRows, orderedBuffs, i, slotYs, GCDI.commit_buff_order, refresh_buffs_tab)
+		gripBtn:SetPoint("LEFT", BUFFS_COLUMNS.drag.x, 0)
+
+		local topBtn = acquire_frame("Button", row, "UIPanelScrollUpButtonTemplate")
+		topBtn:SetSize(18, 16)
+		topBtn:SetPoint("LEFT", gripBtn, "RIGHT", 2, 0)
+		topBtn:SetEnabled(i > 1)
+		topBtn:SetScript("OnClick", function()
+			GCDI.move_buff_to_top(buffKey)
 			GCDI.refresh_options_frame()
 		end)
-		
-		local downBtn = acquire_frame("Button", row, "UIPanelButtonTemplate")
-		downBtn:SetSize(22, 18)
-		downBtn:SetPoint("LEFT", upBtn, "RIGHT", 2, 0)
-		downBtn:SetText("Dn")
-		downBtn:SetNormalFontObject("GameFontNormalSmall")
-		downBtn:SetHighlightFontObject("GameFontHighlightSmall")
-		downBtn:SetEnabled(i < #orderedBuffs)
-		downBtn:SetScript("OnClick", function()
-			GCDI.move_buff_in_order(buffKey, 1)
+		topBtn:SetScript("OnEnter", function(self)
+			GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+			GameTooltip:SetText("Move to top")
+			GameTooltip:AddLine("Jumps this buff to the start of the list - faster than dragging across a long, scrolled list.", 1, 1, 1, true)
+			GameTooltip:Show()
+		end)
+		topBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
+
+		local bottomBtn = acquire_frame("Button", row, "UIPanelScrollDownButtonTemplate")
+		bottomBtn:SetSize(18, 16)
+		bottomBtn:SetPoint("LEFT", topBtn, "RIGHT", 2, 0)
+		bottomBtn:SetEnabled(i < #orderedBuffs)
+		bottomBtn:SetScript("OnClick", function()
+			GCDI.move_buff_to_bottom(buffKey)
 			GCDI.refresh_options_frame()
 		end)
-		
+		bottomBtn:SetScript("OnEnter", function(self)
+			GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+			GameTooltip:SetText("Move to bottom")
+			GameTooltip:AddLine("Jumps this buff to the end of the list - faster than dragging across a long, scrolled list.", 1, 1, 1, true)
+			GameTooltip:Show()
+		end)
+		bottomBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
+
 		local removeBtn = acquire_frame("Button", row, "UIPanelButtonTemplate")
 		removeBtn:SetSize(24, 18)
-		removeBtn:SetPoint("LEFT", downBtn, "RIGHT", 2, 0)
+		removeBtn:SetPoint("LEFT", bottomBtn, "RIGHT", 2, 0)
 		removeBtn:SetText("X")
 		removeBtn:SetNormalFontObject("GameFontNormalSmall")
 		removeBtn:SetHighlightFontObject("GameFontHighlightSmall")
@@ -2097,11 +2422,10 @@ local function refresh_buffs_tab()
 			GameTooltip:Show()
 		end)
 		removeBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
-		
-		buffRows[i] = row
+
 		yOffset = yOffset - 35
 	end
-	
+
 	scrollChild:SetHeight(math.abs(yOffset) + 20)
 end
 
@@ -2160,6 +2484,8 @@ switch_tab = function(tabName)
 		refresh_items_tab()
 	elseif tabName == "buffs" then
 		refresh_buffs_tab()
+	elseif tabName == "settings" then
+		refresh_settings_tab()
 	elseif tabName == "profiles" then
 		refresh_profiles_tab()
 	end
@@ -2799,6 +3125,8 @@ local function refresh_options_frame()
 		refresh_items_tab()
 	elseif currentTab == "buffs" then
 		refresh_buffs_tab()
+	elseif currentTab == "settings" then
+		refresh_settings_tab()
 	elseif currentTab == "profiles" then
 		refresh_profiles_tab()
 	end
@@ -2896,7 +3224,7 @@ local function create_options_frame()
 	optionsFrame.buffsScrollFrame = buffsScrollFrame
 	
 	local buffsScrollChild = CreateFrame("Frame", nil, buffsScrollFrame)
-	buffsScrollChild:SetSize(450, 800)
+	buffsScrollChild:SetSize(540, 800)
 	buffsScrollFrame:SetScrollChild(buffsScrollChild)
 	optionsFrame.buffsScrollChild = buffsScrollChild
 	
@@ -2915,7 +3243,7 @@ local function create_options_frame()
 	settingsFrame:SetSize(500, 650)
 	settingsScrollFrame:SetScrollChild(settingsFrame)
 	optionsFrame.settingsFrame = settingsFrame
-	
+
 	-- Settings tab used to place every widget at a hand-measured absolute Y
 	-- (-70, -150, -175, -220...) instead of the yOffset-accumulator pattern
 	-- every other tab uses, so gaps between blocks drifted (42px here, 17px
@@ -3026,6 +3354,7 @@ local function create_options_frame()
 	nativeStackCheckbox:SetSize(24, 24)
 	nativeStackCheckbox:SetPoint("TOPLEFT", 0, sYOffset)
 	nativeStackCheckbox:SetChecked(configs.useNativeStackBinding == true)
+	optionsFrame.nativeStackCheckbox = nativeStackCheckbox
 	nativeStackCheckbox:SetScript("OnClick", function(self)
 		configs.useNativeStackBinding = self:GetChecked() and true or false
 		print("|cff00ff00GCDIndicator:|r Native stack binding " .. (configs.useNativeStackBinding and "ON (experimental)" or "OFF (classic)"))
@@ -3049,6 +3378,7 @@ local function create_options_frame()
 	compactModeCheckbox:SetSize(24, 24)
 	compactModeCheckbox:SetPoint("TOPLEFT", 0, sYOffset)
 	compactModeCheckbox:SetChecked(configs.compactMode == true)
+	optionsFrame.compactModeCheckbox = compactModeCheckbox
 	compactModeCheckbox:SetScript("OnClick", function(self)
 		configs.compactMode = self:GetChecked() and true or false
 		if settings then
@@ -3115,6 +3445,22 @@ local function create_options_frame()
 		GameTooltip:Show()
 	end)
 	exportAhkBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
+
+	-- Re-syncs the Settings tab's checkbox states from current configs. The
+	-- tab's widgets are built once here (not pooled/rebuilt per refresh like
+	-- the other tabs), so without this, flipping configs.useNativeStackBinding/
+	-- compactMode via slash command while the panel is open left the checkbox
+	-- visually stale until the panel was closed and reopened (see
+	-- CHANGE-TRACKER.md) - switch_tab/refresh_options_frame now call this like
+	-- every other tab's refresh function.
+	refresh_settings_tab = function()
+		if optionsFrame.nativeStackCheckbox then
+			optionsFrame.nativeStackCheckbox:SetChecked(configs.useNativeStackBinding == true)
+		end
+		if optionsFrame.compactModeCheckbox then
+			optionsFrame.compactModeCheckbox:SetChecked(configs.compactMode == true)
+		end
+	end
 
 	-- PROFILES FRAME
 	local profilesFrame = CreateFrame("Frame", nil, optionsFrame)

@@ -129,11 +129,11 @@ end
 -- Save the current order
 function CatalogManager:SaveOrder(orderedList)
     local settings = self.getSettings()
-    if not settings then 
+    if not settings then
         print("|cffff0000LibCatalog:|r SaveOrder failed - no settings")
-        return 
+        return
     end
-    
+
     local newOrder = {}
     for i, id in ipairs(orderedList) do
         newOrder[i] = id
@@ -141,81 +141,85 @@ function CatalogManager:SaveOrder(orderedList)
     self.setOrderKey(newOrder)
 end
 
+-- Save a full ordered list and run the standard post-reorder side effects
+-- (profile auto-save, onReorder rebuild callback). Shared commit path for
+-- MoveInOrder/MoveToBottom and for a drag-and-drop gesture that already has
+-- a complete new ordering to persist in one shot.
+function CatalogManager:CommitOrder(orderedList)
+    self:SaveOrder(orderedList)
+
+    if GCDI and GCDI.auto_save_to_profile then
+        GCDI.auto_save_to_profile()
+    end
+
+    if self.onReorder then
+        self.onReorder()
+    end
+end
+
 -- Move an item up or down in the order
 -- direction: -1 for up, 1 for down
 function CatalogManager:MoveInOrder(id, direction)
     local ordered = self:GetAllOrdered()
     local currentIndex = nil
-    
+
     for i, checkId in ipairs(ordered) do
         if checkId == id then
             currentIndex = i
             break
         end
     end
-    
-    if not currentIndex then 
+
+    if not currentIndex then
         print("|cffff0000LibCatalog:|r Item not found in order: " .. tostring(id))
-        return 
+        return
     end
-    
+
     local newIndex = currentIndex + direction
     if newIndex < 1 or newIndex > #ordered then return end
-    
+
     -- Swap
     ordered[currentIndex], ordered[newIndex] = ordered[newIndex], ordered[currentIndex]
-    
-    -- Debug: print before save
-    print("|cff00ff00LibCatalog:|r " .. self.name .. " - Moving " .. tostring(id) .. " from " .. currentIndex .. " to " .. newIndex)
-    
-    self:SaveOrder(ordered)
-    
-    -- Debug: verify order was saved
-    local savedOrder = self.getOrderKey()
-    if savedOrder then
-        print("|cff00ff00LibCatalog:|r Saved order has " .. #savedOrder .. " items")
-    else
-        print("|cffff0000LibCatalog:|r Order not saved!")
-    end
-    
-    -- Auto-save and rebuild
-    if GCDI and GCDI.auto_save_to_profile then
-        GCDI.auto_save_to_profile()
-        print("|cff00ff00LibCatalog:|r Auto-saved to profile")
-    else
-        print("|cffff9900LibCatalog:|r No profile active, saving to base settings only")
-    end
-    
-    if self.onReorder then
-        self.onReorder()
-    end
+
+    self:CommitOrder(ordered)
 end
 
 -- Move an item to the bottom of the list
 function CatalogManager:MoveToBottom(id)
     local ordered = self:GetAllOrdered()
     local currentIndex = nil
-    
+
     for i, checkId in ipairs(ordered) do
         if checkId == id then
             currentIndex = i
             break
         end
     end
-    
+
     if not currentIndex or currentIndex == #ordered then return end
-    
+
     table.remove(ordered, currentIndex)
     table.insert(ordered, id)
-    self:SaveOrder(ordered)
-    
-    -- Auto-save and rebuild
-    if GCDI and GCDI.auto_save_to_profile then
-        GCDI.auto_save_to_profile()
+    self:CommitOrder(ordered)
+end
+
+-- Move an item to the top of the list
+function CatalogManager:MoveToTop(id)
+    local ordered = self:GetAllOrdered()
+    local currentIndex = nil
+
+    for i, checkId in ipairs(ordered) do
+        if checkId == id then
+            currentIndex = i
+            break
+        end
     end
-    if self.onReorder then
-        self.onReorder()
-    end
+
+    if not currentIndex or currentIndex == 1 then return end
+
+    table.remove(ordered, currentIndex)
+    table.insert(ordered, 1, id)
+    self:CommitOrder(ordered)
 end
 
 -- Export the library

@@ -62,11 +62,14 @@ option for testing.
 - **Slash command**: `/gcdopt nativestacks`
 - Or set `GCDI.configs.useNativeStackBinding = true` at `GCDIndicator.lua:17`.
 
-Default is `false` (classic/current method, unchanged behavior). Note: the
-Settings tab is built once when the options frame is created and isn't rebuilt
-on tab switch (matches the rest of that tab, e.g. the LibRangeCheck checkbox),
-so if you flip the config via slash command while the panel is already open,
-the checkbox won't visually update until you reopen the options window.
+Default is `false` (classic/current method, unchanged behavior). The Settings
+tab's widgets are still built once when the options frame is created (not
+pooled/rebuilt per refresh like the other tabs), but as of the options-UI
+drag-and-drop redesign a `refresh_settings_tab()` re-syncs checkbox state and
+is now wired into both `switch_tab`/`refresh_options_frame` - flipping this
+config via slash command while the panel is open updates the checkbox next
+time you switch tabs or trigger a refresh, it no longer requires reopening
+the panel.
 
 ## Files touched
 
@@ -189,12 +192,11 @@ all profiles/specs on that character (not per-profile, not account-wide).
   won't survive reload unless `settings.compactMode` is also set — see above).
 
 Default is `false` (classic 3-column layout with icons, unchanged behavior).
-Note: the Settings tab is built once when the options frame is created and
-isn't rebuilt on tab switch, so if you flip the config via slash command
-while the panel is already open, the checkbox won't visually update until you
-reopen the options window. The Settings tab is now a `ScrollFrame` (it wasn't
-before — content used to silently clip past the bottom edge once enough
-sections existed).
+The Settings tab is now a `ScrollFrame` (it wasn't before — content used to
+silently clip past the bottom edge once enough sections existed); its
+checkbox states also now re-sync on tab switch/refresh (see the native stack
+binding section above), so flipping this config via slash command while the
+panel is open no longer requires reopening it.
 
 Because box layout (icon present/absent) is baked in at spell/item/buff
 *creation* time, not just position, toggling calls a full rebuild
