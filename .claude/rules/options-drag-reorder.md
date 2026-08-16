@@ -3,8 +3,8 @@
 Covers the drag-and-drop reordering added to the Spells/Items/Buffs tabs in
 `Libs/LibGCDI-Options/LibGCDI-Options.lua`, replacing the old per-row
 Up/Down/Bottom button triplet with a drag handle plus Top/Bottom quick-jump
-arrow buttons (Up/Down are back, but as icon buttons, not the original
-text-label buttons - see "Grip icon and Top/Bottom arrow buttons" below).
+icon buttons (not the original text-label buttons - see "Grip icon and
+Top/Bottom arrow buttons" below; there are no longer per-row Up/Down actions).
 Read this before touching row layout in those three tabs or before extending
 drag-and-drop to another tab (e.g. Resources).
 

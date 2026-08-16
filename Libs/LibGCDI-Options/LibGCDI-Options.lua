@@ -345,6 +345,7 @@ local function add_row_drag_handle(row, rows, ids, index, slotYs, commitFn, onDr
 			local _, cursorY = GetCursorPosition()
 			local localY = cursorY / row:GetEffectiveScale()
 			local newY = startSlotY + (localY - startCursorY)
+			row:ClearAllPoints()
 			row:SetPoint("TOPLEFT", 10, newY)
 
 			local target = nearest_slot_index(slotYs, newY)
@@ -354,6 +355,7 @@ local function add_row_drag_handle(row, rows, ids, index, slotYs, commitFn, onDr
 				rows[currentIndex], rows[currentIndex + 1] = rows[currentIndex + 1], rows[currentIndex]
 				ids[currentIndex], ids[currentIndex + 1] = ids[currentIndex + 1], ids[currentIndex]
 				currentIndex = currentIndex + 1
+				otherRow:ClearAllPoints()
 				otherRow:SetPoint("TOPLEFT", 10, slotYs[currentIndex - 1])
 			end
 			while currentIndex > target do
@@ -361,6 +363,7 @@ local function add_row_drag_handle(row, rows, ids, index, slotYs, commitFn, onDr
 				rows[currentIndex], rows[currentIndex - 1] = rows[currentIndex - 1], rows[currentIndex]
 				ids[currentIndex], ids[currentIndex - 1] = ids[currentIndex - 1], ids[currentIndex]
 				currentIndex = currentIndex - 1
+				otherRow:ClearAllPoints()
 				otherRow:SetPoint("TOPLEFT", 10, slotYs[currentIndex + 1])
 			end
 		end)
@@ -376,6 +379,7 @@ local function add_row_drag_handle(row, rows, ids, index, slotYs, commitFn, onDr
 		dragging = false
 
 		row:SetScript("OnUpdate", nil)
+		row:ClearAllPoints()
 		row:SetPoint("TOPLEFT", 10, slotYs[currentIndex])
 		if liftedFromLevel then
 			row:SetFrameLevel(liftedFromLevel)
@@ -2336,7 +2340,7 @@ local function refresh_buffs_tab()
 		thresholdDropdown:HookScript("OnEnter", function(self)
 			GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
 			GameTooltip:SetText("Pandemic threshold")
-			GameTooltip:AddLine("The duration-bar indicator (Dur checkbox) flips color once this buff/DoT has this % or less of its duration remaining - the window where refreshing it doesn't waste time.", 1, 1, 1, true)
+			GameTooltip:AddLine("The pandemic indicator (Dur checkbox) flips color once this buff/DoT has this % or less of its duration remaining - the window where refreshing it doesn't waste time.", 1, 1, 1, true)
 			GameTooltip:Show()
 		end)
 		thresholdDropdown:HookScript("OnLeave", function() GameTooltip:Hide() end)

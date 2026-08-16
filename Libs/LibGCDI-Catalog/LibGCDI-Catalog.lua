@@ -131,7 +131,7 @@ function CatalogManager:SaveOrder(orderedList)
     local settings = self.getSettings()
     if not settings then
         print("|cffff0000LibCatalog:|r SaveOrder failed - no settings")
-        return
+        return false
     end
 
     local newOrder = {}
@@ -139,6 +139,7 @@ function CatalogManager:SaveOrder(orderedList)
         newOrder[i] = id
     end
     self.setOrderKey(newOrder)
+    return true
 end
 
 -- Save a full ordered list and run the standard post-reorder side effects
@@ -146,7 +147,9 @@ end
 -- MoveInOrder/MoveToBottom and for a drag-and-drop gesture that already has
 -- a complete new ordering to persist in one shot.
 function CatalogManager:CommitOrder(orderedList)
-    self:SaveOrder(orderedList)
+    if not self:SaveOrder(orderedList) then
+        return
+    end
 
     if GCDI and GCDI.auto_save_to_profile then
         GCDI.auto_save_to_profile()
