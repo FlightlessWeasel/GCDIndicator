@@ -516,6 +516,16 @@ function GCDI.move_spell_to_bottom(spellID)
 	if spellCatalogManager then spellCatalogManager:MoveToBottom(spellID) end
 end
 
+function GCDI.move_spell_to_top(spellID)
+	if spellCatalogManager then spellCatalogManager:MoveToTop(spellID) end
+end
+
+-- Persists a full drag-reordered list in one shot (vs. repeated MoveInOrder
+-- calls) - used by the options UI's drag-to-reorder gesture.
+function GCDI.commit_spell_order(orderedSpellIDs)
+	if spellCatalogManager then spellCatalogManager:CommitOrder(orderedSpellIDs) end
+end
+
 function GCDI.get_ordered_items()
 	if not itemCatalogManager then return {} end
 	return itemCatalogManager:GetEnabledOrdered()
@@ -532,6 +542,14 @@ end
 
 function GCDI.move_item_to_bottom(itemKey)
 	if itemCatalogManager then itemCatalogManager:MoveToBottom(itemKey) end
+end
+
+function GCDI.move_item_to_top(itemKey)
+	if itemCatalogManager then itemCatalogManager:MoveToTop(itemKey) end
+end
+
+function GCDI.commit_item_order(orderedItemKeys)
+	if itemCatalogManager then itemCatalogManager:CommitOrder(orderedItemKeys) end
 end
 
 local function get_ordered_buffs()
@@ -555,6 +573,14 @@ end
 
 function GCDI.move_buff_to_bottom(spellID)
 	if buffCatalogManager then buffCatalogManager:MoveToBottom(spellID) end
+end
+
+function GCDI.move_buff_to_top(spellID)
+	if buffCatalogManager then buffCatalogManager:MoveToTop(spellID) end
+end
+
+function GCDI.commit_buff_order(orderedBuffKeys)
+	if buffCatalogManager then buffCatalogManager:CommitOrder(orderedBuffKeys) end
 end
 
 -- ═══════════════════════════════════════════════════════════════════════════

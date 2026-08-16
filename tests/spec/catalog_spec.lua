@@ -98,3 +98,104 @@ describe("LibGCDI-Catalog MoveToBottom", function()
 		assertDeepEqual(settings.order, { 1, 2 })
 	end)
 end)
+
+describe("LibGCDI-Catalog MoveToTop", function()
+	it("moves the item to the start of the full ordered list", function()
+		local catalog = { [1] = { name = "A" }, [2] = { name = "B" }, [3] = { name = "C" } }
+		local manager, settings = make_manager(catalog, { 1, 2, 3 }, { [1] = true, [2] = true, [3] = true })
+		manager:MoveToTop(3)
+		assertDeepEqual(settings.order, { 3, 1, 2 })
+	end)
+
+	it("is a no-op when the item is already first", function()
+		local catalog = { [1] = { name = "A" }, [2] = { name = "B" } }
+		local manager, settings = make_manager(catalog, { 1, 2 }, { [1] = true, [2] = true })
+		manager:MoveToTop(1)
+		assertDeepEqual(settings.order, { 1, 2 })
+	end)
+end)
+
+-- Builds a manager with an onReorder spy, over a mutable order array, no GCDI
+-- global present (matches the test environment - see tests/mocks/wow_api.lua).
+local function make_manager_with_reorder_spy(catalog, order, enabledSet)
+	local settings = { order = order }
+	local reorderCalls = 0
+	local manager = lib:NewCatalog({
+		name = "test",
+		getCatalog = function() return catalog end,
+		getSettings = function() return settings end,
+		getOrderKey = function() return settings.order end,
+		setOrderKey = function(newOrder) settings.order = newOrder end,
+		isEnabled = function(id) return enabledSet[id] == true end,
+		onReorder = function() reorderCalls = reorderCalls + 1 end,
+	})
+	return manager, settings, function() return reorderCalls end
+end
+
+-- Swaps the global `print` for a call-counting spy for the duration of `fn`,
+-- always restoring it afterward (even on error) so a failing assertion below
+-- doesn't leave `print` broken for later tests.
+local function count_prints(fn)
+	local calls = 0
+	local realPrint = print
+	print = function(...) calls = calls + 1 end
+	local ok, err = pcall(fn)
+	print = realPrint
+	if not ok then error(err, 0) end
+	return calls
+end
+
+describe("LibGCDI-Catalog reorder side effects", function()
+	it("MoveInOrder invokes onReorder after saving", function()
+		local catalog = { [1] = { name = "A" }, [2] = { name = "B" } }
+		local manager, settings, reorderCalls = make_manager_with_reorder_spy(catalog, { 1, 2 }, { [1] = true, [2] = true })
+		manager:MoveInOrder(1, 1)
+		assertEqual(reorderCalls(), 1)
+	end)
+
+	it("MoveToBottom invokes onReorder after saving", function()
+		local catalog = { [1] = { name = "A" }, [2] = { name = "B" } }
+		local manager, settings, reorderCalls = make_manager_with_reorder_spy(catalog, { 1, 2 }, { [1] = true, [2] = true })
+		manager:MoveToBottom(1)
+		assertEqual(reorderCalls(), 1)
+	end)
+
+	it("MoveToTop invokes onReorder after saving", function()
+		local catalog = { [1] = { name = "A" }, [2] = { name = "B" } }
+		local manager, settings, reorderCalls = make_manager_with_reorder_spy(catalog, { 1, 2 }, { [1] = true, [2] = true })
+		manager:MoveToTop(2)
+		assertEqual(reorderCalls(), 1)
+	end)
+
+	it("MoveInOrder does not print debug output on a successful move", function()
+		local catalog = { [1] = { name = "A" }, [2] = { name = "B" } }
+		local manager = make_manager(catalog, { 1, 2 }, { [1] = true, [2] = true })
+		local printCalls = count_prints(function() manager:MoveInOrder(1, 1) end)
+		assertEqual(printCalls, 0, "MoveInOrder should not print debug output")
+	end)
+
+	it("MoveToBottom does not print debug output on a successful move", function()
+		local catalog = { [1] = { name = "A" }, [2] = { name = "B" } }
+		local manager = make_manager(catalog, { 1, 2 }, { [1] = true, [2] = true })
+		local printCalls = count_prints(function() manager:MoveToBottom(1) end)
+		assertEqual(printCalls, 0, "MoveToBottom should not print debug output")
+	end)
+
+	it("MoveToTop does not print debug output on a successful move", function()
+		local catalog = { [1] = { name = "A" }, [2] = { name = "B" } }
+		local manager = make_manager(catalog, { 1, 2 }, { [1] = true, [2] = true })
+		local printCalls = count_prints(function() manager:MoveToTop(2) end)
+		assertEqual(printCalls, 0, "MoveToTop should not print debug output")
+	end)
+end)
+
+describe("LibGCDI-Catalog CommitOrder", function()
+	it("saves a full ordered list and invokes onReorder, without printing", function()
+		local catalog = { [1] = { name = "A" }, [2] = { name = "B" }, [3] = { name = "C" } }
+		local manager, settings, reorderCalls = make_manager_with_reorder_spy(catalog, { 1, 2, 3 }, { [1] = true, [2] = true, [3] = true })
+		local printCalls = count_prints(function() manager:CommitOrder({ 3, 1, 2 }) end)
+		assertDeepEqual(settings.order, { 3, 1, 2 })
+		assertEqual(reorderCalls(), 1)
+		assertEqual(printCalls, 0)
+	end)
+end)
