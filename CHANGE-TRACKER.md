@@ -1,3 +1,202 @@
+# Change Tracker — Dispel Detection Probe (Phase 0)
+
+## Status (2026-08-16): RESOLVED — GO, probe code removed, superseded by the shipped feature below
+
+**Confirmed result, tested in-game by the user, per `dispel-detection-research.md`
+§9f's decision matrix:** filter **B** (`"HARMFUL|RAID_PLAYER_DISPELLABLE"`)
+correctly discriminates dispellable-vs-non-dispellable debuffs on the player
+(control square A lit for both; B lit only for the actually-dispellable one),
+survived a secret combat period (Q9 — repeated the discriminator test in
+combat, B behaved identically to out-of-combat), and correctly cleared
+within ~1s of the debuff being dispelled or expiring (Q8 — no stuck-purple
+latch observed). This is a **GO** per the decision matrix: Q5, Q7, Q8, and Q9
+all passed for filter B. The permanent native dispel-overlay feature (§9c)
+below is built directly on this result — no further probing needed, and
+§3's class/spec dispel-capability table and §8f's tri-state fallback are both
+now unnecessary, exactly as §9c/§9d predicted for a GO outcome.
+
+**Negative results worth keeping on record** (from the same test session):
+the guessed `candidateFilters` keys — `dispellable`, `isDispellable`,
+`canActivePlayerDispel`, `dispelTypes` (slots D-G) — were all silently
+ignored rather than erroring: those squares behaved like an unfiltered
+`"HARMFUL"` slot (control-group false positives, lighting for the
+non-dispellable test debuff too), not like a working filter. Bare
+`"RAID_PLAYER_DISPELLABLE"` alone (slot C, no `"HARMFUL|"` prefix) did not
+register/light at all. Both are useful negatives: the full aura-filter
+grammar string is required, and none of the `candidateFilters` guesses are
+real keys on this API.
+
+**This entry is no longer describing live code.** Per the probe's own
+"How to fully revert" section (below, kept for history), all of the probe's
+throwaway code — the module-locals, `gcdi_dispel_probe_teardown`/
+`gcdi_dispel_probe_run`, the `dispelprobe`/`dispelprobeoff` slash branches,
+and `GCDIDispelProbeSquareTemplate` in `GCDIndicator.xml` — has been deleted
+from the tree. The sections below (What this is, How to run it, test
+sequence, decision matrix, files touched, revert steps, known
+limitations/risks) are kept verbatim as a historical record of what was
+built and tested to reach the GO verdict, not as documentation of anything
+still present in `GCDIndicator.lua`/`GCDIndicator.xml`. See the "Native
+Dispel Overlay" entry immediately below this one for the shipped feature.
+
+## What this is
+
+Answers, in one in-game sitting, whether a native `AuraContainer`/
+`AddAuraSlot` binding can be filtered to "dispellable harmful auras only" and
+whether the engine reliably shows/hides the bound button across a secret
+combat period — the prerequisite questions for the native dispel-overlay
+design in `dispel-detection-research.md` §9c. It creates one `AuraContainer`
+bound to `"player"` and registers 7 `AddAuraSlot` variants (letters A-G), each
+a solid purple square anchored to a fixed, labeled position near top-center
+of the screen, each guarded in its own `pcall` so one rejected filter can't
+block the others from registering:
+
+- **A** — control: `"HARMFUL"`, no `candidateFilters`.
+- **B** — `"HARMFUL|RAID_PLAYER_DISPELLABLE"`.
+- **C** — `"RAID_PLAYER_DISPELLABLE"` (bare).
+- **D** — `"HARMFUL"` + `candidateFilters = { dispellable = true }`.
+- **E** — `"HARMFUL"` + `candidateFilters = { isDispellable = true }`.
+- **F** — `"HARMFUL"` + `candidateFilters = { canActivePlayerDispel = true }`.
+- **G** — `"HARMFUL"` + `candidateFilters = { dispelTypes = { "Magic", "Curse", "Disease", "Poison" } }`.
+
+Follows `gcdi_ensure_native_stack_container`/`gcdi_setup_native_stack_slot`'s
+existing shape/pcall pattern almost exactly (see that section immediately
+above this one's Lua code), but simplified: no `StatusBar`/`SetApplicationBar`
+(no fill value needed, just show/hide), and every debug print is limited to
+static strings/slot letters/booleans per `CLAUDE.md`'s Secret Value rules —
+never a `tostring()`/concatenation of anything read off the container,
+button, or `AuraData`.
+
+## How to run it
+
+- **Slash command**: `/gcdopt dispelprobe` — out of combat only (guarded by
+  `InCombatLockdown()`, since native frame creation must happen from a clean
+  context per `CLAUDE.md`'s UNIT_AURA/native-frame-creation rule). Prints a
+  `N/7 slots registered` summary regardless of debug mode; per-slot detail
+  (`initializeFrame fired`, `AddAuraSlot registered OK`/`pcall failed`) is
+  gated behind `configs.debugMode` (`/gcdopt debug` to toggle) via the
+  existing `debug()` helper.
+- **Cleanup**: `/gcdopt dispelprobeoff` — hides and forgets the current run's
+  container/buttons/labels, for repeat attempts without a full `/reload`.
+  Every `/gcdopt dispelprobe` call also tears down and fully discards the
+  previous container itself before creating a new one (never re-registers
+  `AddAuraSlot` ids on a live container) — see the code comment above
+  `gcdi_dispel_probe_teardown` for why: whether re-adding the same slot id
+  errors, replaces, or silently duplicates is unverified, and the simplest
+  safe answer for throwaway code is "never find out."
+
+## In-game test sequence (per `dispel-detection-research.md` §9f)
+
+1. `/reload` clean, out of combat. Run `/gcdopt dispelprobe`. Confirm the
+   chat summary shows registration counts (turn on `/gcdopt debug` first for
+   per-slot detail).
+2. **Acquire a non-dispellable debuff** (e.g. the Bloodlust/Heroism
+   exhaustion debuff from a Drums item — solo-obtainable, harmless, long
+   enough to read). **Expected pass:** only square A lights purple; B-G stay
+   dark. If any of B-G light here, that variant is not actually filtering —
+   a Q5b failure for that letter, not a success, even though it "lit up."
+3. **Acquire a debuff your current spec can actually dispel** (a caster mob's
+   Magic/Curse/Poison/Disease debuff works). Do not dispel it yet.
+   **Expected pass:** A lights, and at least one of B-G lights. Whichever
+   letter(s) lit here *and* stayed dark in step 2 answer Q5 — that filter
+   form is the one worth carrying into §9c's real design.
+4. **Dispel it (or let it expire).** Every square that lit must go dark
+   within a second or so. A square stuck purple is a disqualifying latch for
+   that letter (Q8) — per §8c's failure-asymmetry argument, a stuck-purple
+   false positive is actively harmful, not merely unhelpful.
+5. **Repeat steps 3-4 in combat** (training dummy or trash pull) — this is
+   the only step that actually proves anything, since it's the only one that
+   runs during a secret aura period (Q9).
+6. Run `/gcdopt dispelprobeoff` when done, or just `/reload`.
+
+**Decision matrix** (full version in `dispel-detection-research.md` §9f):
+A never lights → engine manages nothing on this build, native path dead. A
+lights but nothing discriminates in steps 2/3 → Q5 fail, filter grammar
+doesn't exist. A variant discriminates but never hides in step 4 → Q8 fail,
+stuck-latch, dead. A variant discriminates + hides out of combat but not in
+combat → Q9 fail, dead. A variant discriminates + hides + survives a secret
+period → **GO**, that filter form is the shipped design for §9c, and both
+§3's class/spec dispel table and §8f's tri-state fallback become unnecessary.
+Any single NO across A-G's best-behaving variant is a no-go for the whole
+native path; fall back to `dispel-detection-research.md` §9g's NO-GO branch
+(§8f tri-state on the classic scan) instead.
+
+## Files touched
+
+- **`GCDIndicator.xml`** — new virtual Button template
+  `GCDIDispelProbeSquareTemplate` (sibling to `GCDINativeStackButtonTemplate`,
+  added directly after it): one child `Texture` (`parentKey="Fill"`,
+  `setAllPoints="true"`), color set from Lua, not XML — no `StatusBar`, no
+  `ArcBar`, unlike the stack-binding template.
+- **`GCDIndicator.lua`**:
+  - New block, `GCDIndicator.lua:1698-1831` ("THROWAWAY DIAGNOSTIC PROBE:
+    dispel-filter AddAuraSlot experiment" heading), inserted immediately
+    after `gcdi_setup_all_native_stack_slots` and before `create_buff_bar`:
+    module-locals `dispelProbeContainer`, `dispelProbeWidgets`,
+    `DISPEL_PROBE_SLOTS` (the 7-slot table above), and functions
+    `gcdi_dispel_probe_teardown()` and `gcdi_dispel_probe_run()`.
+  - `SlashCmdList["GCDOPT"]` — two new branches, `elseif msg == "dispelprobe"
+    then` and `elseif msg == "dispelprobeoff" then` (`GCDIndicator.lua:4867-4873`,
+    immediately before the existing `"compact"` branch).
+  - No other function was touched. Nothing added to `GCDI.configs`,
+    `settings.*`, the update ticker, `UNIT_AURA` handling, or the options UI —
+    deliberately, per the task scope this was built under.
+
+## How to fully revert
+
+1. Delete the `-- THROWAWAY DIAGNOSTIC PROBE: dispel-filter AddAuraSlot
+   experiment` block from `GCDIndicator.lua` (module-locals + both functions,
+   `:1698-1831`).
+2. Remove the `dispelprobe`/`dispelprobeoff` branches from
+   `SlashCmdList["GCDOPT"]` (`:4867-4873`).
+3. Delete the `GCDIDispelProbeSquareTemplate` block from `GCDIndicator.xml`.
+4. Nothing else needs touching — no `.toc` change (it reuses
+   `GCDIndicator.xml`'s existing load-order entry), no `GCDI.configs` key, no
+   `settings.*` key, no options-UI checkbox, no AHK-side change (this probe
+   never renders at a companion-script-mapped coordinate; its squares are
+   deliberately off in unused screen space near top-center).
+
+## Known limitations / risks
+
+- **No live in-game verification yet.** Everything here has been checked
+  only via `loadfile`-based Lua syntax validation (this dev environment has
+  no `luaparse`-based `check.js`/`scope.js` toolkit present, and none was
+  recreated for this pass since a plain `loadfile()` compile-only check was
+  sufficient to catch syntax errors) and a manual XML tag-balance check —
+  never executed against a real WoW client. This is exactly the situation
+  the probe exists to resolve; do not read a clean syntax check as any signal
+  about whether the filters themselves work.
+- **Filter key names (D-G's `candidateFilters`) are guesses**, explicitly
+  flagged as unverified in `dispel-detection-research.md` §9d (Q5). If none
+  of them are the real key, that's an expected, useful negative result (rules
+  those forms out), not a bug in the probe.
+- **Container is re-created from scratch on every `/gcdopt dispelprobe`
+  call** rather than reused (see "How to run it" above) — intentional
+  simplicity over the sibling stack-binding experiment's reuse pattern, at
+  the cost of leaving the previous run's `AuraContainer` frame object
+  orphaned (hidden + disabled, not destroyed — WoW frames can't be truly
+  destroyed) until `/reload`. Acceptable for a manually-invoked, short-lived
+  diagnostic; would not be acceptable in permanent code.
+- **`configs.size`-based sizing is advisory, not exact.** Per
+  `dispel-detection-research.md` §9d-2/Q10, the square size is
+  `math.max(configs.size, 24)` — floored at 24px for on-screen readability
+  during manual testing, not an exact stand-in for the real §9c design's
+  `SetAllPoints(main_frame.dispelbar)` sizing. Do not treat this probe's
+  visual size as validating final on-HUD dimensions.
+
+---
+
+**2026-08-16 update**: the native dispel overlay this probe led to is no
+longer a toggleable A/B experiment — the user confirmed it working in-game
+and asked for the classic scan to be removed entirely, so it's now the sole,
+permanent detection mechanism. See `.claude/rules/dispel-indicator.md` for
+the shipped design, the verified filter-string result this probe produced,
+and what was deleted. The "Native Dispel Overlay" entry that used to follow
+this one in this file (tracking it as a toggleable experiment) has been
+removed; that file is for still-toggleable experiments, and this feature no
+longer is one.
+
+---
+
 # Change Tracker — Experimental Native Stack Binding
 
 ## Status (2026-08-11 in-game testing): NOT WORKING — parked
