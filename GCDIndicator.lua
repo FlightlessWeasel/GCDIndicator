@@ -15,7 +15,7 @@ GCDI.configs = {
 	bgPadding = 2,
 	debugMode = false,
 	useNativeStackBinding = false,  -- experimental A/B toggle, see CHANGE-TRACKER.md
-	compactMode = false,  -- flow-packed spell/item/buff layout, see CHANGE-TRACKER.md
+	compactMode = true,  -- flow-packed spell/item/buff layout, see CHANGE-TRACKER.md
 }
 local configs = GCDI.configs
 
@@ -120,6 +120,10 @@ local RESOURCE_COLORS = {
 	stagger = { 0.35, 0.90, 0.55 },   -- Brewmaster stagger vs max health
 }
 
+local WHITE_TEXTURE = "Interface\\Buttons\\WHITE8X8"
+local function init_status_bar_texture(bar) bar:SetStatusBarTexture(WHITE_TEXTURE) local tex = bar:GetStatusBarTexture() if tex and tex.SetHorizTile then tex:SetHorizTile(false) end end
+local GCDI_PREFIX = "|cff00ff00GCDIndicator:|r "
+
 -- Use range colors and items from library
 local RANGE_COLORS = LibRange.RANGE_COLORS
 GCDI.RANGE_ITEMS = LibRange.RANGE_ITEMS
@@ -129,53 +133,7 @@ local RANGE_ITEMS = GCDI.RANGE_ITEMS
 local RANGE_YARDS_ORDER = GCDI.RANGE_YARDS_ORDER
 
 local DEFAULT_SETTINGS = {
-	globalRangeFallbackYards = 5,  -- Default melee (5 yards); keyed by yards, not index
-	rangeProxySpells = {},        -- [yards] = spellID for in-combat range; set in options
-	-- Legacy (migrated on load):
-	globalRangeFallback = nil,
-	meleeRangeProxySpellID = nil,
-	rangeProxySpellIDs = nil,
-	spellSettings = {},
-	spellOrder = {},
-	itemSettings = {},
-	itemOrder = {},
-	buffSettings = {},
-	buffOrder = {},
-	profiles = {},
-	currentProfile = nil,
-	resourceSettings = {
-		health = true,
-		mana = true,
-		rage = true,
-		energy = true,
-		focus = true,
-		runicPower = true,
-		runes = true,
-		comboPoints = true,
-		soulShards = true,
-		holyPower = true,
-		chi = true,
-		arcaneCharges = true,
-		insanity = true,
-		maelstrom = true,
-		fury = true,
-		pain = true,
-		astralPower = true,
-		essence = true,
-		stagger = false,
-	},
-	gcdSettings = {
-		showGcdRow = true,
-		showStance = true,
-		showGcd = true,
-		showCombat = true,
-		showAggro = true,
-		showMobCount = true,
-		showDispel = true,     -- Dispellable debuff on player (purple)
-		mobCountRange = 8,     -- Default range in yards
-		mobCountThreshold = 3, -- Default threshold for white indicator
-		useLibRangeCheck = false, -- GCD tab: use LibRangeCheck-3.0 for spell range indicator colors
-	},
+	globalRangeFallbackYards = 5,  -- Default melee (5 yards)
 }
 
 -- Settings reference
@@ -243,7 +201,7 @@ local layoutBounds = { width = 200, height = 100 }
 
 local function debug(msg)
 	if configs.debugMode then
-		print("|cff00ff00GCDIndicator:|r " .. msg)
+		print(GCDI_PREFIX .. msg)
 	end
 end
 
@@ -260,44 +218,18 @@ local function applyTimerToBar(bar, durObj)
 	end
 end
 
--- Force stop a timer bar animation
-local function stopTimerBar(bar)
-	bar:SetMinMaxValues(0, 1)
-	bar:SetValue(0)
-end
-
 -- deepcopy is now provided by LibGCDI-Profiles
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- SPELL/ITEM HELPERS (exposed to GCDI)
 -- ═══════════════════════════════════════════════════════════════════════════
 
-function GCDI.is_spell_enabled(spellID)
-	if not settings then return true end
-	local spellSettings = settings.spellSettings[spellID]
-	if spellSettings and spellSettings.enabled == false then
-		return false
-	end
-	return true
-end
+local function make_enabled_checker(category) return function(key) if not settings then return true end local catSettings = settings[category] if catSettings and catSettings[key] and catSettings[key].enabled == false then return false end return true end end
+GCDI.is_spell_enabled = make_enabled_checker("spellSettings")
+GCDI.is_item_enabled = make_enabled_checker("itemSettings")
+GCDI.is_buff_enabled = make_enabled_checker("buffSettings")
 
-function GCDI.is_item_enabled(itemKey)
-	if not settings then return true end
-	local itemSettings = settings.itemSettings and settings.itemSettings[itemKey]
-	if itemSettings and itemSettings.enabled == false then
-		return false
-	end
-	return true
-end
-
-function GCDI.is_buff_enabled(spellID)
-	if not settings then return true end
-	local buffSettings = settings.buffSettings and settings.buffSettings[spellID]
-	if buffSettings and buffSettings.enabled == false then
-		return false
-	end
-	return true
-end
+function GCDI.get_setting(category, key, field, default) if not settings then return default end local catSettings = settings[category] if not catSettings then return default end local entry = catSettings[key] if not entry then return default end return entry[field] or default end
 
 function GCDI.get_buff_settings(spellID)
 	if not settings or not settings.buffSettings then return {} end
@@ -393,7 +325,7 @@ save_profile = function(name)
 	}
 	local success = LibProfiles:SaveProfile(settings, name, catalogs)
 	if success then
-		print("|cff00ff00GCDIndicator:|r Profile '" .. name .. "' saved!")
+		print("GCDI_PREFIXProfile '" .. name .. "' saved!")
 	end
 	return success
 end
@@ -413,12 +345,11 @@ function GCDI.load_profile(name)
 	local success = LibProfiles:LoadProfile(settings, name, catalogs)
 	
 	if success then
-		rebuild_spell_bars()
-		rebuild_item_bars()
+		rebuild_spell_bars() -- also rebuilds item bars
 		rebuild_buff_bars()
 		reposition_all()
 		if GCDI.refresh_options_frame then GCDI.refresh_options_frame() end
-		print("|cff00ff00GCDIndicator:|r Profile '" .. name .. "' loaded!")
+		print("GCDI_PREFIXProfile '" .. name .. "' loaded!")
 	end
 	return success
 end
@@ -426,7 +357,7 @@ end
 delete_profile = function(name)
 	local success = LibProfiles:DeleteProfile(settings, name)
 	if success then
-		print("|cff00ff00GCDIndicator:|r Profile '" .. name .. "' deleted!")
+		print("GCDI_PREFIXProfile '" .. name .. "' deleted!")
 	end
 	return success
 end
@@ -464,7 +395,7 @@ local function init_catalog_managers()
 		isEnabled = GCDI.is_spell_enabled,
 		onReorder = function() 
 			rebuild_spell_bars()
-			print("|cff00ff00GCDIndicator:|r Spell bars rebuilt")
+			print("GCDI_PREFIXSpell bars rebuilt")
 		end,
 	})
 	
@@ -478,7 +409,7 @@ local function init_catalog_managers()
 		onReorder = function() 
 			rebuild_item_bars()
 			reposition_all()
-			print("|cff00ff00GCDIndicator:|r Item bars rebuilt")
+			print("GCDI_PREFIXItem bars rebuilt")
 		end,
 	})
 	
@@ -492,7 +423,7 @@ local function init_catalog_managers()
 		onReorder = function() 
 			rebuild_buff_bars()
 			reposition_all()
-			print("|cff00ff00GCDIndicator:|r Buff bars rebuilt")
+			print("GCDI_PREFIXBuff bars rebuilt")
 		end,
 	})
 end
@@ -633,7 +564,7 @@ GCDI.should_track_spell_icon = should_track_spell_icon
 -- (on-GCD) unless the user explicitly flags a spell otherwise. Metadata
 -- only - doesn't affect the addon's own cooldown-swipe display (that's
 -- already GCD-agnostic); exists so the companion-script config export
--- (export_ahk_config) can generate an accurate hasGCD field instead of
+-- (export_companion_config) can generate an accurate hasGCD field instead of
 -- leaving it manual.
 local function is_spell_off_gcd(spellID)
 	if not settings then return false end
@@ -767,13 +698,20 @@ end
 -- Spell charge display: same pattern as buff stacks — one StatusBar, black separators, currentCharges passed through to SetValue.
 local SPELL_CHARGE_STACK_COLOR = { 0.4, 0.7, 1.0 }
 
+local function compute_separator_layout(maxSegments, totalWidth, separatorWidth)
+	local numSeps = maxSegments - 1
+	local totalSepWidth = numSeps * separatorWidth
+	local segmentWidth = (totalWidth - totalSepWidth) / maxSegments
+	return segmentWidth, totalSepWidth, numSeps
+end
+
 local function layout_spell_charge_stack_separators(data)
 	if not data or not data.chargeStackBar then return end
 	local maxStacks = math.max(data.chargeStackMax or 1, 1)
 	local barSize = configs.barHeight
 	local separatorWidth = 2
 	local totalWidth = maxStacks * barSize + (maxStacks - 1) * separatorWidth
-	local segmentWidth = (totalWidth - (maxStacks - 1) * separatorWidth) / maxStacks
+	local segmentWidth = compute_separator_layout(maxStacks, totalWidth, separatorWidth)
 	local sf = data.chargeStackBar.separatorFrame
 	if not sf then return end
 	if not data.chargeStackBar.separators then
@@ -869,6 +807,59 @@ local function update_all_charge_indicators()
 	update_charge_indicators_tick()
 end
 
+local function create_bar_container(parent, texture, compact, barSize, pad)
+	local containerWidth = compact and barSize or (barSize * 4 + pad * 2)
+	local container = CreateFrame("Frame", nil, parent)
+	container:SetSize(containerWidth, barSize + pad * 2)
+	local bg = container:CreateTexture(nil, "BACKGROUND")
+	bg:SetAllPoints()
+	bg:SetColorTexture(0, 0, 0, 1)
+	local icon = container:CreateTexture(nil, "ARTWORK")
+	icon:SetSize(barSize, barSize)
+	icon:SetPoint("LEFT", pad, 0)
+	icon:SetTexture(texture)
+	icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+	if compact then icon:Hide() end
+	local clipContainer = CreateFrame("Frame", nil, container)
+	clipContainer:SetSize(barSize, barSize)
+	if compact then clipContainer:SetPoint("LEFT", pad, 0) else clipContainer:SetPoint("LEFT", icon, "RIGHT", 2, 0) end
+	clipContainer:SetClipsChildren(true)
+	local cdBg = clipContainer:CreateTexture(nil, "BACKGROUND")
+	cdBg:SetAllPoints()
+	cdBg:SetColorTexture(1, 1, 1, 1)
+	local bar = CreateFrame("StatusBar", nil, clipContainer)
+	init_status_bar_texture(bar)
+	bar:SetMinMaxValues(0, 1)
+	bar:SetValue(0)
+	bar:SetSize(10000, barSize)
+	bar:SetStatusBarColor(0, 0, 0)
+	bar:SetPoint("LEFT")
+	return container, icon, clipContainer, bar
+end
+
+local function create_stack_separator_area(parent, anchorElement, maxStacks, barSize, color, initialValue)
+	local separatorWidth = 2
+	local stackBarWidth = maxStacks * barSize + (maxStacks - 1) * separatorWidth
+	local stackArea = CreateFrame("Frame", nil, parent)
+	stackArea:SetSize(stackBarWidth, barSize)
+	stackArea:SetPoint("LEFT", anchorElement, "RIGHT", 2, 0)
+	local sb = CreateFrame("StatusBar", nil, stackArea)
+	sb:SetPoint("TOPLEFT", stackArea, "TOPLEFT", 0, 0)
+	sb:SetPoint("BOTTOMRIGHT", stackArea, "BOTTOMRIGHT", 0, 0)
+	init_status_bar_texture(sb)
+	sb:SetStatusBarColor(color[1], color[2], color[3], 1)
+	sb:SetMinMaxValues(0, maxStacks)
+	sb:SetValue(initialValue)
+	local separatorFrame = CreateFrame("Frame", nil, stackArea)
+	separatorFrame:SetAllPoints(stackArea)
+	separatorFrame:SetFrameLevel(stackArea:GetFrameLevel() + 10)
+	return stackArea, {
+		bar = sb,
+		separatorFrame = separatorFrame,
+		separators = {},
+	}
+end
+
 local function create_spell_bar(spellID, spellName, texture, actionSlot)
 	local barIndex = #spellBars + 1
 	local barSize = configs.barHeight
@@ -902,45 +893,8 @@ local function create_spell_bar(spellID, spellName, texture, actionSlot)
 	local iconWidth = compact and 0 or (barSize + 2)  -- icon square + gap before cooldown (0 in compact mode)
 	local containerWidth = barSize + iconWidth + rangeWidth + chargeWidth + extraGap + iconChangeWidth + pad * 2
 
-	local container = CreateFrame("Frame", nil, main_frame)
+	local container, icon, clipContainer, bar = create_bar_container(main_frame, texture, compact, barSize, pad)
 	container:SetSize(containerWidth, barSize + pad * 2)
-
-	local bg = container:CreateTexture(nil, "BACKGROUND")
-	bg:SetAllPoints()
-	bg:SetColorTexture(0, 0, 0, 1)
-
-	-- Icon texture is always created (icon-change detection reads/writes it
-	-- regardless of mode) but hidden and excluded from layout in compact mode.
-	local icon = container:CreateTexture(nil, "ARTWORK")
-	icon:SetSize(barSize, barSize)
-	icon:SetPoint("LEFT", pad, 0)
-	icon:SetTexture(texture)
-	icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
-	if compact then
-		icon:Hide()
-	end
-
-	local clipContainer = CreateFrame("Frame", nil, container)
-	clipContainer:SetSize(barSize, barSize)
-	if compact then
-		clipContainer:SetPoint("LEFT", pad, 0)
-	else
-		clipContainer:SetPoint("LEFT", icon, "RIGHT", 2, 0)
-	end
-	clipContainer:SetClipsChildren(true)
-	
-	local cdBg = clipContainer:CreateTexture(nil, "BACKGROUND")
-	cdBg:SetAllPoints()
-	cdBg:SetColorTexture(1, 1, 1, 1)
-	
-	local bar = CreateFrame("StatusBar", nil, clipContainer)
-	bar:SetStatusBarTexture("Interface\\Buttons\\WHITE8X8")
-	bar:GetStatusBarTexture():SetHorizTile(false)
-	bar:SetMinMaxValues(0, 1)
-	bar:SetValue(0)
-	bar:SetSize(10000, barSize)
-	bar:SetStatusBarColor(0, 0, 0)
-	bar:SetPoint("LEFT")
 	
 	-- Range indicator (after cooldown bar) - only for non-self-cast spells
 	local rangeBase = nil
@@ -967,34 +921,8 @@ local function create_spell_bar(spellID, spellName, texture, actionSlot)
 	
 	if showChargeIndicators then
 		chargeStackMax = maxCharges
-		local separatorWidth = 2
-		local stackBarWidth = maxCharges * barSize + (maxCharges - 1) * separatorWidth
-		
-		local stackArea = CreateFrame("Frame", nil, container)
-		stackArea:SetSize(stackBarWidth, barSize)
-		stackArea:SetPoint("LEFT", lastElement, "RIGHT", 2, 0)
-		
-		local sb = CreateFrame("StatusBar", nil, stackArea)
-		sb:SetPoint("TOPLEFT", stackArea, "TOPLEFT", 0, 0)
-		sb:SetPoint("BOTTOMRIGHT", stackArea, "BOTTOMRIGHT", 0, 0)
-		sb:SetStatusBarTexture("Interface\\Buttons\\WHITE8X8")
-		local sbtex = sb:GetStatusBarTexture()
-		if sbtex and sbtex.SetHorizTile then
-			sbtex:SetHorizTile(false)
-		end
-		sb:SetStatusBarColor(SPELL_CHARGE_STACK_COLOR[1], SPELL_CHARGE_STACK_COLOR[2], SPELL_CHARGE_STACK_COLOR[3], 1)
-		sb:SetMinMaxValues(0, maxCharges)
-		sb:SetValue(maxCharges)
-		
-		local separatorFrame = CreateFrame("Frame", nil, stackArea)
-		separatorFrame:SetAllPoints(stackArea)
-		separatorFrame:SetFrameLevel(stackArea:GetFrameLevel() + 10)
-		
-		chargeStackBar = {
-			bar = sb,
-			separatorFrame = separatorFrame,
-			separators = {},
-		}
+		local stackArea, csb = create_stack_separator_area(container, lastElement, maxCharges, barSize, SPELL_CHARGE_STACK_COLOR, maxCharges)
+		chargeStackBar = csb
 		lastElement = stackArea
 		layout_spell_charge_stack_separators({ chargeStackBar = chargeStackBar, chargeStackMax = chargeStackMax })
 	end
@@ -1143,9 +1071,6 @@ local function should_show_item_charges(itemKey)
 	return false  -- Default to not showing charges
 end
 
--- Export for options UI
-GCDI.should_show_item_charges = should_show_item_charges
-
 local function create_item_bar(itemKey, itemName, texture, itemID, slot)
 	local barIndex = #itemBars + 1
 	local barSize = configs.barHeight
@@ -1160,45 +1085,9 @@ local function create_item_bar(itemKey, itemName, texture, itemID, slot)
 	-- Layout: [Icon][Cooldown] or [Icon][Cooldown][Charge] (icon dropped in compact mode)
 	local numSquares = 1 + (compact and 0 or 1) + (showCharges and 1 or 0)  -- cooldown + icon? + charge?
 	local numGaps = ((compact and 0 or 1) + (showCharges and 1 or 0)) * 2  -- one 2px gap per boundary present
-	local container = CreateFrame("Frame", nil, main_frame)
+	local container, icon, clipContainer, bar = create_bar_container(main_frame, texture, compact, barSize, pad)
 	container:SetSize((barSize * numSquares + numGaps) + pad * 2, barSize + pad * 2)
 
-	local bg = container:CreateTexture(nil, "BACKGROUND")
-	bg:SetAllPoints()
-	bg:SetColorTexture(0, 0, 0, 1)
-
-	local icon = container:CreateTexture(nil, "ARTWORK")
-	icon:SetSize(barSize, barSize)
-	icon:SetPoint("LEFT", pad, 0)
-	icon:SetTexture(texture)
-	icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
-	if compact then
-		icon:Hide()
-	end
-
-	local clipContainer = CreateFrame("Frame", nil, container)
-	clipContainer:SetSize(barSize, barSize)
-	if compact then
-		clipContainer:SetPoint("LEFT", pad, 0)
-	else
-		clipContainer:SetPoint("LEFT", icon, "RIGHT", 2, 0)
-	end
-	clipContainer:SetClipsChildren(true)
-
-	local barBg = clipContainer:CreateTexture(nil, "BACKGROUND")
-	barBg:SetAllPoints()
-	barBg:SetColorTexture(1, 1, 1, 1)
-	barBg:SetDrawLayer("BACKGROUND", -1)
-	
-	local bar = CreateFrame("StatusBar", nil, clipContainer)
-	bar:SetStatusBarTexture("Interface\\Buttons\\WHITE8X8")
-	bar:GetStatusBarTexture():SetHorizTile(false)
-	bar:SetMinMaxValues(0, 1)
-	bar:SetValue(0)
-	bar:SetSize(10000, barSize)
-	bar:SetStatusBarColor(0, 0, 0)
-	bar:SetPoint("LEFT")
-	
 	-- Charge indicator (only if enabled)
 	local chargeOverlay = nil
 	if showCharges then
@@ -1255,7 +1144,7 @@ local function layout_buff_stack_separators(data)
 	local barSize = configs.barHeight
 	local separatorWidth = 2
 	local totalWidth = maxStacks * barSize + (maxStacks - 1) * separatorWidth
-	local segmentWidth = (totalWidth - (maxStacks - 1) * separatorWidth) / maxStacks
+	local segmentWidth = compute_separator_layout(maxStacks, totalWidth, separatorWidth)
 	local sf = data.stackBar.separatorFrame
 	if not sf then return end
 	if not data.stackBar.separators then
@@ -1353,6 +1242,8 @@ local function gcdi_set_stack_bar_value(bar, maxS, apps)
 		bar:SetValue(apps)
 	end
 end
+
+local buffAuraUpdateGeneration = 0
 
 local function update_buff_bar(buffID)
 	if previewMode then return end  -- Skip updates in preview mode
@@ -1468,18 +1359,18 @@ local function update_buff_bar(buffID)
 		end
 		
 		-- Duration: GetAuraDuration accepts secret IDs when tainted; pcall in case 12.1+ throws under secrecy.
-		-- Arm the timer only when the aura instance changes. SetTimerDuration hands the
+		-- Arm the timer once per aura update generation. SetTimerDuration hands the
 		-- bar a duration the client animates itself; re-arming every tick both restarts
 		-- the ExponentialEaseOut interpolation and re-does the work for nothing.
 		if data.durationBar and cdmFrame and cdmFrame.auraInstanceID ~= nil then
-			if data.durationArmedFor ~= cdmFrame.auraInstanceID then
+			if data.durationArmedGeneration ~= buffAuraUpdateGeneration then
 				local unit = (cdmFrame.GetAuraDataUnit and cdmFrame:GetAuraDataUnit())
 					or data._lastAuraUnit
 					or cdmFrame.auraDataUnit
 					or "player"
 				local ok, durObj = pcall(C_UnitAuras.GetAuraDuration, unit, cdmFrame.auraInstanceID)
 				if ok and durObj then
-					data.durationArmedFor = cdmFrame.auraInstanceID
+					data.durationArmedGeneration = buffAuraUpdateGeneration
 					data.durationBar.bar:SetMinMaxValues(0, 1)
 					data.durationBar.bar:SetTimerDuration(durObj, Enum.StatusBarInterpolation.ExponentialEaseOut, Enum.StatusBarTimerDirection.RemainingTime)
 				end
@@ -1498,7 +1389,7 @@ local function update_buff_bar(buffID)
 
 			-- Reset duration bar
 			if data.durationBar then
-				data.durationArmedFor = nil
+				data.durationArmedGeneration = nil
 				data.durationBar.bar:SetValue(0)
 			end
 		end
@@ -1555,6 +1446,7 @@ end
 -- BuffIconCooldownViewer aura handlers taints execution; CooldownViewer then errors when comparing spellID.
 local buffBarsAfterAuraScheduled = false
 local function schedule_update_all_buff_bars_after_aura()
+	buffAuraUpdateGeneration = buffAuraUpdateGeneration + 1
 	if buffBarsAfterAuraScheduled or previewMode then return end
 	buffBarsAfterAuraScheduled = true
 	C_Timer.After(0, function()
@@ -1581,6 +1473,29 @@ end
 -- so this overlays an invisible native button's own bar exactly on top of our
 -- existing stack StatusBar and hides ours once the engine confirms the bind.
 local nativeStackContainers = {}  -- [unit] -> AuraContainer
+
+-- Tears down every native AuraContainer created so far and drops our Lua
+-- references to them. There is no documented/verified AddAuraSlot removal
+-- API (checked warcraft.wiki.gg's AuraContainer:AddAuraSlot page and this
+-- codebase for an existing precedent - neither has one), so rather than
+-- fabricate an unverified removal call, this destroys the whole container
+-- frame instead: Hide() + SetParent(nil) is the same teardown pattern this
+-- file already uses elsewhere (clear_buff_bars) to release frames, and
+-- gcdi_ensure_native_stack_container's own comment notes a container must be
+-- shown+enabled to self-register aura updates, so hiding/unparenting it
+-- should stop that registration along with every slot bound to it. Must be
+-- called before gcdi_setup_all_native_stack_slots() creates fresh containers
+-- on rebuild, otherwise the old containers' bindings would keep accumulating
+-- alongside the new ones.
+local function gcdi_teardown_native_stack_containers()
+	for unit, container in pairs(nativeStackContainers) do
+		if container then
+			container:Hide()
+			container:SetParent(nil)
+		end
+	end
+	wipe(nativeStackContainers)
+end
 
 local function gcdi_ensure_native_stack_container(unit)
 	local existing = nativeStackContainers[unit]
@@ -1718,23 +1633,8 @@ local function create_buff_bar(buffKey, spellName, texture, tooltipSpellID)
 	local iconWidth = compact and 0 or (barSize + 2)  -- icon square + gap before active indicator (0 in compact mode)
 	local containerWidth = barSize + iconWidth + stackWidth + extraGap + durationBarWidth + pad * 2
 
-	local container = CreateFrame("Frame", nil, main_frame)
+	local container, icon, clipContainer, bar = create_bar_container(main_frame, texture, compact, barSize, pad)
 	container:SetSize(containerWidth, barSize + pad * 2)
-
-	local bg = container:CreateTexture(nil, "BACKGROUND")
-	bg:SetAllPoints()
-	bg:SetColorTexture(0, 0, 0, 1)
-
-	-- Icon texture is always created but hidden and excluded from layout in
-	-- compact mode (mirrors create_spell_bar).
-	local icon = container:CreateTexture(nil, "ARTWORK")
-	icon:SetSize(barSize, barSize)
-	icon:SetPoint("LEFT", pad, 0)
-	icon:SetTexture(texture)
-	icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
-	if compact then
-		icon:Hide()
-	end
 
 	-- Active indicator (shows if buff is active)
 	local activeIndicator = container:CreateTexture(nil, "ARTWORK")
@@ -1753,43 +1653,15 @@ local function create_buff_bar(buffKey, spellName, texture, tooltipSpellID)
 
 	if showStacks and maxStacks > 0 then
 		stackBarMax = maxStacks
-		local separatorWidth = 2
-		local stackBarWidth = maxStacks * barSize + (maxStacks - 1) * separatorWidth
-
-		local stackArea = CreateFrame("Frame", nil, container)
-		stackArea:SetSize(stackBarWidth, barSize)
-		stackArea:SetPoint("LEFT", activeIndicator, "RIGHT", 2, 0)
-
-		local sb = CreateFrame("StatusBar", nil, stackArea)
-		sb:SetPoint("TOPLEFT", stackArea, "TOPLEFT", 0, 0)
-		sb:SetPoint("BOTTOMRIGHT", stackArea, "BOTTOMRIGHT", 0, 0)
-		sb:SetStatusBarTexture("Interface\\Buttons\\WHITE8X8")
-		local sbtex = sb:GetStatusBarTexture()
-		if sbtex and sbtex.SetHorizTile then
-			sbtex:SetHorizTile(false)
-		end
-		sb:SetStatusBarColor(BUFF_COLORS.stackSegment[1], BUFF_COLORS.stackSegment[2], BUFF_COLORS.stackSegment[3], 1)
-		sb:SetMinMaxValues(0, maxStacks)
-		sb:SetValue(0)
-
-		local separatorFrame = CreateFrame("Frame", nil, stackArea)
-		separatorFrame:SetAllPoints(stackArea)
-		separatorFrame:SetFrameLevel(stackArea:GetFrameLevel() + 10)
-
-		local separators = {}
+		local stackArea, csb = create_stack_separator_area(container, activeIndicator, maxStacks, barSize, BUFF_COLORS.stackSegment, 0)
 		for i = 1, 9 do
-			local sep = separatorFrame:CreateTexture(nil, "OVERLAY")
-			sep:SetSize(separatorWidth, barSize)
+			local sep = csb.separatorFrame:CreateTexture(nil, "OVERLAY")
+			sep:SetSize(2, barSize)
 			sep:SetColorTexture(0, 0, 0, 1)
 			sep:Hide()
-			separators[i] = sep
+			csb.separators[i] = sep
 		end
-
-		stackBar = {
-			bar = sb,
-			separatorFrame = separatorFrame,
-			separators = separators,
-		}
+		stackBar = csb
 		lastElement = stackArea
 	end
 	
@@ -1815,7 +1687,7 @@ local function create_buff_bar(buffKey, spellName, texture, tooltipSpellID)
 		local bar = CreateFrame("StatusBar", nil, clipFrame)
 		bar:SetSize(barWidth, barSize)
 		bar:SetPoint("LEFT", clipFrame, "LEFT", offset, 0)
-		bar:SetStatusBarTexture("Interface\\Buttons\\WHITE8X8")
+		init_status_bar_texture(bar)
 		bar:SetStatusBarColor(0, 0, 0, 1)
 		bar:SetMinMaxValues(0, 1)
 		bar:SetValue(1)
@@ -1866,6 +1738,7 @@ local function clear_buff_bars()
 	end
 	wipe(trackedBuffs)
 	wipe(buffBars)
+	gcdi_teardown_native_stack_containers()
 end
 
 -- ═══════════════════════════════════════════════════════════════════════════
@@ -1892,7 +1765,7 @@ local function init_lib_range()
 		isPreviewMode = function() return previewMode end,
 		debugPrint = function(msg)
 			if configs.debugMode then
-				print("|cff00ff00GCDIndicator:|r " .. msg)
+				print(GCDI_PREFIX .. msg)
 			end
 		end,
 	})
@@ -1902,8 +1775,6 @@ end
 local function detect_native_range_for_spells()
 	LibRange:DetectNativeRangeForSpells()
 end
-
-GCDI.detect_native_range_for_spells = detect_native_range_for_spells
 
 local function update_range_indicators()
 	LibRange:UpdateRangeIndicators()
@@ -1928,7 +1799,7 @@ local function create_resource_bar(name, color)
 	bg:SetColorTexture(0, 0, 0, 1)
 	
 	local bar = CreateFrame("StatusBar", nil, container)
-	bar:SetStatusBarTexture("Interface\\Buttons\\WHITE8X8")
+	init_status_bar_texture(bar)
 	bar:SetMinMaxValues(0, 100)
 	bar:SetValue(0)
 	bar:SetPoint("TOPLEFT", pad, -pad)
@@ -1954,11 +1825,7 @@ local function setup_health_heal_absorb_bar(data)
 	healthBar:SetClipsChildren(true)
 	local absorbBar = CreateFrame("StatusBar", nil, healthBar)
 	absorbBar:SetFrameLevel(healthBar:GetFrameLevel() + 3)
-	absorbBar:SetStatusBarTexture("Interface\\Buttons\\WHITE8X8")
-	local abTex = absorbBar:GetStatusBarTexture()
-	if abTex and abTex.SetHorizTile then
-		abTex:SetHorizTile(false)
-	end
+	init_status_bar_texture(absorbBar)
 	absorbBar:SetStatusBarColor(0, 0, 0, 1)
 	absorbBar:SetMinMaxValues(0, 100)
 	absorbBar:SetValue(0)
@@ -2021,25 +1888,20 @@ local function update_health_bar()
 	end
 end
 
-local function update_rage_bar()
-	if previewMode then return end
-	if not resourceBars.rage then return end
-	local bar = resourceBars.rage.bar
-	local rawMax = UnitPowerMax("player", Enum.PowerType.Rage)
-	local max = tonumber(rawMax) or 100
-	bar:SetMinMaxValues(0, math.max(max, 1))
-	bar:SetValue(UnitPower("player", Enum.PowerType.Rage))
+local function create_simple_resource_updater(key, powerType)
+	return function()
+		if previewMode then return end
+		if not resourceBars[key] then return end
+		local bar = resourceBars[key].bar
+		local rawMax = UnitPowerMax("player", powerType)
+		local max = tonumber(rawMax) or 100
+		bar:SetMinMaxValues(0, math.max(max, 1))
+		bar:SetValue(UnitPower("player", powerType))
+	end
 end
 
-local function update_energy_bar()
-	if previewMode then return end
-	if not resourceBars.energy then return end
-	local bar = resourceBars.energy.bar
-	local rawMax = UnitPowerMax("player", Enum.PowerType.Energy)
-	local max = tonumber(rawMax) or 100
-	bar:SetMinMaxValues(0, math.max(max, 1))
-	bar:SetValue(UnitPower("player", Enum.PowerType.Energy))
-end
+local update_rage_bar = create_simple_resource_updater("rage", Enum.PowerType.Rage)
+local update_energy_bar = create_simple_resource_updater("energy", Enum.PowerType.Energy)
 
 local function update_combo_points_bar()
 	if previewMode then return end
@@ -2061,12 +1923,10 @@ local function update_combo_points_bar()
 	-- Fixed total width of 200px, calculate segment width based on max
 	local totalWidth = 200
 	local separatorWidth = 2
-	local numSeparators = max - 1
-	local totalSeparatorWidth = numSeparators * separatorWidth
-	local segmentWidth = (totalWidth - totalSeparatorWidth) / max
+	local segmentWidth = compute_separator_layout(max, totalWidth, separatorWidth)
 	local pad = configs.bgPadding
 	data.container:SetWidth(totalWidth + pad * 2)
-	
+
 	if data.separators and data.separatorFrame then
 		for i, sep in ipairs(data.separators) do
 			if i < max then
@@ -2081,35 +1941,9 @@ local function update_combo_points_bar()
 	end
 end
 
-local function update_mana_bar()
-	if previewMode then return end
-	if not resourceBars.mana then return end
-	local bar = resourceBars.mana.bar
-	local rawMax = UnitPowerMax("player", Enum.PowerType.Mana)
-	local max = tonumber(rawMax) or 100
-	bar:SetMinMaxValues(0, math.max(max, 1))
-	bar:SetValue(UnitPower("player", Enum.PowerType.Mana))
-end
-
-local function update_focus_bar()
-	if previewMode then return end
-	if not resourceBars.focus then return end
-	local bar = resourceBars.focus.bar
-	local rawMax = UnitPowerMax("player", Enum.PowerType.Focus)
-	local max = tonumber(rawMax) or 100
-	bar:SetMinMaxValues(0, math.max(max, 1))
-	bar:SetValue(UnitPower("player", Enum.PowerType.Focus))
-end
-
-local function update_runic_power_bar()
-	if previewMode then return end
-	if not resourceBars.runicPower then return end
-	local bar = resourceBars.runicPower.bar
-	local rawMax = UnitPowerMax("player", Enum.PowerType.RunicPower)
-	local max = tonumber(rawMax) or 100
-	bar:SetMinMaxValues(0, math.max(max, 1))
-	bar:SetValue(UnitPower("player", Enum.PowerType.RunicPower))
-end
+local update_mana_bar = create_simple_resource_updater("mana", Enum.PowerType.Mana)
+local update_focus_bar = create_simple_resource_updater("focus", Enum.PowerType.Focus)
+local update_runic_power_bar = create_simple_resource_updater("runicPower", Enum.PowerType.RunicPower)
 
 local function update_runes_bar()
 	if previewMode then return end
@@ -2139,9 +1973,7 @@ local function update_runes_bar()
 	-- Fixed total width of 200px, calculate segment width based on max
 	local totalWidth = 200
 	local separatorWidth = 2
-	local numSeparators = max - 1
-	local totalSeparatorWidth = numSeparators * separatorWidth
-	local segmentWidth = (totalWidth - totalSeparatorWidth) / max
+	local segmentWidth = compute_separator_layout(max, totalWidth, separatorWidth)
 	local pad = configs.bgPadding
 	data.container:SetWidth(totalWidth + pad * 2)
 	
@@ -2195,9 +2027,7 @@ local function update_charge_bar(data, powerType, defaultMax)
 	-- Update width and separators like combo points
 	local totalWidth = 200
 	local separatorWidth = 2
-	local numSeparators = max - 1
-	local totalSeparatorWidth = numSeparators * separatorWidth
-	local segmentWidth = (totalWidth - totalSeparatorWidth) / max
+	local segmentWidth = compute_separator_layout(max, totalWidth, separatorWidth)
 	local pad = configs.bgPadding
 	data.container:SetWidth(totalWidth + pad * 2)
 
@@ -2231,55 +2061,11 @@ local function update_arcane_charges_bar()
 	update_charge_bar(resourceBars.arcaneCharges, Enum.PowerType.ArcaneCharges, 4)
 end
 
-local function update_insanity_bar()
-	if previewMode then return end
-	if not resourceBars.insanity then return end
-	local bar = resourceBars.insanity.bar
-	local rawMax = UnitPowerMax("player", Enum.PowerType.Insanity)
-	local max = tonumber(rawMax) or 100
-	bar:SetMinMaxValues(0, math.max(max, 1))
-	bar:SetValue(UnitPower("player", Enum.PowerType.Insanity))
-end
-
-local function update_maelstrom_bar()
-	if previewMode then return end
-	if not resourceBars.maelstrom then return end
-	local bar = resourceBars.maelstrom.bar
-	local rawMax = UnitPowerMax("player", Enum.PowerType.Maelstrom)
-	local max = tonumber(rawMax) or 100
-	bar:SetMinMaxValues(0, math.max(max, 1))
-	bar:SetValue(UnitPower("player", Enum.PowerType.Maelstrom))
-end
-
-local function update_fury_bar()
-	if previewMode then return end
-	if not resourceBars.fury then return end
-	local bar = resourceBars.fury.bar
-	local rawMax = UnitPowerMax("player", Enum.PowerType.Fury)
-	local max = tonumber(rawMax) or 100
-	bar:SetMinMaxValues(0, math.max(max, 1))
-	bar:SetValue(UnitPower("player", Enum.PowerType.Fury))
-end
-
-local function update_pain_bar()
-	if previewMode then return end
-	if not resourceBars.pain then return end
-	local bar = resourceBars.pain.bar
-	local rawMax = UnitPowerMax("player", Enum.PowerType.Pain)
-	local max = tonumber(rawMax) or 100
-	bar:SetMinMaxValues(0, math.max(max, 1))
-	bar:SetValue(UnitPower("player", Enum.PowerType.Pain))
-end
-
-local function update_lunar_power_bar()
-	if previewMode then return end
-	if not resourceBars.astralPower then return end
-	local bar = resourceBars.astralPower.bar
-	local rawMax = UnitPowerMax("player", Enum.PowerType.LunarPower)
-	local max = tonumber(rawMax) or 100
-	bar:SetMinMaxValues(0, math.max(max, 1))
-	bar:SetValue(UnitPower("player", Enum.PowerType.LunarPower))
-end
+local update_insanity_bar = create_simple_resource_updater("insanity", Enum.PowerType.Insanity)
+local update_maelstrom_bar = create_simple_resource_updater("maelstrom", Enum.PowerType.Maelstrom)
+local update_fury_bar = create_simple_resource_updater("fury", Enum.PowerType.Fury)
+local update_pain_bar = create_simple_resource_updater("pain", Enum.PowerType.Pain)
+local update_lunar_power_bar = create_simple_resource_updater("astralPower", Enum.PowerType.LunarPower)
 
 local function update_essence_bar()
 	update_charge_bar(resourceBars.essence, Enum.PowerType.Essence, 5)
@@ -2924,7 +2710,7 @@ local function export_bar_positions()
 end
 GCDI.export_bar_positions = export_bar_positions
 
-local function ahk_string_escape(s)
+local function companion_string_escape(s)
 	return (tostring(s or ""):gsub('"', '\\"'))
 end
 
@@ -2936,7 +2722,7 @@ end
 -- addon's catalog names are full WoW spell/item names with spaces and
 -- punctuation ("Sundering Roar", "Incarnation: Guardian of Ursoc"), so
 -- normalize them to match before exporting.
-local function ahk_normalize_name(name, isBuff)
+local function companion_normalize_name(name, isBuff)
 	local clean = tostring(name or ""):gsub("[^%w]", "")
 	if isBuff and not clean:find("Buff") then
 		clean = clean .. "Buff"
@@ -3024,7 +2810,7 @@ local GCDI_RESOURCE_ORDER = {
 -- counts below reflect UnitPowerMax() at the moment you export - some (rage
 -- especially, via talents like Vengeance) can change with talents/buffs, so
 -- treat these as a starting point to verify, not gospel.
--- Name normalization (see ahk_normalize_name): the addon's catalog names
+-- Name normalization (see companion_normalize_name): the addon's catalog names
 -- are full WoW names with spaces/punctuation ("Sundering Roar"); exported
 -- names strip everything but letters/digits to match the companion
 -- script's squished-CamelCase convention, and buffs get a "Buff" suffix
@@ -3036,7 +2822,7 @@ local GCDI_RESOURCE_ORDER = {
 -- reflects whatever spec/build is currently active in-game, so the caller
 -- must say which slot that corresponds to; defaults to "Primary" if omitted
 -- or unrecognized.
-local function export_ahk_config(variant)
+local function export_companion_config(variant)
 	if variant ~= "Primary" and variant ~= "Secondary" then
 		variant = "Primary"
 	end
@@ -3061,7 +2847,7 @@ local function export_ahk_config(variant)
 			local trackIcon = should_track_spell_icon(spellID)
 
 			local parts = {
-				string.format('name: "%s"', ahk_string_escape(ahk_normalize_name(catalogEntry.name, false))),
+				string.format('name: "%s"', companion_string_escape(companion_normalize_name(catalogEntry.name, false))),
 				'key: "TODO"',
 				"hasRange: " .. tostring(not isSelfCast),
 			}
@@ -3083,7 +2869,7 @@ local function export_ahk_config(variant)
 		local catalogEntry = GCDI.itemCatalog[itemKey]
 		if catalogEntry then
 			local parts = {
-				string.format('name: "%s"', ahk_string_escape(ahk_normalize_name(catalogEntry.name, false))),
+				string.format('name: "%s"', companion_string_escape(companion_normalize_name(catalogEntry.name, false))),
 				'key: "TODO"',
 				"hasRange: false",
 				"isItem: true",
@@ -3111,7 +2897,7 @@ local function export_ahk_config(variant)
 			local showStacks = GCDI.should_show_buff_stacks(buffKey)
 			local maxStacks = GCDI.get_buff_max_stacks_display(buffKey)
 
-			local parts = { string.format('name: "%s"', ahk_string_escape(ahk_normalize_name(catalogEntry.name, true))) }
+			local parts = { string.format('name: "%s"', companion_string_escape(companion_normalize_name(catalogEntry.name, true))) }
 			if showStacks and maxStacks > 0 then
 				table.insert(parts, "hasStacks: true")
 				table.insert(parts, "maxStacks: " .. maxStacks)
@@ -3156,7 +2942,7 @@ local function export_ahk_config(variant)
 
 	return table.concat(lines, "\n")
 end
-GCDI.export_ahk_config = export_ahk_config
+GCDI.export_companion_config = export_companion_config
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- SCANNING
@@ -3528,28 +3314,6 @@ end
 -- Export for manual triggering
 GCDI.scan_cdm_buff_frames = scan_cdm_buff_frames
 
--- Helper to get spellID from cooldownID (like ArcUI's SafeGetCDMInfo)
--- Returns spellID if found, otherwise returns the original ID
-function GCDI.GetSpellIDFromCooldownID(cooldownID)
-	-- Check mapping table first
-	local spellID = cooldownToSpellID[cooldownID]
-	if spellID then return spellID end
-	
-	-- Check catalog entry
-	local entry = GCDI.buffCatalog[cooldownID]
-	if entry and entry.spellID then return entry.spellID end
-	
-	-- Return original if no mapping found
-	return cooldownID
-end
-
--- Get CDM info for a cooldownID (wrapper for C_CooldownViewer API)
-function GCDI.GetCDMInfo(cooldownID)
-	if type(cooldownID) ~= "number" then return nil end
-	if not C_CooldownViewer or not C_CooldownViewer.GetCooldownViewerCooldownInfo then return nil end
-	return C_CooldownViewer.GetCooldownViewerCooldownInfo(cooldownID)
-end
-
 rebuild_buff_bars = function()
 	clear_buff_bars()
 	
@@ -3901,10 +3665,17 @@ local function on_event(self, event, arg1, arg2, ...)
 		gcdi_refresh_stagger_spec()
 
 	elseif event == "PLAYER_TARGET_CHANGED" then
+		-- Retargeting can otherwise leave a stale fallback range reading (see
+		-- LibGCDI-Range.lua's ResetIndicatorState/cachedFallbackInRange) shown
+		-- as green/red until a fresh sample happens to overwrite it.
+		LibRange:ResetIndicatorState()
 		update_range_indicators()
 		detect_native_range_for_spells()  -- Auto-detect native range when targeting
 		update_aggro_indicator()
 		update_dispel_indicator()
+		-- Refresh target-debuff bars so a new target doesn't show stale data
+		-- left over from the previous one; deferred like the UNIT_AURA path.
+		schedule_update_all_buff_bars_after_aura()
 		
 	elseif event == "UNIT_THREAT_SITUATION_UPDATE" then
 		update_aggro_indicator()
@@ -3918,12 +3689,11 @@ local function on_event(self, event, arg1, arg2, ...)
 		update_mob_count_indicator()  -- Nameplate appeared or disappeared
 		
 	elseif event == "UNIT_AURA" then
-		if arg1 == "player" then
-			-- Defer: see schedule_update_all_buff_bars_after_aura (CooldownViewer taint / secret spellID compare)
+		if arg1 == "player" or arg1 == "target" then
+			-- Defer: see schedule_update_all_buff_bars_after_aura (CooldownViewer taint / secret spellID
+			-- compare). This also covers update_dispel_indicator(), scheduled inside the same deferred
+			-- callback, so it must not be called synchronously here too.
 			schedule_update_all_buff_bars_after_aura()
-		end
-		if arg1 == "player" then
-			update_dispel_indicator()
 		end
 		
 	elseif event == "UNIT_SPELLCAST_SUCCEEDED" then
@@ -4003,27 +3773,20 @@ local function init()
 	if settings.meleeRangeProxySpellID and not settings.rangeProxySpells[5] then
 		settings.rangeProxySpells[5] = settings.meleeRangeProxySpellID
 	end
-	if not settings.spellSettings then
-		settings.spellSettings = {}
+
+	local function ensure_settings_entry(category, key)
+		if not settings[category] then settings[category] = {} end
+		if key and not settings[category][key] then settings[category][key] = {} end
+		if key then return settings[category][key] end
+		return settings[category]
 	end
-	if not settings.spellOrder then
-		settings.spellOrder = {}
-	end
-	if not settings.itemSettings then
-		settings.itemSettings = {}
-	end
-	if not settings.itemOrder then
-		settings.itemOrder = {}
-	end
-	if not settings.buffSettings then
-		settings.buffSettings = {}
-	end
-	if not settings.buffOrder then
-		settings.buffOrder = {}
-	end
-	if not settings.profiles then
-		settings.profiles = {}
-	end
+	ensure_settings_entry("spellSettings")
+	ensure_settings_entry("spellOrder")
+	ensure_settings_entry("itemSettings")
+	ensure_settings_entry("itemOrder")
+	ensure_settings_entry("buffSettings")
+	ensure_settings_entry("buffOrder")
+	ensure_settings_entry("profiles")
 	if not settings.resourceSettings then
 		settings.resourceSettings = {
 			health = true,
@@ -4144,8 +3907,7 @@ local function init()
 	gcdClip:SetFrameLevel(gcdCombatContainer:GetFrameLevel() + 1)
 	
 	local gcdbar = CreateFrame("StatusBar", nil, gcdClip)
-	gcdbar:SetStatusBarTexture("Interface\\Buttons\\WHITE8X8")
-	gcdbar:GetStatusBarTexture():SetHorizTile(false)
+	init_status_bar_texture(gcdbar)
 	gcdbar:SetMinMaxValues(0, 1)
 	gcdbar:SetValue(0)
 	gcdbar:SetSize(10000, configs.size)
@@ -4153,82 +3915,33 @@ local function init()
 	gcdbar:SetPoint("LEFT")
 	main_frame.gcdbar = gcdbar
 	
-	local sep2 = gcdCombatContainer:CreateTexture(nil, "ARTWORK")
-	sep2:SetSize(sepSize, configs.size)
-	sep2:SetPoint("LEFT", gcdClip, "RIGHT", 0, 0)
-	sep2:SetColorTexture(0, 0, 0, 1)
-	
-	local combatbar = CreateFrame("StatusBar", nil, gcdCombatContainer)
-	combatbar:SetStatusBarTexture("Interface\\Buttons\\WHITE8X8")
-	combatbar:GetStatusBarTexture():SetHorizTile(false)
-	combatbar:SetMinMaxValues(0, 100)
-	combatbar:SetValue(100)
-	combatbar:SetSize(configs.size, configs.size)
-	combatbar:SetStatusBarColor(0, 0, 0)
-	combatbar:SetPoint("LEFT", sep2, "RIGHT", 0, 0)
-	main_frame.combatbar = combatbar
-	
-	local sep3 = gcdCombatContainer:CreateTexture(nil, "ARTWORK")
-	sep3:SetSize(sepSize, configs.size)
-	sep3:SetPoint("LEFT", combatbar, "RIGHT", 0, 0)
-	sep3:SetColorTexture(0, 0, 0, 1)
-	
-	local aggrobar = CreateFrame("StatusBar", nil, gcdCombatContainer)
-	aggrobar:SetStatusBarTexture("Interface\\Buttons\\WHITE8X8")
-	aggrobar:GetStatusBarTexture():SetHorizTile(false)
-	aggrobar:SetMinMaxValues(0, 100)
-	aggrobar:SetValue(100)
-	aggrobar:SetSize(configs.size, configs.size)
-	aggrobar:SetStatusBarColor(0.3, 0.3, 0.3)  -- Grey = no aggro
-	aggrobar:SetPoint("LEFT", sep3, "RIGHT", 0, 0)
-	main_frame.aggrobar = aggrobar
-	
-	local sep4 = gcdCombatContainer:CreateTexture(nil, "ARTWORK")
-	sep4:SetSize(sepSize, configs.size)
-	sep4:SetPoint("LEFT", aggrobar, "RIGHT", 0, 0)
-	sep4:SetColorTexture(0, 0, 0, 1)
-	
-	local castingbar = CreateFrame("StatusBar", nil, gcdCombatContainer)
-	castingbar:SetStatusBarTexture("Interface\\Buttons\\WHITE8X8")
-	castingbar:GetStatusBarTexture():SetHorizTile(false)
-	castingbar:SetMinMaxValues(0, 100)
-	castingbar:SetValue(100)
-	castingbar:SetSize(configs.size, configs.size)
-	castingbar:SetStatusBarColor(0, 0, 0)  -- Black = not channeling
-	castingbar:SetPoint("LEFT", sep4, "RIGHT", 0, 0)
-	main_frame.castingbar = castingbar
-	
-	local sep5 = gcdCombatContainer:CreateTexture(nil, "ARTWORK")
-	sep5:SetSize(sepSize, configs.size)
-	sep5:SetPoint("LEFT", castingbar, "RIGHT", 0, 0)
-	sep5:SetColorTexture(0, 0, 0, 1)
-	
-	local mobcountbar = CreateFrame("StatusBar", nil, gcdCombatContainer)
-	mobcountbar:SetStatusBarTexture("Interface\\Buttons\\WHITE8X8")
-	mobcountbar:GetStatusBarTexture():SetHorizTile(false)
-	mobcountbar:SetMinMaxValues(0, 100)
-	mobcountbar:SetValue(100)
-	mobcountbar:SetSize(configs.size, configs.size)
-	mobcountbar:SetStatusBarColor(0, 0, 0)  -- Black = below threshold
-	mobcountbar:SetPoint("LEFT", sep5, "RIGHT", 0, 0)
-	main_frame.mobcountbar = mobcountbar
-	
-	local sep6 = gcdCombatContainer:CreateTexture(nil, "ARTWORK")
-	sep6:SetSize(sepSize, configs.size)
-	sep6:SetPoint("LEFT", mobcountbar, "RIGHT", 0, 0)
-	sep6:SetColorTexture(0, 0, 0, 1)
-	
-	-- 7th indicator: player has a dispellable debuff (see player_has_dispellable_debuff_on_self above)
-	local dispelbar = CreateFrame("StatusBar", nil, gcdCombatContainer)
-	dispelbar:SetStatusBarTexture("Interface\\Buttons\\WHITE8X8")
-	dispelbar:GetStatusBarTexture():SetHorizTile(false)
-	dispelbar:SetMinMaxValues(0, 100)
-	dispelbar:SetValue(100)
-	dispelbar:SetSize(configs.size, configs.size)
-	dispelbar:SetStatusBarColor(0.28, 0.28, 0.32)  -- Visible idle vs row bg; purple when dispel needed
-	dispelbar:SetPoint("LEFT", sep6, "RIGHT", 0, 0)
-	main_frame.dispelbar = dispelbar
-	main_frame.gcdRowSep6 = sep6
+	local gcdIndicatorDefs = {
+		{"combatbar", {0, 0, 0}},
+		{"aggrobar", {0.3, 0.3, 0.3}},
+		{"castingbar", {0, 0, 0}},
+		{"mobcountbar", {0, 0, 0}},
+		{"dispelbar", {0.28, 0.28, 0.32}},
+	}
+	local prevAnchor = gcdClip
+	local lastSep
+	for _, def in ipairs(gcdIndicatorDefs) do
+		local name, color = def[1], def[2]
+		local sep = gcdCombatContainer:CreateTexture(nil, "ARTWORK")
+		sep:SetSize(sepSize, configs.size)
+		sep:SetPoint("LEFT", prevAnchor, "RIGHT", 0, 0)
+		sep:SetColorTexture(0, 0, 0, 1)
+		lastSep = sep
+		local bar = CreateFrame("StatusBar", nil, gcdCombatContainer)
+		init_status_bar_texture(bar)
+		bar:SetMinMaxValues(0, 100)
+		bar:SetValue(100)
+		bar:SetSize(configs.size, configs.size)
+		bar:SetStatusBarColor(color[1], color[2], color[3])
+		bar:SetPoint("LEFT", sep, "RIGHT", 0, 0)
+		main_frame[name] = bar
+		prevAnchor = bar
+	end
+	main_frame.gcdRowSep6 = lastSep
 	
 	GCDIndicator_Positions = GCDIndicator_Positions or {}
 	local libGCDI = LibStub and LibStub:GetLibrary("LibGCDI", true)
@@ -4326,7 +4039,7 @@ local function init()
 	main_frame:RegisterUnitEvent("UNIT_POWER_UPDATE", "player")
 	main_frame:RegisterUnitEvent("UNIT_POWER_FREQUENT", "player")
 	main_frame:RegisterUnitEvent("UNIT_MAXPOWER", "player")
-	main_frame:RegisterUnitEvent("UNIT_AURA", "player")
+	main_frame:RegisterUnitEvent("UNIT_AURA", "player", "target")
 	main_frame:RegisterUnitEvent("UNIT_SPELLCAST_SUCCEEDED", "player")  -- For manual buff tracking
 	main_frame:RegisterUnitEvent("UNIT_SPELLCAST_CHANNEL_START", "player")  -- Casting bar yellow while channeling
 	main_frame:RegisterUnitEvent("UNIT_SPELLCAST_CHANNEL_STOP", "player")   -- Casting bar black when done
@@ -4347,44 +4060,17 @@ local function init()
 	
 	if settings.currentProfile and settings.profiles and settings.profiles[settings.currentProfile] then
 		C_Timer.After(0.5, function()
-			local profile = settings.profiles[settings.currentProfile]
-			
-			settings.globalRangeFallbackYards = profile.globalRangeFallbackYards or 5
-			settings.rangeProxySpells = profile.rangeProxySpells and deepcopy(profile.rangeProxySpells) or {}
-			-- Legacy profile: migrate if only old keys present
-			if profile.globalRangeFallbackYards == nil and profile.globalRangeFallback ~= nil and LibRange and LibRange.LEGACY_INDEX_TO_YARDS and LibRange.LEGACY_INDEX_TO_YARDS[profile.globalRangeFallback] then
-				settings.globalRangeFallbackYards = LibRange.LEGACY_INDEX_TO_YARDS[profile.globalRangeFallback]
-			end
-			if profile.rangeProxySpellIDs and type(profile.rangeProxySpellIDs) == "table" and LibRange and LibRange.LEGACY_INDEX_TO_YARDS then
-				for idx, yards in pairs(LibRange.LEGACY_INDEX_TO_YARDS) do
-					if profile.rangeProxySpellIDs[idx] and not (settings.rangeProxySpells and settings.rangeProxySpells[yards]) then
-						settings.rangeProxySpells = settings.rangeProxySpells or {}
-						settings.rangeProxySpells[yards] = profile.rangeProxySpellIDs[idx]
-					end
-				end
-			end
-			if profile.meleeRangeProxySpellID and not (settings.rangeProxySpells and settings.rangeProxySpells[5]) then
-				settings.rangeProxySpells = settings.rangeProxySpells or {}
-				settings.rangeProxySpells[5] = profile.meleeRangeProxySpellID
-			end
-			settings.spellSettings = deepcopy(profile.spellSettings or {})
-			settings.spellOrder = deepcopy(profile.spellOrder or {})
-			settings.itemSettings = deepcopy(profile.itemSettings or {})
-			settings.itemOrder = deepcopy(profile.itemOrder or {})
-			settings.buffSettings = deepcopy(profile.buffSettings or {})
-			settings.buffOrder = deepcopy(profile.buffOrder or {})
-			
-			-- Load saved catalogs (avoids rescanning and proc issues)
-			if profile.spellCatalog then
-				GCDI.spellCatalog = deepcopy(profile.spellCatalog)
-			end
-			if profile.itemCatalog then
-				GCDI.itemCatalog = deepcopy(profile.itemCatalog)
-			end
-			if profile.buffCatalog then
-				GCDI.buffCatalog = deepcopy(profile.buffCatalog)
-			end
-			
+			-- Reuse the same LoadProfile path the Options UI uses (GCDI.load_profile)
+			-- so the active profile loads identically on login and on re-selection --
+			-- an ad hoc field-by-field copy here previously omitted
+			-- resourceSettings/gcdSettings that LoadProfile does copy.
+			local catalogs = {
+				spellCatalog = GCDI.spellCatalog,
+				itemCatalog = GCDI.itemCatalog,
+				buffCatalog = GCDI.buffCatalog,
+			}
+			LibProfiles:LoadProfile(settings, settings.currentProfile, catalogs)
+
 			rebuild_spell_bars()
 			rebuild_buff_bars()
 			
@@ -4394,7 +4080,7 @@ local function init()
 				scan_cdm_buff_frames()
 			end)
 			
-			print("|cff00ff00GCDIndicator:|r Profile '" .. settings.currentProfile .. "' loaded")
+			print("GCDI_PREFIXProfile '" .. settings.currentProfile .. "' loaded")
 		end)
 	end
 	
@@ -4480,8 +4166,6 @@ local GCDILauncher = LDB:NewDataObject("GCDIndicator", {
 	end,
 })
 
-GCDI.LDBObject = GCDILauncher
-
 create_minimap_button = function()
 	-- Initialize minimap settings if not present
 	if not settings.minimap then
@@ -4496,8 +4180,6 @@ create_minimap_button = function()
 		LDBIcon:Register("GCDIndicator", GCDILauncher, settings.minimap)
 	end
 end
-
-GCDI.create_minimap_button = create_minimap_button
 
 -- Function to show/hide minimap button
 function GCDI.ToggleMinimapButton()
@@ -4644,7 +4326,7 @@ function GCDI.toggle_preview_mode()
 			main_frame.stanceIndicator:SetColorTexture(0.5, 0.3, 0, 1)  -- Bear form color
 		end
 
-		print("|cff00ff00GCDIndicator:|r Preview mode |cff00ff00ON|r - All bars filled")
+		print("GCDI_PREFIXPreview mode |cff00ff00ON|r - All bars filled")
 		if configs.debugMode and resourceBars.health and resourceBars.health.healAbsorbBar then
 			print("|cff888888GCDIndicator:|r Debug: health 60/100 + heal absorb 25 (plain numbers for layout; real secrets only come from combat APIs)|r")
 		end
@@ -4660,7 +4342,7 @@ function GCDI.toggle_preview_mode()
 		LibRange:ResetIndicatorState()
 		for _, data in pairs(trackedBuffs) do
 			data.active = nil
-			data.durationArmedFor = nil
+			data.durationArmedGeneration = nil
 		end
 		if resourceBars.stagger then
 			resourceBars.stagger.staggerParked = nil
@@ -4706,7 +4388,7 @@ function GCDI.toggle_preview_mode()
 		-- Reposition to restore proper layout based on settings
 		reposition_all()
 		
-		print("|cff00ff00GCDIndicator:|r Preview mode |cffff0000OFF|r - Normal display restored")
+		print("GCDI_PREFIXPreview mode |cffff0000OFF|r - Normal display restored")
 	end
 end
 
@@ -4722,18 +4404,18 @@ SlashCmdList["GCDOPT"] = function(msg)
 		scan_action_bars()
 	elseif msg == "debug" then
 		configs.debugMode = not configs.debugMode
-		print("|cff00ff00GCDIndicator:|r Debug mode " .. (configs.debugMode and "ON" or "OFF"))
+		print("GCDI_PREFIXDebug mode " .. (configs.debugMode and "ON" or "OFF"))
 	elseif msg == "nativestacks" then
 		-- A/B toggle for buff stack tracking: classic (C_UnitAuras query) vs
 		-- experimental (native AuraContainer/SetApplicationBar). See CHANGE-TRACKER.md.
 		configs.useNativeStackBinding = not configs.useNativeStackBinding
-		print("|cff00ff00GCDIndicator:|r Native stack binding " .. (configs.useNativeStackBinding and "ON (experimental)" or "OFF (classic)"))
+		print("GCDI_PREFIXNative stack binding " .. (configs.useNativeStackBinding and "ON (experimental)" or "OFF (classic)"))
 		rebuild_buff_bars()
 	elseif msg == "compact" then
 		-- Flow-packed spell/item/buff layout toggle. See CHANGE-TRACKER.md.
 		configs.compactMode = not configs.compactMode
 		settings.compactMode = configs.compactMode  -- persist (SavedVariablesPerCharacter)
-		print("|cff00ff00GCDIndicator:|r Compact mode " .. (configs.compactMode and "ON" or "OFF"))
+		print("GCDI_PREFIXCompact mode " .. (configs.compactMode and "ON" or "OFF"))
 		-- Box layout (icon square present/absent) is baked in at creation
 		-- time, not just position, so toggling needs a full rebuild.
 		rebuild_spell_bars()  -- also rebuilds item bars
@@ -4746,42 +4428,43 @@ SlashCmdList["GCDOPT"] = function(msg)
 		if GCDI.show_export_import_popup then
 			GCDI.show_export_import_popup("export", text, "Bar Position Export")
 		else
-			print("|cff00ff00GCDIndicator:|r " .. text)
+			print(GCDI_PREFIX .. text)
 		end
 	elseif msg == "exportrotation" then
 		-- Companion-script config export: generates SpellList/BuffList
 		-- array text from the live catalog/settings state. See
-		-- export_ahk_config() above reposition_all(). Asks Primary vs.
+		-- export_companion_config() above reposition_all(). Asks Primary vs.
 		-- Secondary first (see the GCDI_EXPORT_ROTATION_CONFIG popup in
 		-- LibGCDI-Options.lua) since the addon only reflects whichever
 		-- spec/build is currently active.
 		StaticPopup_Show("GCDI_EXPORT_ROTATION_CONFIG")
 	elseif msg == "items" then
-		print("|cff00ff00GCDIndicator:|r --- Item Catalog ---")
+		print("GCDI_PREFIX--- Item Catalog ---")
 		local count = 0
 		for key, data in pairs(GCDI.itemCatalog) do
 			count = count + 1
 			print("  " .. key .. " = " .. tostring(data.name) .. " (ID: " .. tostring(data.itemID) .. ")")
 		end
-		print("|cff00ff00GCDIndicator:|r " .. count .. " items in catalog")
+		print(GCDI_PREFIX .. count .. " items in catalog")
 	elseif msg == "buffs" then
 		-- List tracked buffs and their status
-		print("|cff00ff00GCDIndicator:|r --- Tracked Buffs Status ---")
+		print("GCDI_PREFIX--- Tracked Buffs Status ---")
 		print("|cff888888Note: Buff spell IDs are secret. Get IDs from Wowhead or tooltip addons.|r")
 		local count = 0
 		for spellID, data in pairs(GCDI.buffCatalog) do
 			count = count + 1
-			local auraData = C_UnitAuras.GetUnitAuraBySpellID("player", spellID)
-			local status = auraData and "|cff00ff00ACTIVE|r" or "|cff888888inactive|r"
-			local stacks = auraData and auraData.applications or 0
-			print("  " .. data.name .. " (ID: |cffffcc00" .. spellID .. "|r) - " .. status .. " [" .. stacks .. " stacks]")
+			local ok, hasAura = pcall(function()
+				return C_UnitAuras.GetUnitAuraBySpellID("player", spellID) ~= nil
+			end)
+			local status = ok and hasAura and "|cff00ff00ACTIVE|r" or "|cff888888inactive|r"
+			print("  " .. data.name .. " (ID: |cffffcc00" .. spellID .. "|r) - " .. status)
 		end
 		if count == 0 then
 			print("  No buffs being tracked. Add buffs in /gcdopt -> Buffs tab")
 		end
 	elseif msg == "buffdebug" then
 		-- Debug: show what's saved in settings.buffSettings
-		print("|cff00ff00GCDIndicator:|r --- Buff Settings Debug ---")
+		print("GCDI_PREFIX--- Buff Settings Debug ---")
 		if settings and settings.buffSettings then
 			local count = 0
 			for key, val in pairs(settings.buffSettings) do
@@ -4789,32 +4472,34 @@ SlashCmdList["GCDOPT"] = function(msg)
 				local keyType = type(key)
 				print("  Key: " .. tostring(key) .. " (type: " .. keyType .. "), enabled: " .. tostring(val.enabled))
 			end
-			print("|cff00ff00GCDIndicator:|r " .. count .. " entries in buffSettings")
+			print(GCDI_PREFIX .. count .. " entries in buffSettings")
 		else
 			print("  settings.buffSettings is nil or empty")
 		end
-		print("|cff00ff00GCDIndicator:|r --- Buff Catalog ---")
+		print("GCDI_PREFIX--- Buff Catalog ---")
 		local catCount = 0
 		for spellID, data in pairs(GCDI.buffCatalog) do
 			catCount = catCount + 1
 			-- Test if this buff can be detected
-			local aura = C_UnitAuras.GetPlayerAuraBySpellID(spellID)
-			local canDetect = aura ~= nil and "YES" or "maybe-secret"
+			local ok, hasAura = pcall(function()
+				return C_UnitAuras.GetPlayerAuraBySpellID(spellID) ~= nil
+			end)
+			local canDetect = ok and hasAura and "YES" or "maybe-secret"
 			print("  " .. tostring(spellID) .. " = " .. tostring(data.name) .. " (detectable: " .. canDetect .. ")")
 		end
-		print("|cff00ff00GCDIndicator:|r " .. catCount .. " entries in buffCatalog")
+		print(GCDI_PREFIX .. catCount .. " entries in buffCatalog")
 	elseif msg == "cdmimport" then
 		-- Force import from CDM
-		print("|cff00ff00GCDIndicator:|r Importing buffs from Cooldown Manager...")
+		print("GCDI_PREFIXImporting buffs from Cooldown Manager...")
 		local newBuffs = scan_cdm_buff_frames()
 		rebuild_buff_bars()
 		local totalBuffs = 0
 		for _ in pairs(GCDI.buffCatalog) do totalBuffs = totalBuffs + 1 end
-		print("|cff00ff00GCDIndicator:|r Imported " .. newBuffs .. " new buffs (" .. totalBuffs .. " total)")
+		print("GCDI_PREFIXImported " .. newBuffs .. " new buffs (" .. totalBuffs .. " total)")
 	
 	elseif msg == "range" then
 		-- Debug range detection for all tracked spells
-		print("|cff00ff00GCDIndicator:|r --- Range Detection Debug ---")
+		print("GCDI_PREFIX--- Range Detection Debug ---")
 		local globalYards = settings.globalRangeFallbackYards or 5
 		print("|cff888888Global Range Fallback: " .. tostring(globalYards) .. " yd (" .. (LibRange.RANGE_ITEMS[globalYards] and LibRange.RANGE_ITEMS[globalYards].name or "Unknown") .. ")|r")
 		print("|cff888888Target: " .. (UnitExists("target") and UnitName("target") or "None") .. "|r")
@@ -4869,7 +4554,7 @@ SlashCmdList["GCDOPT"] = function(msg)
 	
 	elseif msg == "rangetest" then
 		-- Force all range indicators to bright colors for visibility testing
-		print("|cff00ff00GCDIndicator:|r Testing range indicator visibility...")
+		print("GCDI_PREFIXTesting range indicator visibility...")
 		local count = 0
 		for spellID, data in pairs(trackedSpells) do
 			if data.rangeOverlay then
@@ -4893,18 +4578,18 @@ SlashCmdList["GCDOPT"] = function(msg)
 				print("  Spell " .. spellID .. ": |cffff0000NO RANGE OVERLAY|r (self-cast or not created)")
 			end
 		end
-		print("|cff00ff00GCDIndicator:|r Set " .. count .. " range overlays to bright colors")
+		print("GCDI_PREFIXSet " .. count .. " range overlays to bright colors")
 		print("|cffffcc00Note: Colors will reset on next target change or update tick|r")
 		
 	elseif msg == "minimap" then
 		-- Toggle minimap button visibility
 		GCDI.ToggleMinimapButton()
 		local hidden = settings.minimap and settings.minimap.hide
-		print("|cff00ff00GCDIndicator:|r Minimap button " .. (hidden and "hidden" or "shown"))
+		print("GCDI_PREFIXMinimap button " .. (hidden and "hidden" or "shown"))
 		
 	elseif msg == "testbuffs" or msg == "cdm" then
 		-- Scan Blizzard's Cooldown Manager for buff frames
-		print("|cff00ff00GCDIndicator:|r --- Scanning Cooldown Manager ---")
+		print("GCDI_PREFIX--- Scanning Cooldown Manager ---")
 		local viewer = _G["BuffIconCooldownViewer"]
 		if not viewer then
 			print("|cffff0000BuffIconCooldownViewer not found!|r")
@@ -4918,7 +4603,7 @@ SlashCmdList["GCDOPT"] = function(msg)
 		local activeCount = 0
 		local frameCount = 0
 		
-		-- Helper to print frame info with spell ID from cooldownInfo (like ArcUI)
+		-- Helper to print frame info without materializing secret-capable spell IDs.
 		local function printFrameInfo(frame)
 			frameCount = frameCount + 1
 			local cooldownID = frame.cooldownID
@@ -4927,37 +4612,26 @@ SlashCmdList["GCDOPT"] = function(msg)
 				return
 			end
 			
-			-- Get spellID from cooldownInfo (like ArcUI does)
-			local spellID = nil
-			local spellName = nil
-			local cooldownInfo = frame.cooldownInfo
-			if cooldownInfo then
-				spellID = cooldownInfo.overrideSpellID or cooldownInfo.spellID
-			end
-			
-			-- Try CDM API as fallback
-			if not spellID and C_CooldownViewer and C_CooldownViewer.GetCooldownViewerCooldownInfo then
-				local cdInfo = C_CooldownViewer.GetCooldownViewerCooldownInfo(cooldownID)
-				if cdInfo then
-					spellID = cdInfo.overrideSpellID or cdInfo.spellID
-				end
-			end
-			
-			-- Get spell name
-			if spellID and C_Spell and C_Spell.GetSpellInfo then
-				local info = C_Spell.GetSpellInfo(spellID)
-				if info then spellName = info.name end
+			-- Probe CDM info only for presence. Spell IDs can be secret and must not
+			-- be retained or formatted in debug output.
+			local infoOK, hasCooldownInfo = pcall(function()
+				return frame.cooldownInfo ~= nil
+			end)
+			if (not infoOK or not hasCooldownInfo) and C_CooldownViewer and C_CooldownViewer.GetCooldownViewerCooldownInfo then
+				pcall(function()
+					return C_CooldownViewer.GetCooldownViewerCooldownInfo(cooldownID) ~= nil
+				end)
 			end
 			
 			-- Active = auraInstanceID present (do not call GetAuraDataByAuraInstanceID; throws when secret/tainted on 12.1+)
-			local hasAura = frame.auraInstanceID ~= nil
+			local auraOK, hasAura = pcall(function()
+				return frame.auraInstanceID ~= nil
+			end)
+			hasAura = auraOK and hasAura
 			local activeStr = hasAura and "|cff00ff00ACTIVE|r" or "|cff888888inactive|r"
 			if hasAura then activeCount = activeCount + 1 end
 			
-			-- Print with spellID and name
-			local spellStr = spellID and ("|cff88ccffspell:" .. spellID .. "|r") or "|cffff8888no-spell|r"
-			local nameStr = spellName and (" |cffffffff\"" .. spellName .. "\"|r") or ""
-			print("  cdID: |cffffcc00" .. tostring(cooldownID) .. "|r " .. spellStr .. nameStr .. " - " .. activeStr)
+			print("  cdID: |cffffcc00" .. tostring(cooldownID) .. "|r - " .. activeStr)
 		end
 		
 		-- Try itemFramePool first
@@ -4977,7 +4651,7 @@ SlashCmdList["GCDOPT"] = function(msg)
 			end
 		end
 		
-		print("|cff00ff00GCDIndicator:|r " .. frameCount .. " frames, " .. activeCount .. " active")
+		print(GCDI_PREFIX .. frameCount .. " frames, " .. activeCount .. " active")
 	else
 		if GCDI.create_options_frame then
 			GCDI.create_options_frame()
@@ -4988,7 +4662,7 @@ SlashCmdList["GCDOPT"] = function(msg)
 end
 
 C_Timer.After(2, function()
-	print("|cff00ff00GCDIndicator:|r Type |cffffcc00/gcdopt|r to open options, |cffffcc00/gcdi|r to move bars")
+	print("GCDI_PREFIXType |cffffcc00/gcdopt|r to open options, |cffffcc00/gcdi|r to move bars")
 end)
 
 C_Timer.After(0.5, init)

@@ -56,6 +56,19 @@ describe("LibGCDI-Catalog GetEnabledOrdered", function()
 		local manager = make_manager(catalog, { 3, 1 }, { [1] = true, [3] = true })
 		assertDeepEqual(manager:GetEnabledOrdered(), { 3, 1 })
 	end)
+
+	it("appends enabled ids absent from the saved order alphabetically by name, matching GetAllOrdered's convention", function()
+		local catalog = {
+			[1] = { name = "Zulu" },   -- enabled, not in saved order
+			[2] = { name = "Alpha" },  -- enabled, not in saved order
+			[3] = { name = "Mike" },   -- enabled, saved order
+			[4] = { name = "Delta" },  -- enabled, not in saved order
+		}
+		local manager = make_manager(catalog, { 3 }, { [1] = true, [2] = true, [3] = true, [4] = true })
+		-- Saved-order entry (3) first, then the unordered enabled entries
+		-- alphabetized by name (Alpha, Delta, Zulu), never raw pairs() order.
+		assertDeepEqual(manager:GetEnabledOrdered(), { 3, 2, 4, 1 })
+	end)
 end)
 
 describe("LibGCDI-Catalog MoveInOrder", function()

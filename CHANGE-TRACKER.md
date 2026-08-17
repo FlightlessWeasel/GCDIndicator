@@ -91,8 +91,11 @@ the panel.
     (~line 1489–1566, immediately before `create_buff_bar`): new functions
     `gcdi_ensure_native_stack_container(unit)`,
     `gcdi_setup_native_stack_slot(buffKey, data, catalogEntry)`,
-    `gcdi_setup_all_native_stack_slots()`, and module-local
-    `nativeStackContainers = {}`.
+    `gcdi_setup_all_native_stack_slots()`,
+    `gcdi_teardown_native_stack_containers()` (added for the dangling-slots
+    fix below), and module-local `nativeStackContainers = {}`.
+  - `clear_buff_bars()` — one added call, `gcdi_teardown_native_stack_containers()`,
+    at the end of the function (dangling-slots fix, see below).
   - `rebuild_buff_bars` — one added call, `gcdi_setup_all_native_stack_slots()`,
     right after the bar-creation loop and before `update_all_buff_bars()`.
   - `update_buff_bar` — the stack-write block gained a
@@ -107,9 +110,11 @@ the panel.
 ## How to fully revert
 
 1. Delete the `-- EXPERIMENTAL: native AuraContainer/AddAuraSlot stack binding`
-   block from `GCDIndicator.lua` (the four items listed above under that
-   heading).
+   block from `GCDIndicator.lua` (the five items listed above under that
+   heading — including `gcdi_teardown_native_stack_containers()`).
 2. Remove the `gcdi_setup_all_native_stack_slots()` call from `rebuild_buff_bars`.
+2a. Remove the `gcdi_teardown_native_stack_containers()` call from
+    `clear_buff_bars()`.
 3. Remove the `and not data.nativeStackActive` clause from the stack-write
    condition in `update_buff_bar` (restores the original unconditional write).
 4. Remove the `nativestacks` branch from `SlashCmdList["GCDOPT"]`.
@@ -124,13 +129,22 @@ the panel.
 - **Untested in-game.** No WoW client is available in this dev environment;
   verification here has been limited to `luaparse` syntax checks and AST-based
   scope diffing. Try this out of combat first.
-- **Dangling slots on rebuild.** `clear_buff_bars()` calls `wipe(trackedBuffs)`,
-  which discards each buff's `nativeStackActive` flag and bar reference, but
-  does *not* tear down the native `AddAuraSlot` bindings already registered on
-  `nativeStackContainers[unit]`. Toggling the option or rebuilding bars
-  repeatedly will accumulate orphaned native slots for the session's lifetime
-  (cleared on reload/relog). Not addressed yet — flagged here for later
-  cleanup, per your "come back and clean this up later" note.
+- **Dangling slots on rebuild — fixed.** `clear_buff_bars()` used to call
+  `wipe(trackedBuffs)`, discarding each buff's `nativeStackActive` flag and bar
+  reference, without tearing down the native `AddAuraSlot` bindings already
+  registered on `nativeStackContainers[unit]` — toggling the option or
+  rebuilding bars repeatedly accumulated orphaned native containers/slots for
+  the session's lifetime. Fixed by adding `gcdi_teardown_native_stack_containers()`
+  (defined right after the `nativeStackContainers` table, near
+  `gcdi_ensure_native_stack_container`) and calling it from `clear_buff_bars()`
+  before new bars/slots get created. There is no documented/verified
+  `AddAuraSlot` removal API (checked warcraft.wiki.gg's
+  `AuraContainer:AddAuraSlot` page and this codebase — neither has one), so
+  rather than fabricate an unverified removal call, the fix destroys the whole
+  container frame instead (`Hide()` + `SetParent(nil)`, the same teardown
+  pattern this file already uses elsewhere for other frames), then wipes
+  `nativeStackContainers` so the next rebuild creates fresh containers instead
+  of piling slots onto stale ones.
 - **Combat-lockdown gated.** `gcdi_ensure_native_stack_container` refuses to
   create the container while `InCombatLockdown()` is true, since frame
   creation must happen in a clean (non-tainted) call path. If you toggle this
@@ -191,7 +205,9 @@ all profiles/specs on that character (not per-profile, not account-wide).
 - Or set `GCDI.configs.compactMode = true` at `GCDIndicator.lua:18` (session-only;
   won't survive reload unless `settings.compactMode` is also set — see above).
 
-Default is `false` (classic 3-column layout with icons, unchanged behavior).
+Default was `false` (classic 3-column layout with icons) until the Batch 4
+default-flip below changed it to `true`. Which layout counts as "unchanged
+behavior" for a fresh install has therefore flipped too — see that entry.
 The Settings tab is now a `ScrollFrame` (it wasn't before — content used to
 silently clip past the bottom edge once enough sections existed); its
 checkbox states also now re-sync on tab switch/refresh (see the native stack
@@ -205,9 +221,9 @@ Because box layout (icon present/absent) is baked in at spell/item/buff
 ## Files touched
 
 - **`GCDIndicator.lua`**:
-  - Line ~18: `compactMode = false,` added to the `GCDI.configs` table
-    (global toggle, not per-profile — matches `useNativeStackBinding`'s
-    precedent).
+  - Line ~18: `compactMode = false,` originally added to the `GCDI.configs`
+    table (global toggle, not per-profile — matches `useNativeStackBinding`'s
+    precedent). Default flipped to `true` in Batch 4 — see that entry below.
   - `init()` (~line 3696): bootstraps `configs.compactMode` from
     `settings.compactMode` on load/profile-init (persistence).
   - `reposition_all()` (~line 2495-2745): the spells+items+buffs positioning
@@ -268,7 +284,8 @@ Because box layout (icon present/absent) is baked in at spell/item/buff
    wrapper, keeping only the original (`else`) 3-column code.
 3. In `create_spell_bar`/`create_item_bar`/`create_buff_bar`, remove the
    `compact`/icon-hiding branches, restoring the icon square unconditionally.
-4. Remove `compactMode = false,` from `GCDI.configs`.
+4. Remove `compactMode = true,` (originally `false`, flipped in Batch 4 — see
+   that entry) from `GCDI.configs`.
 5. Remove the "Compact Mode" checkbox/label/help-text block from the Settings
    tab in `Libs/LibGCDI-Options/LibGCDI-Options.lua`. Reverting the Settings
    tab's ScrollFrame conversion is optional (it's a strict improvement even
@@ -311,3 +328,30 @@ Because box layout (icon present/absent) is baked in at spell/item/buff
   `showDurationBar` enabled on the addon side and `hasProc`/`hasPandemic` set
   to match on the AHK `SpellList`/`BuffList` entry - if the mapping is wrong,
   every box after it in that row will be misaligned.
+
+---
+
+# Change Tracker — Compact Mode Default Flip (Batch 4)
+
+## What changed
+
+`GCDI.configs.compactMode` at `GCDIndicator.lua:18` changed from `false` to
+`true`. This is a plain default-value change, not a new toggle or feature —
+the compact-mode feature itself (see the "Change Tracker — Compact Mode
+Layout" entry above) is unchanged and remains fully toggleable via the
+Settings tab checkbox, `/gcdopt compact`, or `GCDI.configs.compactMode`
+directly.
+
+## Why
+
+All 11 shipped companion-script spec profiles already default their own
+compact-mode setting to `true` (confirmed separately from this addon repo).
+A fresh addon install previously defaulted to `compactMode = false`, which
+mismatched every one of those profiles' assumption out of the box — the
+addon side was the drift, not the companion scripts, so the addon default was
+brought in line with what the companion scripts already assume.
+
+## Files touched
+
+- **`GCDIndicator.lua:18`** — `compactMode = false,` → `compactMode = true,`
+  in the `GCDI.configs` table.

@@ -29,6 +29,17 @@ local itemsTabElements = {}
 local buffsTabElements = {}
 local currentTab = "gcd"
 
+local GCDI_PREFIX = "|cff00ff00GCDIndicator:|r "
+local function ensure_settings_entry(category, key)
+	if not GCDI.settings[category] then
+		GCDI.settings[category] = {}
+	end
+	if not GCDI.settings[category][key] then
+		GCDI.settings[category][key] = {}
+	end
+	return GCDI.settings[category][key]
+end
+
 -- Forward declarations
 local refresh_profiles_tab
 local refresh_settings_tab
@@ -1225,6 +1236,50 @@ local function refresh_resources_tab()
 	scrollChild:SetHeight(math.abs(yOffset) + 20)
 end
 
+local function add_top_bottom_nav(row, gripBtn, index, listSize, moveToTopFn, moveBottomFn, refreshFn)
+	local moveTopBtn = acquire_frame("Button", row, "UIPanelButtonTemplate")
+	moveTopBtn:SetSize(18, 16)
+	moveTopBtn:SetPoint("LEFT", gripBtn, "RIGHT", 2, 0)
+	moveTopBtn:SetText("")
+	moveTopBtn:SetScript("OnEnter", function(self) GameTooltip:SetOwner(self, "ANCHOR_RIGHT") GameTooltip:SetText("Move to top") GameTooltip:AddLine("Jumps this entry to the start of the list - faster than dragging across a long, scrolled list.", 1, 1, 1, true) GameTooltip:Show() end)
+	moveTopBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
+	moveTopBtn:SetScript("OnClick", function() moveToTopFn() refreshFn() end)
+	if index <= 1 then moveTopBtn:Disable() end
+	local moveBottomBtn = acquire_frame("Button", row, "UIPanelButtonTemplate")
+	moveBottomBtn:SetSize(18, 16)
+	moveBottomBtn:SetPoint("LEFT", moveTopBtn, "RIGHT", 2, 0)
+	moveBottomBtn:SetText("")
+	moveBottomBtn:SetScript("OnEnter", function(self) GameTooltip:SetOwner(self, "ANCHOR_RIGHT") GameTooltip:SetText("Move to bottom") GameTooltip:AddLine("Jumps this entry to the end of the list - faster than dragging across a long, scrolled list.", 1, 1, 1, true) GameTooltip:Show() end)
+	moveBottomBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
+	moveBottomBtn:SetScript("OnClick", function() moveBottomFn() refreshFn() end)
+	if index >= listSize then moveBottomBtn:Disable() end
+end
+
+local function add_icon_with_tooltip(row, texture, tooltipFn, columnX)
+	local icon = acquire_texture(row, "ARTWORK")
+	icon:SetSize(20, 20)
+	icon:SetPoint("LEFT", columnX, 0)
+	icon:SetTexture(texture)
+	icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+	local iconTip = acquire_frame("Frame", row)
+	iconTip:SetSize(20, 20)
+	iconTip:SetPoint("LEFT", columnX, 0)
+	iconTip:EnableMouse(true)
+	iconTip:SetScript("OnEnter", function(self) tooltipFn(self) end)
+	iconTip:SetScript("OnLeave", function() GameTooltip:Hide() end)
+end
+
+local function make_enabled_handler(category, key, rebuildFn, shouldReposition)
+	return function(self)
+		local entry = ensure_settings_entry(category, key)
+		entry.enabled = self:GetChecked()
+		GCDI.auto_save_to_profile()
+		rebuildFn()
+		if shouldReposition then GCDI.reposition_all() end
+		GCDI.refresh_options_frame()
+	end
+end
+
 -- ═══════════════════════════════════════════════════════════════════════════
 -- SPELLS TAB
 -- ═══════════════════════════════════════════════════════════════════════════
@@ -1389,22 +1444,7 @@ local function refresh_spells_tab()
 		checkbox:SetSize(24, 24)
 		checkbox:SetPoint("LEFT", SPELLS_COLUMNS.enabled.x, 0)
 		checkbox:SetChecked(spellSettings.enabled ~= false)
-		checkbox:SetScript("OnClick", function(self)
-			local newValue = self:GetChecked()
-			
-			-- Update via GCDI.settings to ensure main file sees the change
-			if not GCDI.settings.spellSettings then
-				GCDI.settings.spellSettings = {}
-			end
-			if not GCDI.settings.spellSettings[spellID] then
-				GCDI.settings.spellSettings[spellID] = {}
-			end
-			GCDI.settings.spellSettings[spellID].enabled = newValue
-			
-			GCDI.auto_save_to_profile()
-			GCDI.rebuild_spell_bars()
-			GCDI.refresh_options_frame()
-		end)
+		checkbox:SetScript("OnClick", make_enabled_handler("spellSettings", spellID, GCDI.rebuild_spell_bars))
 		
 		-- Self-Cast checkbox
 		local selfCastCheckbox = acquire_frame("CheckButton", row, "UICheckButtonTemplate")
@@ -1412,10 +1452,8 @@ local function refresh_spells_tab()
 		selfCastCheckbox:SetPoint("LEFT", SPELLS_COLUMNS.selfCast.x, 0)
 		selfCastCheckbox:SetChecked(spellSettings.selfCast == true)
 		selfCastCheckbox:SetScript("OnClick", function(self)
-			if not GCDI.settings.spellSettings[spellID] then
-				GCDI.settings.spellSettings[spellID] = {}
-			end
-			GCDI.settings.spellSettings[spellID].selfCast = self:GetChecked()
+			local entry = ensure_settings_entry("spellSettings", spellID)
+			entry.selfCast = self:GetChecked()
 			GCDI.auto_save_to_profile()
 			GCDI.rebuild_spell_bars()
 			GCDI.UpdateRangeIndicators()
@@ -1435,10 +1473,8 @@ local function refresh_spells_tab()
 		trackIconCheckbox:SetPoint("LEFT", SPELLS_COLUMNS.trackIcon.x, 0)
 		trackIconCheckbox:SetChecked(spellSettings.trackIcon == true)
 		trackIconCheckbox:SetScript("OnClick", function(self)
-			if not GCDI.settings.spellSettings[spellID] then
-				GCDI.settings.spellSettings[spellID] = {}
-			end
-			GCDI.settings.spellSettings[spellID].trackIcon = self:GetChecked()
+			local entry = ensure_settings_entry("spellSettings", spellID)
+			entry.trackIcon = self:GetChecked()
 			GCDI.auto_save_to_profile()
 			GCDI.rebuild_spell_bars()
 		end)
@@ -1459,10 +1495,8 @@ local function refresh_spells_tab()
 		offGcdCheckbox:SetPoint("LEFT", SPELLS_COLUMNS.gcd.x, 0)
 		offGcdCheckbox:SetChecked(spellSettings.offGCD == true)
 		offGcdCheckbox:SetScript("OnClick", function(self)
-			if not GCDI.settings.spellSettings[spellID] then
-				GCDI.settings.spellSettings[spellID] = {}
-			end
-			GCDI.settings.spellSettings[spellID].offGCD = self:GetChecked()
+			local entry = ensure_settings_entry("spellSettings", spellID)
+			entry.offGCD = self:GetChecked()
 			GCDI.auto_save_to_profile()
 		end)
 		offGcdCheckbox:SetScript("OnEnter", function(self)
@@ -1475,21 +1509,11 @@ local function refresh_spells_tab()
 		offGcdCheckbox:SetScript("OnLeave", function() GameTooltip:Hide() end)
 
 		-- Spell icon
-		local icon = acquire_texture(row, "ARTWORK")
-		icon:SetSize(20, 20)
-		icon:SetPoint("LEFT", SPELLS_COLUMNS.icon.x, 0)
-		icon:SetTexture(texture)
-		icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
-		local iconTip = acquire_frame("Frame", row)
-		iconTip:SetSize(20, 20)
-		iconTip:SetPoint("LEFT", SPELLS_COLUMNS.icon.x, 0)
-		iconTip:EnableMouse(true)
-		iconTip:SetScript("OnEnter", function(self)
+		add_icon_with_tooltip(row, texture, function(self)
 			GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
 			GameTooltip:SetSpellByID(spellID)
 			GameTooltip:Show()
-		end)
-		iconTip:SetScript("OnLeave", function() GameTooltip:Hide() end)
+		end, SPELLS_COLUMNS.icon.x)
 		
 		-- Spell name
 		local nameText = acquire_fontstring(row, "OVERLAY", "GameFontNormal")
@@ -1547,11 +1571,9 @@ local function refresh_spells_tab()
 				info.value = -1
 				info.checked = (currentSpellSettings.rangeFallbackYards == nil and currentSpellSettings.rangeFallback == nil)
 				info.func = function()
-					if not GCDI.settings.spellSettings[spellID] then
-						GCDI.settings.spellSettings[spellID] = {}
-					end
-					GCDI.settings.spellSettings[spellID].rangeFallbackYards = nil
-					GCDI.settings.spellSettings[spellID].rangeFallback = nil
+					local entry = ensure_settings_entry("spellSettings", spellID)
+					entry.rangeFallbackYards = nil
+					entry.rangeFallback = nil
 					UIDropDownMenu_SetSelectedID(rangeDropdown, 1)
 					GCDI.auto_save_to_profile()
 					GCDI.UpdateRangeIndicators()
@@ -1562,11 +1584,9 @@ local function refresh_spells_tab()
 				info.value = -1
 				info.checked = (currentSpellSettings.rangeFallbackYards == nil and currentSpellSettings.rangeFallback == nil)
 				info.func = function()
-					if not GCDI.settings.spellSettings[spellID] then
-						GCDI.settings.spellSettings[spellID] = {}
-					end
-					GCDI.settings.spellSettings[spellID].rangeFallbackYards = nil
-					GCDI.settings.spellSettings[spellID].rangeFallback = nil
+					local entry = ensure_settings_entry("spellSettings", spellID)
+					entry.rangeFallbackYards = nil
+					entry.rangeFallback = nil
 					UIDropDownMenu_SetSelectedID(rangeDropdown, 1)
 					GCDI.auto_save_to_profile()
 					GCDI.UpdateRangeIndicators()
@@ -1584,10 +1604,8 @@ local function refresh_spells_tab()
 				end
 				info.checked = (currentYards == opt.yards)
 				info.func = function()
-					if not GCDI.settings.spellSettings[spellID] then
-						GCDI.settings.spellSettings[spellID] = {}
-					end
-					GCDI.settings.spellSettings[spellID].rangeFallbackYards = opt.yards
+					local entry = ensure_settings_entry("spellSettings", spellID)
+					entry.rangeFallbackYards = opt.yards
 					UIDropDownMenu_SetSelectedID(rangeDropdown, listIdx + 1)
 					GCDI.auto_save_to_profile()
 					GCDI.UpdateRangeIndicators()
@@ -1633,26 +1651,22 @@ local function refresh_spells_tab()
 			info.text = "Auto"
 			info.checked = (ov == nil)
 			info.func = function()
-				if not GCDI.settings.spellSettings[spellID] then
-					GCDI.settings.spellSettings[spellID] = {}
-				end
-				GCDI.settings.spellSettings[spellID].chargePipOverride = nil
+				local entry = ensure_settings_entry("spellSettings", spellID)
+				entry.chargePipOverride = nil
 				UIDropDownMenu_SetText(chgDropdown, "Auto")
 				GCDI.auto_save_to_profile()
 				GCDI.rebuild_spell_bars()
 				GCDI.refresh_options_frame()
 			end
 			UIDropDownMenu_AddButton(info, level)
-			
+
 			for n = 2, 6 do
 				info = UIDropDownMenu_CreateInfo()
 				info.text = tostring(n) .. " pips"
 				info.checked = (ov == n)
 				info.func = function()
-					if not GCDI.settings.spellSettings[spellID] then
-						GCDI.settings.spellSettings[spellID] = {}
-					end
-					GCDI.settings.spellSettings[spellID].chargePipOverride = n
+					local entry = ensure_settings_entry("spellSettings", spellID)
+					entry.chargePipOverride = n
 					UIDropDownMenu_SetText(chgDropdown, tostring(n) .. " pips")
 					GCDI.auto_save_to_profile()
 					GCDI.rebuild_spell_bars()
@@ -1687,37 +1701,7 @@ local function refresh_spells_tab()
 		local gripBtn = add_row_drag_handle(row, spellRows, orderedSpells, i, slotYs, GCDI.commit_spell_order, refresh_spells_tab)
 		gripBtn:SetPoint("LEFT", SPELLS_COLUMNS.drag.x, 0)
 
-		local topBtn = acquire_frame("Button", row, "UIPanelScrollUpButtonTemplate")
-		topBtn:SetSize(18, 16)
-		topBtn:SetPoint("LEFT", gripBtn, "RIGHT", 2, 0)
-		topBtn:SetEnabled(i > 1)
-		topBtn:SetScript("OnClick", function()
-			GCDI.move_spell_to_top(spellID)
-			GCDI.refresh_options_frame()
-		end)
-		topBtn:SetScript("OnEnter", function(self)
-			GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-			GameTooltip:SetText("Move to top")
-			GameTooltip:AddLine("Jumps this spell to the start of the list - faster than dragging across a long, scrolled list.", 1, 1, 1, true)
-			GameTooltip:Show()
-		end)
-		topBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
-
-		local bottomBtn = acquire_frame("Button", row, "UIPanelScrollDownButtonTemplate")
-		bottomBtn:SetSize(18, 16)
-		bottomBtn:SetPoint("LEFT", topBtn, "RIGHT", 2, 0)
-		bottomBtn:SetEnabled(i < #orderedSpells)
-		bottomBtn:SetScript("OnClick", function()
-			GCDI.move_spell_to_bottom(spellID)
-			GCDI.refresh_options_frame()
-		end)
-		bottomBtn:SetScript("OnEnter", function(self)
-			GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-			GameTooltip:SetText("Move to bottom")
-			GameTooltip:AddLine("Jumps this spell to the end of the list - faster than dragging across a long, scrolled list.", 1, 1, 1, true)
-			GameTooltip:Show()
-		end)
-		bottomBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
+		add_top_bottom_nav(row, gripBtn, i, #orderedSpells, function() GCDI.move_spell_to_top(spellID) end, function() GCDI.move_spell_to_bottom(spellID) end, GCDI.refresh_options_frame)
 
 		yOffset = yOffset - 35
 	end
@@ -1856,22 +1840,7 @@ local function refresh_items_tab()
 		checkbox:SetSize(24, 24)
 		checkbox:SetPoint("LEFT", ITEMS_COLUMNS.enabled.x, 0)
 		checkbox:SetChecked(itemSettings.enabled ~= false)
-		checkbox:SetScript("OnClick", function(self)
-			local newValue = self:GetChecked()
-			-- Update via GCDI.settings to ensure main file sees the change
-			if not GCDI.settings.itemSettings then
-				GCDI.settings.itemSettings = {}
-			end
-			if not GCDI.settings.itemSettings[itemKey] then
-				GCDI.settings.itemSettings[itemKey] = {}
-			end
-			GCDI.settings.itemSettings[itemKey].enabled = newValue
-			
-			GCDI.auto_save_to_profile()
-			GCDI.rebuild_item_bars()
-			GCDI.reposition_all()
-			GCDI.refresh_options_frame()
-		end)
+		checkbox:SetScript("OnClick", make_enabled_handler("itemSettings", itemKey, function() GCDI.rebuild_item_bars() end, true))
 		
 		-- Show Charges checkbox
 		local chargesCheckbox = acquire_frame("CheckButton", row, "UICheckButtonTemplate")
@@ -1879,10 +1848,8 @@ local function refresh_items_tab()
 		chargesCheckbox:SetPoint("LEFT", ITEMS_COLUMNS.charges.x, 0)
 		chargesCheckbox:SetChecked(itemSettings.showCharges == true)
 		chargesCheckbox:SetScript("OnClick", function(self)
-			if not GCDI.settings.itemSettings[itemKey] then
-				GCDI.settings.itemSettings[itemKey] = {}
-			end
-			GCDI.settings.itemSettings[itemKey].showCharges = self:GetChecked()
+			local entry = ensure_settings_entry("itemSettings", itemKey)
+			entry.showCharges = self:GetChecked()
 			GCDI.auto_save_to_profile()
 			GCDI.rebuild_item_bars()
 			GCDI.reposition_all()
@@ -1897,16 +1864,7 @@ local function refresh_items_tab()
 		chargesCheckbox:SetScript("OnLeave", function() GameTooltip:Hide() end)
 		
 		-- Item icon
-		local icon = acquire_texture(row, "ARTWORK")
-		icon:SetSize(20, 20)
-		icon:SetPoint("LEFT", ITEMS_COLUMNS.icon.x, 0)
-		icon:SetTexture(texture)
-		icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
-		local iconTip = acquire_frame("Frame", row)
-		iconTip:SetSize(20, 20)
-		iconTip:SetPoint("LEFT", ITEMS_COLUMNS.icon.x, 0)
-		iconTip:EnableMouse(true)
-		iconTip:SetScript("OnEnter", function(self)
+		add_icon_with_tooltip(row, texture, function(self)
 			GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
 			if catalogEntry.slot then
 				GameTooltip:SetInventoryItem("player", catalogEntry.slot)
@@ -1914,8 +1872,7 @@ local function refresh_items_tab()
 				GameTooltip:SetItemByID(catalogEntry.itemID)
 			end
 			GameTooltip:Show()
-		end)
-		iconTip:SetScript("OnLeave", function() GameTooltip:Hide() end)
+		end, ITEMS_COLUMNS.icon.x)
 		
 		-- Item name (was going right up to the Type column's start - capped so
 		-- a long name can't run under it or the drag handle)
@@ -1943,37 +1900,7 @@ local function refresh_items_tab()
 		local gripBtn = add_row_drag_handle(row, itemRows, orderedItems, i, slotYs, GCDI.commit_item_order, refresh_items_tab)
 		gripBtn:SetPoint("LEFT", ITEMS_COLUMNS.drag.x, 0)
 
-		local topBtn = acquire_frame("Button", row, "UIPanelScrollUpButtonTemplate")
-		topBtn:SetSize(18, 16)
-		topBtn:SetPoint("LEFT", gripBtn, "RIGHT", 2, 0)
-		topBtn:SetEnabled(i > 1)
-		topBtn:SetScript("OnClick", function()
-			GCDI.move_item_to_top(itemKey)
-			GCDI.refresh_options_frame()
-		end)
-		topBtn:SetScript("OnEnter", function(self)
-			GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-			GameTooltip:SetText("Move to top")
-			GameTooltip:AddLine("Jumps this item to the start of the list - faster than dragging across a long, scrolled list.", 1, 1, 1, true)
-			GameTooltip:Show()
-		end)
-		topBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
-
-		local bottomBtn = acquire_frame("Button", row, "UIPanelScrollDownButtonTemplate")
-		bottomBtn:SetSize(18, 16)
-		bottomBtn:SetPoint("LEFT", topBtn, "RIGHT", 2, 0)
-		bottomBtn:SetEnabled(i < #orderedItems)
-		bottomBtn:SetScript("OnClick", function()
-			GCDI.move_item_to_bottom(itemKey)
-			GCDI.refresh_options_frame()
-		end)
-		bottomBtn:SetScript("OnEnter", function(self)
-			GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-			GameTooltip:SetText("Move to bottom")
-			GameTooltip:AddLine("Jumps this item to the end of the list - faster than dragging across a long, scrolled list.", 1, 1, 1, true)
-			GameTooltip:Show()
-		end)
-		bottomBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
+		add_top_bottom_nav(row, gripBtn, i, #orderedItems, function() GCDI.move_item_to_top(itemKey) end, function() GCDI.move_item_to_bottom(itemKey) end, GCDI.refresh_options_frame)
 
 		-- Off GCD checkbox. Metadata only: doesn't affect the addon's own
 		-- display, only feeds the companion-script config export's hasGCD
@@ -1983,10 +1910,8 @@ local function refresh_items_tab()
 		offGcdCheckbox:SetPoint("LEFT", ITEMS_COLUMNS.gcd.x, 0)
 		offGcdCheckbox:SetChecked(itemSettings.offGCD == true)
 		offGcdCheckbox:SetScript("OnClick", function(self)
-			if not GCDI.settings.itemSettings[itemKey] then
-				GCDI.settings.itemSettings[itemKey] = {}
-			end
-			GCDI.settings.itemSettings[itemKey].offGCD = self:GetChecked()
+			local entry = ensure_settings_entry("itemSettings", itemKey)
+			entry.offGCD = self:GetChecked()
 			GCDI.auto_save_to_profile()
 		end)
 		offGcdCheckbox:SetScript("OnEnter", function(self)
@@ -2070,7 +1995,7 @@ local function refresh_buffs_tab()
 				GCDI.rebuild_buff_bars()
 				addBuffEditBox:SetText("")
 				refresh_buffs_tab()
-				print("|cff00ff00GCDIndicator:|r Buff added: " .. (C_Spell.GetSpellName(spellID) or spellID))
+				print(GCDI_PREFIX .. "Buff added: " .. (C_Spell.GetSpellName(spellID) or spellID))
 			else
 				print("|cffff0000GCDIndicator:|r Could not find spell ID: " .. spellID)
 			end
@@ -2195,19 +2120,7 @@ local function refresh_buffs_tab()
 		checkbox:SetSize(24, 24)
 		checkbox:SetPoint("LEFT", BUFFS_COLUMNS.enabled.x, 0)
 		checkbox:SetChecked(buffSettings.enabled ~= false)
-		checkbox:SetScript("OnClick", function(self)
-			if not GCDI.settings.buffSettings then
-				GCDI.settings.buffSettings = {}
-			end
-			if not GCDI.settings.buffSettings[buffKey] then
-				GCDI.settings.buffSettings[buffKey] = {}
-			end
-			GCDI.settings.buffSettings[buffKey].enabled = self:GetChecked()
-			GCDI.auto_save_to_profile()
-			GCDI.rebuild_buff_bars()
-			GCDI.reposition_all()
-			GCDI.refresh_options_frame()
-		end)
+		checkbox:SetScript("OnClick", make_enabled_handler("buffSettings", buffKey, function() GCDI.rebuild_buff_bars() end, true))
 		
 		-- Show Stacks checkbox
 		local stacksCheckbox = acquire_frame("CheckButton", row, "UICheckButtonTemplate")
@@ -2215,10 +2128,8 @@ local function refresh_buffs_tab()
 		stacksCheckbox:SetPoint("LEFT", BUFFS_COLUMNS.stacks.x, 0)
 		stacksCheckbox:SetChecked(buffSettings.showStacks ~= false)
 		stacksCheckbox:SetScript("OnClick", function(self)
-			if not GCDI.settings.buffSettings[buffKey] then
-				GCDI.settings.buffSettings[buffKey] = {}
-			end
-			GCDI.settings.buffSettings[buffKey].showStacks = self:GetChecked()
+			local entry = ensure_settings_entry("buffSettings", buffKey)
+			entry.showStacks = self:GetChecked()
 			GCDI.auto_save_to_profile()
 			GCDI.rebuild_buff_bars()
 			GCDI.reposition_all()
@@ -2233,24 +2144,14 @@ local function refresh_buffs_tab()
 		stacksCheckbox:SetScript("OnLeave", function() GameTooltip:Hide() end)
 		
 		-- Buff icon
-		local icon = acquire_texture(row, "ARTWORK")
-		icon:SetSize(20, 20)
-		icon:SetPoint("LEFT", BUFFS_COLUMNS.icon.x, 0)
-		icon:SetTexture(texture)
-		icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
 		local buffTooltipSpellID = catalogEntry.tooltipSpellID or catalogEntry.spellID or buffKey
-		local iconTip = acquire_frame("Frame", row)
-		iconTip:SetSize(20, 20)
-		iconTip:SetPoint("LEFT", BUFFS_COLUMNS.icon.x, 0)
-		iconTip:EnableMouse(true)
-		iconTip:SetScript("OnEnter", function(self)
+		add_icon_with_tooltip(row, texture, function(self)
 			if buffTooltipSpellID and buffTooltipSpellID > 0 then
 				GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
 				GameTooltip:SetSpellByID(buffTooltipSpellID)
 				GameTooltip:Show()
 			end
-		end)
-		iconTip:SetScript("OnLeave", function() GameTooltip:Hide() end)
+		end, BUFFS_COLUMNS.icon.x)
 		
 		-- Buff name with spell ID (displayID = spell ID when from CDM; matches
 		-- CDM/spell IDs). Width capped so a long name can't run into Max Stacks.
@@ -2284,10 +2185,8 @@ local function refresh_buffs_tab()
 				info.value = stacks
 				info.checked = (currentBuffSettings.maxStacksDisplay == stacks)
 				info.func = function()
-					if not GCDI.settings.buffSettings[buffKey] then
-						GCDI.settings.buffSettings[buffKey] = {}
-					end
-					GCDI.settings.buffSettings[buffKey].maxStacksDisplay = stacks
+					local entry = ensure_settings_entry("buffSettings", buffKey)
+					entry.maxStacksDisplay = stacks
 					UIDropDownMenu_SetSelectedID(maxStacksDropdown, stacks)
 					GCDI.auto_save_to_profile()
 					GCDI.rebuild_buff_bars()
@@ -2305,10 +2204,8 @@ local function refresh_buffs_tab()
 		durationCb:SetSize(24, 24)
 		durationCb:SetChecked(buffSettings.showDurationBar == true)
 		durationCb:SetScript("OnClick", function(self)
-			if not GCDI.settings.buffSettings[buffKey] then
-				GCDI.settings.buffSettings[buffKey] = {}
-			end
-			GCDI.settings.buffSettings[buffKey].showDurationBar = self:GetChecked()
+			local entry = ensure_settings_entry("buffSettings", buffKey)
+			entry.showDurationBar = self:GetChecked()
 			GCDI.auto_save_to_profile()
 			GCDI.rebuild_buff_bars()
 			GCDI.reposition_all()
@@ -2353,10 +2250,8 @@ local function refresh_buffs_tab()
 				info.value = pct
 				info.checked = (currentThreshold == pct)
 				info.func = function()
-					if not GCDI.settings.buffSettings[buffKey] then
-						GCDI.settings.buffSettings[buffKey] = {}
-					end
-					GCDI.settings.buffSettings[buffKey].durationThreshold = pct
+					local entry = ensure_settings_entry("buffSettings", buffKey)
+					entry.durationThreshold = pct
 					UIDropDownMenu_SetText(thresholdDropdown, pct .. "%")
 					GCDI.auto_save_to_profile()
 					GCDI.rebuild_buff_bars()
@@ -2377,41 +2272,11 @@ local function refresh_buffs_tab()
 		local gripBtn = add_row_drag_handle(row, buffRows, orderedBuffs, i, slotYs, GCDI.commit_buff_order, refresh_buffs_tab)
 		gripBtn:SetPoint("LEFT", BUFFS_COLUMNS.drag.x, 0)
 
-		local topBtn = acquire_frame("Button", row, "UIPanelScrollUpButtonTemplate")
-		topBtn:SetSize(18, 16)
-		topBtn:SetPoint("LEFT", gripBtn, "RIGHT", 2, 0)
-		topBtn:SetEnabled(i > 1)
-		topBtn:SetScript("OnClick", function()
-			GCDI.move_buff_to_top(buffKey)
-			GCDI.refresh_options_frame()
-		end)
-		topBtn:SetScript("OnEnter", function(self)
-			GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-			GameTooltip:SetText("Move to top")
-			GameTooltip:AddLine("Jumps this buff to the start of the list - faster than dragging across a long, scrolled list.", 1, 1, 1, true)
-			GameTooltip:Show()
-		end)
-		topBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
-
-		local bottomBtn = acquire_frame("Button", row, "UIPanelScrollDownButtonTemplate")
-		bottomBtn:SetSize(18, 16)
-		bottomBtn:SetPoint("LEFT", topBtn, "RIGHT", 2, 0)
-		bottomBtn:SetEnabled(i < #orderedBuffs)
-		bottomBtn:SetScript("OnClick", function()
-			GCDI.move_buff_to_bottom(buffKey)
-			GCDI.refresh_options_frame()
-		end)
-		bottomBtn:SetScript("OnEnter", function(self)
-			GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-			GameTooltip:SetText("Move to bottom")
-			GameTooltip:AddLine("Jumps this buff to the end of the list - faster than dragging across a long, scrolled list.", 1, 1, 1, true)
-			GameTooltip:Show()
-		end)
-		bottomBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
+		add_top_bottom_nav(row, gripBtn, i, #orderedBuffs, function() GCDI.move_buff_to_top(buffKey) end, function() GCDI.move_buff_to_bottom(buffKey) end, GCDI.refresh_options_frame)
 
 		local removeBtn = acquire_frame("Button", row, "UIPanelButtonTemplate")
 		removeBtn:SetSize(24, 18)
-		removeBtn:SetPoint("LEFT", bottomBtn, "RIGHT", 2, 0)
+		removeBtn:SetPoint("LEFT", gripBtn, "RIGHT", 42, 0)
 		removeBtn:SetText("X")
 		removeBtn:SetNormalFontObject("GameFontNormalSmall")
 		removeBtn:SetHighlightFontObject("GameFontHighlightSmall")
@@ -2511,7 +2376,7 @@ StaticPopupDialogs["GCDI_DELETE_PROFILE_CONFIRM"] = {
 			if settings.currentProfile == profileName then
 				settings.currentProfile = nil
 			end
-			print("|cff00ff00GCDIndicator:|r Profile '" .. profileName .. "' deleted!")
+			print(GCDI_PREFIX .. "Profile '" .. profileName .. "' deleted!")
 			if GCDI.refresh_options_frame then
 				GCDI.refresh_options_frame()
 			end
@@ -2600,7 +2465,7 @@ StaticPopupDialogs["GCDI_SAVE_PROFILE_CONFIRM"] = {
 			}
 			s.currentProfile = profileName
 			
-			print("|cff00ff00GCDIndicator:|r Profile '" .. profileName .. "' saved!")
+			print(GCDI_PREFIX .. "Profile '" .. profileName .. "' saved!")
 			
 			GCDI.rebuild_spell_bars()
 			GCDI.rebuild_item_bars()
@@ -2687,7 +2552,7 @@ StaticPopupDialogs["GCDI_IMPORT_PROFILE_NAME"] = {
 		GCDI.rebuild_buff_bars()
 		GCDI.reposition_all()
 		
-		print("|cff00ff00GCDIndicator:|r Imported as profile '" .. name .. "'!")
+		print(GCDI_PREFIX .. "Imported as profile '" .. name .. "'!")
 		if GCDI.refresh_options_frame then GCDI.refresh_options_frame() end
 	end,
 	EditBoxOnEnterPressed = function(self)
@@ -2761,7 +2626,7 @@ local function do_save_profile(name)
 	-- Update local settings reference
 	settings = s
 	
-	print("|cff00ff00GCDIndicator:|r Profile '" .. name .. "' saved!")
+	print(GCDI_PREFIX .. "Profile '" .. name .. "' saved!")
 	return true
 end
 
@@ -3173,80 +3038,31 @@ local function create_options_frame()
 		prevTabBtn = create_tab_button(optionsFrame, def, prevTabBtn)
 	end
 
-	-- GCD SCROLL FRAME (shown by default)
-	local gcdScrollFrame = CreateFrame("ScrollFrame", nil, optionsFrame, "UIPanelScrollFrameTemplate")
-	gcdScrollFrame:SetPoint("TOPLEFT", 10, -60)
-	gcdScrollFrame:SetPoint("BOTTOMRIGHT", -30, 40)
-	optionsFrame.gcdScrollFrame = gcdScrollFrame
-	
-	local gcdScrollChild = CreateFrame("Frame", nil, gcdScrollFrame)
-	gcdScrollChild:SetSize(450, 600)
-	gcdScrollFrame:SetScrollChild(gcdScrollChild)
-	optionsFrame.gcdScrollChild = gcdScrollChild
-	
-	-- RESOURCES SCROLL FRAME
-	local resourcesScrollFrame = CreateFrame("ScrollFrame", nil, optionsFrame, "UIPanelScrollFrameTemplate")
-	resourcesScrollFrame:SetPoint("TOPLEFT", 10, -60)
-	resourcesScrollFrame:SetPoint("BOTTOMRIGHT", -30, 40)
-	resourcesScrollFrame:Hide()
-	optionsFrame.resourcesScrollFrame = resourcesScrollFrame
-	
-	local resourcesScrollChild = CreateFrame("Frame", nil, resourcesScrollFrame)
-	resourcesScrollChild:SetSize(450, 400)
-	resourcesScrollFrame:SetScrollChild(resourcesScrollChild)
-	optionsFrame.resourcesScrollChild = resourcesScrollChild
-	
-	-- SPELLS SCROLL FRAME
-	local spellsScrollFrame = CreateFrame("ScrollFrame", nil, optionsFrame, "UIPanelScrollFrameTemplate")
-	spellsScrollFrame:SetPoint("TOPLEFT", 10, -60)
-	spellsScrollFrame:SetPoint("BOTTOMRIGHT", -30, 40)
-	spellsScrollFrame:Hide()
-	optionsFrame.spellsScrollFrame = spellsScrollFrame
-	
-	local spellsScrollChild = CreateFrame("Frame", nil, spellsScrollFrame)
-	spellsScrollChild:SetSize(600, 600)
-	spellsScrollFrame:SetScrollChild(spellsScrollChild)
-	optionsFrame.spellsScrollChild = spellsScrollChild
-	
-	-- ITEMS SCROLL FRAME
-	local itemsScrollFrame = CreateFrame("ScrollFrame", nil, optionsFrame, "UIPanelScrollFrameTemplate")
-	itemsScrollFrame:SetPoint("TOPLEFT", 10, -60)
-	itemsScrollFrame:SetPoint("BOTTOMRIGHT", -30, 40)
-	itemsScrollFrame:Hide()
-	optionsFrame.itemsScrollFrame = itemsScrollFrame
-	
-	local itemsScrollChild = CreateFrame("Frame", nil, itemsScrollFrame)
-	itemsScrollChild:SetSize(480, 600)
-	itemsScrollFrame:SetScrollChild(itemsScrollChild)
-	optionsFrame.itemsScrollChild = itemsScrollChild
-	
-	-- BUFFS SCROLL FRAME
-	local buffsScrollFrame = CreateFrame("ScrollFrame", nil, optionsFrame, "UIPanelScrollFrameTemplate")
-	buffsScrollFrame:SetPoint("TOPLEFT", 10, -60)
-	buffsScrollFrame:SetPoint("BOTTOMRIGHT", -30, 40)
-	buffsScrollFrame:Hide()
-	optionsFrame.buffsScrollFrame = buffsScrollFrame
-	
-	local buffsScrollChild = CreateFrame("Frame", nil, buffsScrollFrame)
-	buffsScrollChild:SetSize(540, 800)
-	buffsScrollFrame:SetScrollChild(buffsScrollChild)
-	optionsFrame.buffsScrollChild = buffsScrollChild
-	
-	-- SETTINGS SCROLL FRAME
-	-- Used to be a plain fixed-size Frame (no scrolling), unlike every other
-	-- tab - content past the bottom edge just got silently clipped instead of
-	-- being reachable. Same ScrollFrame + scroll-child pattern as the other
-	-- tabs now; the settings widgets below are unchanged, just reparented.
-	local settingsScrollFrame = CreateFrame("ScrollFrame", nil, optionsFrame, "UIPanelScrollFrameTemplate")
-	settingsScrollFrame:SetPoint("TOPLEFT", 10, -60)
-	settingsScrollFrame:SetPoint("BOTTOMRIGHT", -30, 40)
-	settingsScrollFrame:Hide()
-	optionsFrame.settingsScrollFrame = settingsScrollFrame
+	local function create_tab_scroll_frame(name, width, height)
+		local scrollFrame = CreateFrame("ScrollFrame", nil, optionsFrame, "UIPanelScrollFrameTemplate")
+		scrollFrame:SetPoint("TOPLEFT", 10, -60)
+		scrollFrame:SetPoint("BOTTOMRIGHT", -30, 40)
+		scrollFrame:Hide()
+		optionsFrame[name .. "ScrollFrame"] = scrollFrame
+		local scrollChild = CreateFrame("Frame", nil, scrollFrame)
+		scrollChild:SetSize(width, height)
+		scrollFrame:SetScrollChild(scrollChild)
+		optionsFrame[name .. "ScrollChild"] = scrollChild
+		return scrollFrame, scrollChild
+	end
 
-	local settingsFrame = CreateFrame("Frame", nil, settingsScrollFrame)
-	settingsFrame:SetSize(500, 650)
-	settingsScrollFrame:SetScrollChild(settingsFrame)
-	optionsFrame.settingsFrame = settingsFrame
+	local TAB_SCROLL_DEFS = {
+		{ name = "gcd", width = 450, height = 600 },
+		{ name = "resources", width = 450, height = 400 },
+		{ name = "spells", width = 600, height = 600 },
+		{ name = "items", width = 480, height = 600 },
+		{ name = "buffs", width = 540, height = 800 },
+		{ name = "settings", width = 500, height = 650 },
+	}
+	for _, def in ipairs(TAB_SCROLL_DEFS) do
+		create_tab_scroll_frame(def.name, def.width, def.height)
+	end
+	local settingsFrame = optionsFrame.settingsScrollChild
 
 	-- Settings tab used to place every widget at a hand-measured absolute Y
 	-- (-70, -150, -175, -220...) instead of the yOffset-accumulator pattern
@@ -3258,97 +3074,79 @@ local function create_options_frame()
 	local SETTINGS_BUTTON_GAP = 10
 	local SETTINGS_BLOCK_GAP = 20
 
+	local function create_settings_button(parent, yOffset, width, text, tooltipTitle, tooltipLines, onClick)
+		local btn = CreateFrame("Button", nil, parent, "UIPanelButtonTemplate")
+		btn:SetSize(width, SETTINGS_BUTTON_HEIGHT)
+		btn:SetPoint("TOPLEFT", 10, yOffset)
+		btn:SetText(text)
+		btn:SetScript("OnClick", onClick)
+		btn:SetScript("OnEnter", function(self)
+			GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+			GameTooltip:SetText(tooltipTitle)
+			for _, line in ipairs(tooltipLines) do
+				GameTooltip:AddLine(line[1], line[2], line[3], line[4], true)
+			end
+			GameTooltip:Show()
+		end)
+		btn:SetScript("OnLeave", function() GameTooltip:Hide() end)
+		return btn
+	end
+
 	local sYOffset = -10
 
 	sYOffset = add_section_header(settingsFrame, sYOffset, "Frame Position",
 		"Use these buttons to move or reset the GCD indicator bars.", 500, false)
 
 	-- Move Frame Button
-	local moveBtn = CreateFrame("Button", nil, settingsFrame, "UIPanelButtonTemplate")
-	moveBtn:SetSize(150, SETTINGS_BUTTON_HEIGHT)
-	moveBtn:SetPoint("TOPLEFT", 5, sYOffset)
-	moveBtn:SetText("Move Frame")
-	moveBtn:SetScript("OnClick", function()
+	create_settings_button(settingsFrame, sYOffset, 150, "Move Frame", "Move Frame", {
+		{ "Click to enable move mode.", 1, 1, 1 },
+		{ "Drag the frame to reposition it.", 0.7, 0.7, 0.7 },
+		{ "Click again or use /gcdi to lock.", 0.7, 0.7, 0.7 },
+	}, function()
 		if GCDI.toggle_move_mode then
 			GCDI.toggle_move_mode()
 			optionsFrame:Hide()
 		end
 	end)
-	moveBtn:SetScript("OnEnter", function(self)
-		GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-		GameTooltip:SetText("Move Frame")
-		GameTooltip:AddLine("Click to enable move mode.", 1, 1, 1, true)
-		GameTooltip:AddLine("Drag the frame to reposition it.", 0.7, 0.7, 0.7, true)
-		GameTooltip:AddLine("Click again or use /gcdi to lock.", 0.7, 0.7, 0.7, true)
-		GameTooltip:Show()
-	end)
-	moveBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
 	sYOffset = sYOffset - (SETTINGS_BUTTON_HEIGHT + SETTINGS_BUTTON_GAP)
 
 	-- Reset Position Button
-	local resetBtn = CreateFrame("Button", nil, settingsFrame, "UIPanelButtonTemplate")
-	resetBtn:SetSize(150, SETTINGS_BUTTON_HEIGHT)
-	resetBtn:SetPoint("TOPLEFT", 5, sYOffset)
-	resetBtn:SetText("Reset Position")
-	resetBtn:SetScript("OnClick", function()
+	create_settings_button(settingsFrame, sYOffset, 150, "Reset Position", "Reset Position", {
+		{ "Reset the frame to the default center position.", 1, 1, 1 },
+	}, function()
 		if GCDI.reset_position then
 			GCDI.reset_position()
-			print("|cff00ff00GCDIndicator:|r Frame position reset to center")
+			print(GCDI_PREFIX .. "Frame position reset to center")
 		end
 	end)
-	resetBtn:SetScript("OnEnter", function(self)
-		GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-		GameTooltip:SetText("Reset Position")
-		GameTooltip:AddLine("Reset the frame to the default center position.", 1, 1, 1, true)
-		GameTooltip:Show()
-	end)
-	resetBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
 	sYOffset = sYOffset - (SETTINGS_BUTTON_HEIGHT + SETTINGS_BLOCK_GAP)
 
 	-- Minimap Button Toggle
 	sYOffset = add_section_header(settingsFrame, sYOffset, "Minimap Button", nil, 500)
 
-	local minimapToggleBtn = CreateFrame("Button", nil, settingsFrame, "UIPanelButtonTemplate")
-	minimapToggleBtn:SetSize(150, SETTINGS_BUTTON_HEIGHT)
-	minimapToggleBtn:SetPoint("TOPLEFT", 5, sYOffset)
-	minimapToggleBtn:SetText("Toggle Minimap Icon")
-	minimapToggleBtn:SetScript("OnClick", function()
+	create_settings_button(settingsFrame, sYOffset, 150, "Toggle Minimap Icon", "Toggle Minimap Icon", {
+		{ "Show or hide the minimap button.", 1, 1, 1 },
+	}, function()
 		if GCDI.ToggleMinimapButton then
 			GCDI.ToggleMinimapButton()
 			local hidden = settings.minimap and settings.minimap.hide
-			print("|cff00ff00GCDIndicator:|r Minimap button " .. (hidden and "hidden" or "shown"))
+			print(GCDI_PREFIX .. "Minimap button " .. (hidden and "hidden" or "shown"))
 		end
 	end)
-	minimapToggleBtn:SetScript("OnEnter", function(self)
-		GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-		GameTooltip:SetText("Toggle Minimap Icon")
-		GameTooltip:AddLine("Show or hide the minimap button.", 1, 1, 1, true)
-		GameTooltip:Show()
-	end)
-	minimapToggleBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
 	sYOffset = sYOffset - (SETTINGS_BUTTON_HEIGHT + SETTINGS_BLOCK_GAP)
 
 	-- Preview Mode Section
 	sYOffset = add_section_header(settingsFrame, sYOffset, "Preview Mode",
 		"Show all bars filled with visible colors for positioning.", 500)
 
-	local previewBtn = CreateFrame("Button", nil, settingsFrame, "UIPanelButtonTemplate")
-	previewBtn:SetSize(150, SETTINGS_BUTTON_HEIGHT)
-	previewBtn:SetPoint("TOPLEFT", 5, sYOffset)
-	previewBtn:SetText("Toggle Preview")
-	previewBtn:SetScript("OnClick", function()
+	create_settings_button(settingsFrame, sYOffset, 150, "Toggle Preview", "Toggle Preview Mode", {
+		{ "Fill all bars and show indicators.", 1, 1, 1 },
+		{ "Useful for positioning the frame.", 0.7, 0.7, 0.7 },
+	}, function()
 		if GCDI.toggle_preview_mode then
 			GCDI.toggle_preview_mode()
 		end
 	end)
-	previewBtn:SetScript("OnEnter", function(self)
-		GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-		GameTooltip:SetText("Toggle Preview Mode")
-		GameTooltip:AddLine("Fill all bars and show indicators.", 1, 1, 1, true)
-		GameTooltip:AddLine("Useful for positioning the frame.", 0.7, 0.7, 0.7, true)
-		GameTooltip:Show()
-	end)
-	previewBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
 	sYOffset = sYOffset - (SETTINGS_BUTTON_HEIGHT + SETTINGS_BLOCK_GAP)
 
 	-- Experimental: Native Stack Binding (A/B toggle, see CHANGE-TRACKER.md)
@@ -3361,7 +3159,7 @@ local function create_options_frame()
 	optionsFrame.nativeStackCheckbox = nativeStackCheckbox
 	nativeStackCheckbox:SetScript("OnClick", function(self)
 		configs.useNativeStackBinding = self:GetChecked() and true or false
-		print("|cff00ff00GCDIndicator:|r Native stack binding " .. (configs.useNativeStackBinding and "ON (experimental)" or "OFF (classic)"))
+		print(GCDI_PREFIX .. "Native stack binding " .. (configs.useNativeStackBinding and "ON (experimental)" or "OFF (classic)"))
 		if GCDI.rebuild_buff_bars then
 			GCDI.rebuild_buff_bars()
 		end
@@ -3388,7 +3186,7 @@ local function create_options_frame()
 		if settings then
 			settings.compactMode = configs.compactMode  -- persist (SavedVariablesPerCharacter)
 		end
-		print("|cff00ff00GCDIndicator:|r Compact mode " .. (configs.compactMode and "ON" or "OFF"))
+		print(GCDI_PREFIX .. "Compact mode " .. (configs.compactMode and "ON" or "OFF"))
 		-- Box layout (icon square present/absent) is baked in at creation
 		-- time, not just position, so toggling needs a full rebuild.
 		if GCDI.rebuild_spell_bars then
@@ -3412,43 +3210,27 @@ local function create_options_frame()
 	-- Export bar positions (diagnostic: cross-check against what the
 	-- companion script computes for the same spell/item/buff list, see
 	-- export_bar_positions() in GCDIndicator.lua)
-	local exportBarsBtn = CreateFrame("Button", nil, settingsFrame, "UIPanelButtonTemplate")
-	exportBarsBtn:SetSize(180, SETTINGS_BUTTON_HEIGHT)
-	exportBarsBtn:SetPoint("TOPLEFT", 0, sYOffset)
-	exportBarsBtn:SetText("Export Bar Positions")
-	exportBarsBtn:SetScript("OnClick", function()
+	local exportBarsBtn = create_settings_button(settingsFrame, sYOffset, 180, "Export Bar Positions", "Export Bar Positions", {
+		{ "Dumps every visible bar's position/size for cross-checking against your companion script.", 1, 1, 1 },
+	}, function()
 		if GCDI.export_bar_positions then
 			show_export_import_popup("export", GCDI.export_bar_positions(), "Bar Position Export")
 		end
 	end)
-	exportBarsBtn:SetScript("OnEnter", function(self)
-		GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-		GameTooltip:SetText("Export Bar Positions")
-		GameTooltip:AddLine("Dumps every visible bar's position/size for cross-checking against your companion script.", 1, 1, 1, true)
-		GameTooltip:Show()
-	end)
-	exportBarsBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
+	exportBarsBtn:SetPoint("TOPLEFT", 0, sYOffset)
 
 	-- Export rotation config (generates spell/item/buff/resource array text
 	-- from the live catalog/settings state, to paste into a companion
 	-- rotation script instead of hand-maintaining it - see
 	-- export_ahk_config() in GCDIndicator.lua)
-	local exportAhkBtn = CreateFrame("Button", nil, settingsFrame, "UIPanelButtonTemplate")
-	exportAhkBtn:SetSize(180, SETTINGS_BUTTON_HEIGHT)
-	exportAhkBtn:SetPoint("LEFT", exportBarsBtn, "RIGHT", 10, 0)
-	exportAhkBtn:SetText("Export Rotation Config")
-	exportAhkBtn:SetScript("OnClick", function()
+	local exportAhkBtn = create_settings_button(settingsFrame, sYOffset, 180, "Export Rotation Config", "Export Rotation Config", {
+		{ "Generates spell/item/buff array text from your current spells/items/buffs and their order.", 1, 1, 1 },
+		{ "Asks whether to label it Primary or Secondary spec first.", 1, 1, 1 },
+		{ "key/hasGCD fields still need to be filled in by hand - the addon has no concept of rotation keybinds.", 0.8, 0.6, 0.2 },
+	}, function()
 		StaticPopup_Show("GCDI_EXPORT_ROTATION_CONFIG")
 	end)
-	exportAhkBtn:SetScript("OnEnter", function(self)
-		GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-		GameTooltip:SetText("Export Rotation Config")
-		GameTooltip:AddLine("Generates spell/item/buff array text from your current spells/items/buffs and their order.", 1, 1, 1, true)
-		GameTooltip:AddLine("Asks whether to label it Primary or Secondary spec first.", 1, 1, 1, true)
-		GameTooltip:AddLine("key/hasGCD fields still need to be filled in by hand - the addon has no concept of rotation keybinds.", 0.8, 0.6, 0.2, true)
-		GameTooltip:Show()
-	end)
-	exportAhkBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
+	exportAhkBtn:SetPoint("LEFT", exportBarsBtn, "RIGHT", 10, 0)
 
 	-- Re-syncs the Settings tab's checkbox states from current configs. The
 	-- tab's widgets are built once here (not pooled/rebuilt per refresh like

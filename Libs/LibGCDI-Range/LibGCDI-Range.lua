@@ -468,6 +468,11 @@ function lib:ResetIndicatorState()
 	for _, spellData in pairs(trackedSpells) do
 		spellData.rangeShownState = nil
 		spellData.rangeColorState = nil
+		-- Also drop the stale fallback range cache: leaving it set here let a
+		-- prior in-range/out-of-range reading survive a retarget or a preview
+		-- toggle and get silently reused as if it were fresh (see the
+		-- cachedFallbackInRange usage in UpdateRangeIndicators below).
+		spellData.cachedFallbackInRange = nil
 	end
 end
 

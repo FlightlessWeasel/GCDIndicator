@@ -116,11 +116,19 @@ function CatalogManager:GetEnabledOrdered()
         end
     end
     
-    -- Second: items not in order that are enabled
-    for id in pairs(catalog) do
+    -- Second: items not in order that are enabled (sort alphabetically by name,
+    -- matching GetAllOrdered's convention -- pairs() order is undefined and would
+    -- desync HUD bar order from Options, and the companion script's pixel layout).
+    local unsortedEnabled = {}
+    for id, data in pairs(catalog) do
         if not inOrder[id] and self.isEnabled(id) then
-            table.insert(ordered, id)
+            table.insert(unsortedEnabled, { id = id, name = data.name or tostring(id) })
         end
+    end
+    table.sort(unsortedEnabled, function(a, b) return a.name < b.name end)
+
+    for _, entry in ipairs(unsortedEnabled) do
+        table.insert(ordered, entry.id)
     end
     
     return ordered
