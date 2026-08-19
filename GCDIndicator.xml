@@ -1,17 +1,18 @@
 <Ui xmlns="http://www.blizzard.com/wow/ui/">
 	<!--
-		EXPERIMENTAL - native stack-fill binding (12.1+ AuraContainer / AddAuraSlot).
-		See CHANGE-TRACKER.md before touching this file.
-
-		SetApplicationBar only accepts a StatusBar the engine-created AuraButton itself
-		owns, never an addon-created frame - so this template exists purely to give that
-		button a StatusBar region of its own. GCDIndicator.lua positions/styles ArcBar to
-		sit exactly over the addon's existing stack bar and hides the addon's own bar once
-		the engine confirms the binding (gcdi_setup_native_stack_slot).
+		Dispel overlay (permanent, unconditional feature - see
+		docs/dispel-indicator.md). One solid-color Texture, no ArcBar/StatusBar -
+		the engine's own show/hide of the bound AddAuraSlot button IS the purple
+		pixel, so no fill amount is ever needed. Anchored over main_frame.dispelbar
+		in gcdi_setup_dispel_overlay's initializeFrame callback; color is set from
+		Lua (button.Fill:SetColorTexture), not XML, to keep the exact 0.6/0.2/0.8
+		purple in one place alongside the classic bar's matching color.
 	-->
-	<Button name="GCDINativeStackButtonTemplate" virtual="true">
-		<Frames>
-			<StatusBar parentKey="ArcBar" setAllPoints="true"/>
-		</Frames>
+	<Button name="GCDIDispelOverlayTemplate" virtual="true">
+		<Layers>
+			<Layer level="ARTWORK">
+				<Texture parentKey="Fill" setAllPoints="true"/>
+			</Layer>
+		</Layers>
 	</Button>
 </Ui>

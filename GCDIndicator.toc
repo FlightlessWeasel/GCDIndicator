@@ -7,19 +7,22 @@
 ## SavedVariablesPerCharacter: GCDIndicator_Positions, GCDIndicator_Settings
 ## Category: aJasonBrown
 
-# Libraries
+# Libraries (third-party)
 Libs\LibStub\LibStub.lua
 Libs\CallbackHandler-1.0\CallbackHandler-1.0.lua
-Libs\LibRangeCheck-3.0\LibRangeCheck-3.0.lua
 Libs\LibDataBroker-1.1\LibDataBroker-1.1.lua
 Libs\LibDBIcon-1.0\LibDBIcon-1.0.lua
+
+# Libraries (first-party)
 Libs\LibGCDI\LibGCDI.lua
 Libs\LibGCDI-Catalog\LibGCDI-Catalog.lua
 Libs\LibGCDI-Profiles\LibGCDI-Profiles.lua
+Libs\LibGCDI-RangeCheck\LibGCDI-RangeCheck.lua
 Libs\LibGCDI-Range\LibGCDI-Range.lua
 
-# Core addon (creates GCDI namespace)
 GCDIndicator.xml
+
+# Core addon (creates GCDI namespace)
 GCDIndicator.lua
 
 # Options UI module (requires GCDI namespace)

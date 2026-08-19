@@ -96,8 +96,11 @@ already at `GCDIndicator.lua:99`; the stale 20-entry copy (missing `stagger`) we
 - **Stagger spec cached** — `staggerIsBrewmaster`, `gcdi_refresh_stagger_spec()`,
   `resourceBars.stagger.staggerParked`.
 - **Closures hoisted to file scope** (were being re-created per call): `gcdi_read_applications`,
-  `apps_from_aura`, `aggro_safe_bool`, `aggro_safe_tonumber`, `gcdi_scan_dispellable_by_index`,
-  `gcdi_dispel_scan_hit`, `gcdi_dispel_aura_visitor`, `gcdi_scan_dispellable_foreach`.
+  `apps_from_aura`, `aggro_safe_bool`, `aggro_safe_tonumber`. (The classic dispel-scan closures
+  that used to be listed here — `gcdi_scan_dispellable_by_index`, `gcdi_dispel_scan_hit`,
+  `gcdi_dispel_aura_visitor`, `gcdi_scan_dispellable_foreach` — no longer exist; the dispel
+  indicator moved to a native engine-owned overlay with no per-tick Lua scan at all. See
+  `docs/dispel-indicator.md`.)
 - **Disabled resources skipped** — `RESOURCE_UPDATERS` is now an array of `{key, fn}` pairs;
   `update_all_resources` consults `gcdi_is_resource_enabled` (also exported as
   `GCDI.is_resource_enabled`) instead of running every updater unconditionally.

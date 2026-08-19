@@ -65,3 +65,21 @@ describe("LibGCDI-Range IsSpellSelfCast / HasRangeOverride / HasNativeRangeSetti
 		assertFalse(lib:HasNativeRangeSetting(2))
 	end)
 end)
+
+-- ResetIndicatorState is pure table manipulation over the getTrackedSpells()
+-- callback (no live WoW state), so it's covered here even though
+-- UpdateRangeIndicators itself (which reads/writes cachedFallbackInRange during
+-- a live tick) is not — see tests/mocks/wow_api.lua and CLAUDE.md's
+-- "Test-first" scope notes before extending coverage to that function.
+describe("LibGCDI-Range ResetIndicatorState", function()
+	it("clears cachedFallbackInRange along with rangeShownState/rangeColorState so a stale fallback reading isn't reused after retargeting", function()
+		local trackedSpells = {
+			[1] = { rangeShownState = true, rangeColorState = "in", cachedFallbackInRange = true },
+		}
+		lib:Init({ getTrackedSpells = function() return trackedSpells end })
+		lib:ResetIndicatorState()
+		assertNil(trackedSpells[1].rangeShownState)
+		assertNil(trackedSpells[1].rangeColorState)
+		assertNil(trackedSpells[1].cachedFallbackInRange)
+	end)
+end)

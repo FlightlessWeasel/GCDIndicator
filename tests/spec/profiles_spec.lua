@@ -46,10 +46,33 @@ describe("LibGCDI-Profiles serialize/deserialize", function()
 		assertEqual(result.s, orig.s)
 	end)
 
+	it("accepts full true/false keywords (not just compact t/f)", function()
+		local result = lib.deserialize("{a=true,b=false}")
+		assertTrue(result.a)
+		assertFalse(result.b)
+	end)
+
 	it("returns nil plus an error message for garbage input", function()
 		local result, err = lib.deserialize("not valid lua {{{")
 		assertNil(result)
 		assertTrue(err ~= nil, "expected an error message for unparseable input")
+	end)
+
+	it("rejects executable constructs and unsupported key types in pasted imports", function()
+		local maliciousInputs = {
+			"{payload=function() return 1 end}",
+			"{payload=(function() return 1 end)()}",
+			"{payload=(function() for i=1,1 do end return 1 end)()}",
+			"{payload=(1+2)}",
+			"{payload=type(1)}",
+			"{[true]=1}",
+		}
+
+		for _, input in ipairs(maliciousInputs) do
+			local result, err = lib.deserialize(input)
+			assertNil(result, "must reject malicious import: " .. input)
+			assertTrue(err ~= nil, "expected an error message for rejected import")
+		end
 	end)
 end)
 

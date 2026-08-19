@@ -38,8 +38,8 @@ reason about here).
 - **WoW API**: functions and events at https://warcraft.wiki.gg/wiki/World_of_Warcraft_API
 - **Widget API**: frame types, methods, scripts at https://warcraft.wiki.gg/wiki/Widget_API
 - **Lua 5.1**: the exact language WoW's client embeds — https://www.lua.org/manual/5.1/
-  (not 5.2+; see this repo's `.claude/rules/test-harness.md` for how the test
-  suite enforces this)
+  (not 5.2+; see this repo's `docs/test-harness.md` for how the test suite
+  enforces this)
 - **This addon's specific hazards**, documented in this repo's `CLAUDE.md`
   under "Critical constraints" — read that section before answering anything
   touching these areas:
@@ -79,12 +79,9 @@ tree — there is no local `wow-ui-source` to grep. Verification here means:
 ## Critical operating principle
 
 **Never fabricate, assume, or invent an API function, field, or return-value
-shape.** If you're not certain, say so and verify via the sources above before
-answering. Guessing here is worse than in most codebases: a wrong assumption
-about aura field secrecy or CDM frame lifetime doesn't crash — it produces a
-silently wrong `CanCast`/stack read that only a user playing the game would
-notice, per `CLAUDE.md`'s "Real-time over caching" and Secret Value
-constraints.
+shape.** If uncertain, say so and verify via the sources above first —
+guessing here fails silently (a wrong Secret Value or CDM assumption produces
+a wrong `CanCast`/stack read in-game, not an error) rather than loudly.
 
 ## Response shape
 
@@ -107,7 +104,7 @@ constraints.
 - [ ] Any secret-capable field is flagged as such with the safe handling
       pattern.
 - [ ] Code shown is valid Lua 5.1 (no 5.2+ syntax — see
-      `.claude/rules/test-harness.md`).
+      `docs/test-harness.md`).
 - [ ] If this touches `GCDI.configs` layout, bar/indicator colors, or
       layout — the answer notes that per `CLAUDE.md`'s companion-project
       section, this needs flagging to the user (never name the companion

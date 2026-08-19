@@ -85,20 +85,246 @@ lib.serialize = serialize_compact
 
 -- Deserialize compact format back to a table
 local function deserialize_compact(str)
-	str = str:gsub("=t,", "=true,"):gsub("=t}", "=true}")
-	str = str:gsub("=f,", "=false,"):gsub("=f}", "=false}")
-	
-	local func, err = loadstring("return " .. str)
-	if not func then
-		return nil, "Parse error: " .. tostring(err)
-	end
-	setfenv(func, {})
-	local ok, result = pcall(func)
-	if not ok then
-		return nil, "Execution error: " .. tostring(result)
-	end
-	if type(result) ~= "table" then
+	if type(str) ~= "string" then
 		return nil, "Invalid data"
+	end
+
+	-- Imports are user-provided, so bound parsing work as well as the accepted grammar.
+	local MAX_INPUT_LENGTH = 1024 * 1024
+	local MAX_DEPTH = 64
+	local MAX_ENTRIES = 10000
+	if #str > MAX_INPUT_LENGTH then
+		return nil, "Parse error: input too large"
+	end
+
+	local pos = 1
+	local entries = 0
+	local length = #str
+	local nil_value = {}
+
+	local function fail(message)
+		return nil, "Parse error: " .. message
+	end
+
+	local function skip_whitespace()
+		while pos <= length do
+			local c = str:sub(pos, pos)
+			if c ~= " " and c ~= "\t" and c ~= "\r" and c ~= "\n" then
+				break
+			end
+			pos = pos + 1
+		end
+	end
+
+	local function is_identifier_start(c)
+		return c:match("^[%a_]$") ~= nil
+	end
+
+	local function is_identifier_continue(c)
+		return c:match("^[%w_]$") ~= nil
+	end
+
+	local function parse_number()
+		local start = pos
+		if str:sub(pos, pos) == "-" then
+			pos = pos + 1
+		end
+
+		local integer_start = pos
+		while str:sub(pos, pos):match("^%d$") do
+			pos = pos + 1
+		end
+		local has_integer = pos > integer_start
+
+		if str:sub(pos, pos) == "." then
+			pos = pos + 1
+			local fraction_start = pos
+			while str:sub(pos, pos):match("^%d$") do
+				pos = pos + 1
+			end
+			if not has_integer and pos == fraction_start then
+				return nil
+			end
+		elseif not has_integer then
+			return nil
+		end
+
+		local exponent = str:sub(pos, pos)
+		if exponent == "e" or exponent == "E" then
+			pos = pos + 1
+			local sign = str:sub(pos, pos)
+			if sign == "+" or sign == "-" then
+				pos = pos + 1
+			end
+			local exponent_start = pos
+			while str:sub(pos, pos):match("^%d$") do
+				pos = pos + 1
+			end
+			if pos == exponent_start then
+				return nil
+			end
+		end
+
+		local value = tonumber(str:sub(start, pos - 1))
+		if value == nil then
+			return nil
+		end
+		return value
+	end
+
+	local function parse_string()
+		pos = pos + 1 -- opening quote
+		local parts = {}
+		while pos <= length do
+			local c = str:sub(pos, pos)
+			if c == "\"" then
+				pos = pos + 1
+				return table.concat(parts)
+			elseif c == "\\" then
+				local escaped = str:sub(pos + 1, pos + 1)
+				if escaped ~= "\\" and escaped ~= "\"" then
+					return nil
+				end
+				table.insert(parts, escaped)
+				pos = pos + 2
+			else
+				table.insert(parts, c)
+				pos = pos + 1
+			end
+		end
+		return nil
+	end
+
+	local parse_value
+	local function parse_key()
+		skip_whitespace()
+		local c = str:sub(pos, pos)
+		if c == "[" then
+			pos = pos + 1
+			skip_whitespace()
+			local key = parse_number()
+			if key == nil then
+				return nil
+			end
+			skip_whitespace()
+			if str:sub(pos, pos) ~= "]" then
+				return nil
+			end
+			pos = pos + 1
+			return key
+		end
+		if not is_identifier_start(c) then
+			return nil
+		end
+
+		local start = pos
+		pos = pos + 1
+		while is_identifier_continue(str:sub(pos, pos)) do
+			pos = pos + 1
+		end
+		return str:sub(start, pos - 1)
+	end
+
+	local function parse_table(depth)
+		if depth > MAX_DEPTH then
+			return fail("nesting limit exceeded")
+		end
+		pos = pos + 1 -- opening brace
+		local result = {}
+		skip_whitespace()
+		if str:sub(pos, pos) == "}" then
+			pos = pos + 1
+			return result
+		end
+
+		while true do
+			entries = entries + 1
+			if entries > MAX_ENTRIES then
+				return fail("entry limit exceeded")
+			end
+			local key = parse_key()
+			if key == nil then
+				return fail("expected identifier or numeric key at position " .. pos)
+			end
+			skip_whitespace()
+			if str:sub(pos, pos) ~= "=" then
+				return fail("expected '=' at position " .. pos)
+			end
+			pos = pos + 1
+			local value, err = parse_value(depth + 1)
+			if err then
+				return nil, err
+			end
+			if value == nil then
+				return fail("expected value at position " .. pos)
+			end
+			if value ~= nil_value then
+				result[key] = value
+			end
+			skip_whitespace()
+			local separator = str:sub(pos, pos)
+			if separator == "}" then
+				pos = pos + 1
+				return result
+			elseif separator ~= "," then
+				return fail("expected ',' or '}' at position " .. pos)
+			end
+			pos = pos + 1
+			skip_whitespace()
+		end
+	end
+
+	parse_value = function(depth)
+		skip_whitespace()
+		local c = str:sub(pos, pos)
+		if c == "{" then
+			return parse_table(depth)
+		elseif c == "\"" then
+			local value = parse_string()
+			if value == nil then
+				return fail("unterminated or invalid string at position " .. pos)
+			end
+			return value
+		elseif c == "t" then
+			if str:sub(pos, pos + 3) == "true" then
+				pos = pos + 4
+			elseif not str:sub(pos + 1, pos + 1):match("[%w_]") then
+				pos = pos + 1
+			else
+				return fail("expected value at position " .. pos)
+			end
+			return true
+		elseif c == "f" then
+			if str:sub(pos, pos + 4) == "false" then
+				pos = pos + 5
+			elseif not str:sub(pos + 1, pos + 1):match("[%w_]") then
+				pos = pos + 1
+			else
+				return fail("expected value at position " .. pos)
+			end
+			return false
+		elseif str:sub(pos, pos + 2) == "nil" then
+			pos = pos + 3
+			return nil_value
+		elseif c == "-" or c:match("^%d$") then
+			local value = parse_number()
+			if value ~= nil then
+				return value
+			end
+		end
+		return fail("expected value at position " .. pos)
+	end
+
+	local result, err = parse_value(1)
+	if err then
+		return nil, err
+	end
+	if result == nil or type(result) ~= "table" then
+		return nil, "Invalid data"
+	end
+	skip_whitespace()
+	if pos <= length then
+		return fail("unexpected data at position " .. pos)
 	end
 	return result
 end

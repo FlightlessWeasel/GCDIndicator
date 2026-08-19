@@ -27,7 +27,7 @@ local rangeCheckResolved = false
 local function get_range_check()
 	if not rangeCheckResolved then
 		rangeCheckResolved = true
-		local rc = LibStub("LibRangeCheck-3.0", true)
+		local rc = LibStub("LibGCDI-RangeCheck", true)
 		if rc then
 			rc:init()
 			rangeCheckLib = rc
@@ -321,7 +321,7 @@ function lib:DetectNativeRangeForSpells()
 end
 
 -- ═══════════════════════════════════════════════════════════════════════════
--- LibRangeCheck-3.0 (optional; bundled with GCDIndicator)
+-- LibGCDI-RangeCheck (optional; first-party, trimmed fork of LibRangeCheck-3.0)
 -- ═══════════════════════════════════════════════════════════════════════════
 
 -- Collapse LibRangeCheck:GetRange() min/max band to boolean vs a yard cap (like RangeDisplay's estimate, but binary).
@@ -468,6 +468,11 @@ function lib:ResetIndicatorState()
 	for _, spellData in pairs(trackedSpells) do
 		spellData.rangeShownState = nil
 		spellData.rangeColorState = nil
+		-- Also drop the stale fallback range cache: leaving it set here let a
+		-- prior in-range/out-of-range reading survive a retarget or a preview
+		-- toggle and get silently reused as if it were fresh (see the
+		-- cachedFallbackInRange usage in UpdateRangeIndicators below).
+		spellData.cachedFallbackInRange = nil
 	end
 end
 
