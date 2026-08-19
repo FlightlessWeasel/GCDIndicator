@@ -1,0 +1,18 @@
+<Ui xmlns="http://www.blizzard.com/wow/ui/">
+	<!--
+		Dispel overlay (permanent, unconditional feature - see
+		docs/dispel-indicator.md). One solid-color Texture, no ArcBar/StatusBar -
+		the engine's own show/hide of the bound AddAuraSlot button IS the purple
+		pixel, so no fill amount is ever needed. Anchored over main_frame.dispelbar
+		in gcdi_setup_dispel_overlay's initializeFrame callback; color is set from
+		Lua (button.Fill:SetColorTexture), not XML, to keep the exact 0.6/0.2/0.8
+		purple in one place alongside the classic bar's matching color.
+	-->
+	<Button name="GCDIDispelOverlayTemplate" virtual="true">
+		<Layers>
+			<Layer level="ARTWORK">
+				<Texture parentKey="Fill" setAllPoints="true"/>
+			</Layer>
+		</Layers>
+	</Button>
+</Ui>

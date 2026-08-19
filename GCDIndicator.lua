@@ -77,8 +77,6 @@ local trackedBuffs = {}
 local buffBars = {}
 local cdmBuffFrames = {}  -- cooldownID -> CDM frame reference
 local lastBuffDebugState = {}  -- buffID -> { isActive } for debug-on-change only
--- Interface 120100+ (12.1): instance-ID aura data APIs throw under secrecy for addons.
-local GCDI_AURAS_INSTANCE_API_UNSAFE = (tonumber((select(4, GetBuildInfo()))) or 0) >= 120100
 local spellIDToCooldownID = {}  -- Maps spellID -> cooldownID for frame lookup
 
 local CONSUMABLE_ITEM_IDS = {
@@ -187,7 +185,7 @@ end
 GCDI.FORM_COLORS = FORM_COLORS
 
 -- Forward declarations
-local reposition_all, rebuild_spell_bars, rebuild_item_bars, rebuild_buff_bars, update_dispel_indicator
+local reposition_all, rebuild_spell_bars, rebuild_item_bars, rebuild_buff_bars
 
 -- Layout bounds (updated by reposition_all, used by preview mode)
 local layoutBounds = { width = 200, height = 100 }
@@ -1433,12 +1431,115 @@ local function schedule_update_all_buff_bars_after_aura()
 	C_Timer.After(0, function()
 		buffBarsAfterAuraScheduled = false
 		update_all_buff_bars()
-		update_dispel_indicator()
 		-- Proc icon swaps are aura-driven; keeps them instant now that the ticker
 		-- only polls icons at a low rate.
 		update_spell_icons()
 	end)
 end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- Native AuraContainer/AddAuraSlot dispel overlay
+-- ═══════════════════════════════════════════════════════════════════════════
+-- The sole, unconditional dispel-detection mechanism (no classic Lua-side
+-- scan fallback - see docs/dispel-indicator.md for the full
+-- what/why/how and CHANGE-TRACKER.md's resolved "Dispel Detection Probe"
+-- entry for the confirmed in-game result this is built on: filter
+-- "HARMFUL|RAID_PLAYER_DISPELLABLE" correctly discriminates dispellable-vs-
+-- non-dispellable debuffs on the player, survives secret combat periods, and
+-- clears within ~1s of the debuff being dispelled or expiring.
+--
+-- Design (dispel-detection-research.md §9c): rather than reading a
+-- dispellable-or-not boolean back into Lua (closed off by the 12.1 Secret
+-- Value system - see CLAUDE.md), a single AddAuraSlot filtered to
+-- "HARMFUL|RAID_PLAYER_DISPELLABLE" is anchored directly over
+-- main_frame.dispelbar. The engine itself performs the N-auras -> 1-bit
+-- reduction by showing/hiding the bound button; GCDI never reads state back
+-- off it. The classic dispelbar stays underneath as the permanent idle-grey
+-- background once bound - engine shows overlay -> purple, engine hides
+-- overlay -> grey shows through.
+--
+-- Must only be called from a clean (non-tainted) context - bar
+-- creation/PLAYER_ENTERING_WORLD/post-combat retry - never from inside
+-- UNIT_AURA, mirroring gcdi_ensure_native_stack_container above.
+local dispelOverlayContainer = nil
+local dispelOverlayBound = false
+
+local function gcdi_ensure_dispel_overlay_container()
+	if dispelOverlayContainer then return dispelOverlayContainer end
+	if InCombatLockdown() then
+		debug("dispel overlay: container deferred, in combat")
+		return nil
+	end
+	local ok, c = pcall(CreateFrame, "AuraContainer", nil, main_frame, "CustomAuraContainerTemplate")
+	if not ok or not c then
+		debug("dispel overlay: CreateFrame(AuraContainer) failed - " .. tostring(c))
+		return nil
+	end
+	if c.SetUnit then c:SetUnit("player") end
+	if c.SetEnabled then c:SetEnabled(true) end
+	c:SetSize(1, 1)
+	c:Show()  -- must be shown+enabled to self-register aura updates
+	dispelOverlayContainer = c
+	debug("dispel overlay: container created, AddAuraSlot=" .. tostring(c.AddAuraSlot ~= nil))
+	return c
+end
+
+local function gcdi_setup_dispel_overlay()
+	if dispelOverlayBound then return end
+	if not (main_frame and main_frame.dispelbar) then return end
+	local container = gcdi_ensure_dispel_overlay_container()
+	if not container then return end
+	if not container.AddAuraSlot then
+		debug("dispel overlay: AddAuraSlot not available on this client")
+		return
+	end
+
+	local sourceBar = main_frame.dispelbar
+	local addOK, addErr = pcall(function()
+		container:AddAuraSlot("gcdi_dispel_overlay", "HARMFUL|RAID_PLAYER_DISPELLABLE", {
+			templateNames = { "GCDIDispelOverlayTemplate" },
+			initializeFrame = function(button)
+				if not button then return end
+				-- Anchor+level the overlay button exactly over the classic bar,
+				-- same shape as gcdi_setup_native_stack_slot's SetAllPoints anchor
+				-- above - inherits dispelbar's exact size (configs.size) with no
+				-- separate config lookup needed (dispel-detection-research.md §9d-2).
+				button:ClearAllPoints()
+				button:SetAllPoints(sourceBar)
+				button:SetFrameStrata(sourceBar:GetFrameStrata())
+				button:SetFrameLevel((sourceBar:GetFrameLevel() or 1) + 1)
+				if button.Fill and button.Fill.SetColorTexture then
+					button.Fill:SetColorTexture(0.6, 0.2, 0.8, 1)  -- same purple as the classic bar's dispel-active color
+				end
+				-- Engine now owns the purple pixel; the classic bar becomes the
+				-- permanent idle-grey background it paints over.
+				dispelOverlayBound = true
+				sourceBar:SetStatusBarColor(0.28, 0.28, 0.32)
+				-- Note: do NOT read state back off button/container here (GetSize,
+				-- IsShown, GetMinMaxValues, etc.) - once the engine owns this widget
+				-- those reads can come back as secret/opaque values and poison any
+				-- debug string built from them into "<SECRET>" with no error. Only
+				-- report what WE told it to be, per CLAUDE.md's Secret Value rules.
+				debug("dispel overlay: bound")
+			end,
+		})
+	end)
+	if not addOK then
+		debug("dispel overlay: AddAuraSlot pcall failed: " .. tostring(addErr))
+		return
+	end
+	-- Without this, the slot only binds on the NEXT aura change event - a
+	-- dispellable debuff already active when the slot registers (toggling the
+	-- option mid-buff) would never call initializeFrame.
+	if container.UpdateAllAuras then
+		local ok, err = pcall(container.UpdateAllAuras, container)
+		if not ok then
+			debug("dispel overlay: UpdateAllAuras failed: " .. tostring(err))
+		end
+	end
+end
+
+GCDI.setup_dispel_overlay = gcdi_setup_dispel_overlay
 
 local function create_buff_bar(buffKey, spellName, texture, tooltipSpellID)
 	local barIndex = #buffBars + 1
@@ -2115,90 +2216,6 @@ local function update_mob_count_indicator()
 	end
 end
 
--- Player debuff the active character can dispel. Purple = need dispel; grey = idle.
--- Dispel indicator purple (0x9933CC → 0.6, 0.2, 0.8).
---
--- Midnight / restricted auras: canActivePlayerDispel on AuraData may be unusable (secret). Matches Decursive’s
--- C_UnitAuras.GetDebuffDataByIndex(unit, i, "RAID_PLAYER_DISPELLABLE") (see ../Decursive/Decursive.lua scanning block).
-local DISPEL_DEBUFF_FILTER = "RAID_PLAYER_DISPELLABLE"
-local DISPEL_DEBUFF_SCAN_MAX = 40
-
-local function gcdi_safe_can_dispel_flag(v)
-	if v == nil then
-		return false
-	end
-	if issecretvalue and issecretvalue(v) then
-		return false
-	end
-	return v and true or false
-end
-
--- Scan bodies hoisted to file scope; as nested closures these were reallocated on
--- every poll (three per call, counting the ForEachAura callback).
-local function gcdi_scan_dispellable_by_index()
-	for i = 1, DISPEL_DEBUFF_SCAN_MAX do
-		local aura = C_UnitAuras.GetDebuffDataByIndex("player", i, DISPEL_DEBUFF_FILTER)
-		if aura then
-			return true
-		end
-	end
-	return false
-end
-
-local gcdi_dispel_scan_hit = false
-
-local function gcdi_dispel_aura_visitor(auraData)
-	if auraData and gcdi_safe_can_dispel_flag(auraData.canActivePlayerDispel) then
-		gcdi_dispel_scan_hit = true
-		return true
-	end
-end
-
-local function gcdi_scan_dispellable_foreach()
-	gcdi_dispel_scan_hit = false
-	AuraUtil.ForEachAura("player", "HARMFUL", DISPEL_DEBUFF_SCAN_MAX, gcdi_dispel_aura_visitor, true)
-	return gcdi_dispel_scan_hit
-end
-
-local function player_has_dispellable_debuff_on_self()
-	-- 12.1+: GetDebuffDataByIndex / GetAuraSlots / ForEachAura Lua-error when auras are secret
-	-- while tainted. No legal self-dispel scan — leave indicator idle.
-	if GCDI_AURAS_INSTANCE_API_UNSAFE then
-		return false
-	end
-	if C_UnitAuras and C_UnitAuras.GetDebuffDataByIndex then
-		local ok, has = pcall(gcdi_scan_dispellable_by_index)
-		if ok and has then
-			return true
-		end
-	end
-	-- Fallback: full HARMFUL scan + canActivePlayerDispel (older clients / if API fails)
-	if AuraUtil and AuraUtil.ForEachAura then
-		local ok, found = pcall(gcdi_scan_dispellable_foreach)
-		if ok and found then
-			return true
-		end
-	end
-	return false
-end
-
-update_dispel_indicator = function()
-	if previewMode then return end
-	if not main_frame or not main_frame.dispelbar then return end
-
-	local hasDispel = player_has_dispellable_debuff_on_self()
-
-	-- Driven by UNIT_AURA plus a low-rate safety poll; only repaint on transition.
-	if main_frame.dispelState == hasDispel then return end
-	main_frame.dispelState = hasDispel
-
-	if hasDispel then
-		main_frame.dispelbar:SetStatusBarColor(0.6, 0.2, 0.8)
-	else
-		main_frame.dispelbar:SetStatusBarColor(0.28, 0.28, 0.32)
-	end
-end
-
 reposition_all = function()
 	local barSize = configs.barHeight
 	local spacing = configs.barSpacing
@@ -2250,8 +2267,7 @@ reposition_all = function()
 		end
 		-- Refresh mob count bar so AOE detection is correct as soon as the row is visible
 		update_mob_count_indicator()
-		update_dispel_indicator()
-		
+
 		yOffset = yOffset - gcdContainerHeight - spacing
 	else
 		main_frame.gcdcontainer:Hide()
@@ -3429,12 +3445,15 @@ local function on_event(self, event, arg1, arg2, ...)
 			if gcdi_needs_charge_layout_rebuild() then
 				rebuild_spell_bars()
 			end
+			-- Dispel overlay container creation is combat-lockdown gated; retry
+			-- any buffs left unbound because combat started before it could bind.
+			gcdi_setup_dispel_overlay()
 		end)
 		
 	elseif event == "PLAYER_ENTERING_WORLD" then
 		main_frame.combatbar:SetStatusBarColor(gcdi_safe_unit_affecting_combat("player") and 1 or 0, 0, 0)
 		update_aggro_indicator()
-		update_dispel_indicator()
+		gcdi_setup_dispel_overlay()
 		-- Removed auto-scan: use /gcdopt scan to manually rescan
 		update_all_resources()
 		update_gcd()  -- Initialize GCD bar
@@ -3473,11 +3492,10 @@ local function on_event(self, event, arg1, arg2, ...)
 		update_range_indicators()
 		detect_native_range_for_spells()  -- Auto-detect native range when targeting
 		update_aggro_indicator()
-		update_dispel_indicator()
 		-- Refresh target-debuff bars so a new target doesn't show stale data
 		-- left over from the previous one; deferred like the UNIT_AURA path.
 		schedule_update_all_buff_bars_after_aura()
-		
+
 	elseif event == "UNIT_THREAT_SITUATION_UPDATE" then
 		update_aggro_indicator()
 		
@@ -3492,11 +3510,10 @@ local function on_event(self, event, arg1, arg2, ...)
 	elseif event == "UNIT_AURA" then
 		if arg1 == "player" or arg1 == "target" then
 			-- Defer: see schedule_update_all_buff_bars_after_aura (CooldownViewer taint / secret spellID
-			-- compare). This also covers update_dispel_indicator(), scheduled inside the same deferred
-			-- callback, so it must not be called synchronously here too.
+			-- compare) - must not be called synchronously here too.
 			schedule_update_all_buff_bars_after_aura()
 		end
-		
+
 	elseif event == "UNIT_SPELLCAST_SUCCEEDED" then
 		-- Manual buff tracking for buffs not in CDM
 		if arg1 == "player" then
@@ -3743,7 +3760,6 @@ local function init()
 		prevAnchor = bar
 	end
 	main_frame.gcdRowSep6 = lastSep
-	
 	GCDIndicator_Positions = GCDIndicator_Positions or {}
 	local libGCDI = LibStub and LibStub:GetLibrary("LibGCDI", true)
 	if libGCDI then
@@ -3808,8 +3824,7 @@ local function init()
 	update_all_resources()
 	update_stance_indicator()
 	update_aggro_indicator()
-	update_dispel_indicator()
-	
+
 	local events = {
 		"SPELL_UPDATE_COOLDOWN",
 		"SPELL_UPDATE_CHARGES",
@@ -3920,7 +3935,6 @@ local function init()
 			update_gcd()
 			update_all_buff_bars()
 			update_item_charge_indicators()
-			pcall(update_dispel_indicator)
 		end
 
 		-- Every 100 ticks (5s): Native range detection
@@ -3930,10 +3944,9 @@ local function init()
 		end
 	end)
 
-	-- Initial mob count + dispel (nameplates / auras may not be ready at load)
+	-- Initial mob count (nameplates may not be ready at load)
 	C_Timer.After(1, function()
 		update_mob_count_indicator()
-		update_dispel_indicator()
 	end)
 
 	-- Create minimap button
@@ -4149,7 +4162,6 @@ function GCDI.toggle_preview_mode()
 			resourceBars.stagger.staggerParked = nil
 		end
 		main_frame.mobCountState = nil
-		main_frame.dispelState = nil
 		gcdi_invalidate_charge_spell_list()
 
 		-- Force update all bars to restore real values
@@ -4175,8 +4187,13 @@ function GCDI.toggle_preview_mode()
 		-- Update aggro indicator
 		update_aggro_indicator()
 		update_mob_count_indicator()
-		update_dispel_indicator()
-		
+		-- Restore the idle-grey background; the native overlay (see
+		-- gcdi_setup_dispel_overlay) owns repainting it purple, this only
+		-- undoes preview mode's "Sample: dispel-active purple" override.
+		if main_frame.dispelbar then
+			main_frame.dispelbar:SetStatusBarColor(0.28, 0.28, 0.32)
+		end
+
 		-- Force update all tracked elements
 		update_all_spell_bars()
 		update_range_indicators()

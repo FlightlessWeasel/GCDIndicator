@@ -18,6 +18,8 @@ Libs\LibGCDI-Catalog\LibGCDI-Catalog.lua
 Libs\LibGCDI-Profiles\LibGCDI-Profiles.lua
 Libs\LibGCDI-Range\LibGCDI-Range.lua
 
+GCDIndicator.xml
+
 # Core addon (creates GCDI namespace)
 GCDIndicator.lua
 
