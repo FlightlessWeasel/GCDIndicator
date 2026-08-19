@@ -23,10 +23,12 @@ no code comments, no user-visible text (chat, tooltips, labels). Call it
   (frame-heavy, untested) are verified only via `check.js`/`scope.js` +
   manual reasoning. Nothing is confirmed working in-game unless a prior
   session said so — say so explicitly.
-- **Don't modify third-party libs** (`Libs/LibRangeCheck-3.0`,
-  `LibDataBroker-1.1`, `LibDBIcon-1.0`, `CallbackHandler-1.0`, `LibStub`,
-  `LibDispellable-1.0`). `.toc` load order: LibStub-family → first-party
-  `Lib*` → `GCDIndicator.lua` → Options UI.
+- **Don't modify third-party libs** (`Libs/LibDataBroker-1.1`,
+  `LibDBIcon-1.0`, `CallbackHandler-1.0`, `LibStub`, `LibDispellable-1.0`).
+  `LibGCDI-RangeCheck` is first-party (trimmed fork of LibRangeCheck-3.0,
+  see `docs/librangecheck-trim.md`) — normal editing rules apply. `.toc`
+  load order: LibStub-family → first-party `Lib*` → `GCDIndicator.lua` →
+  Options UI.
 - **Check `CHANGE-TRACKER.md`** before touching anything it references.
 - **Real-time over caching.** Combat-visible data (buffs, stacks, GCD,
   resources) must stay near-real-time. Don't trade display latency for perf

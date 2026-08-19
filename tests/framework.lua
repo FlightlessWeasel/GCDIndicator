@@ -24,7 +24,6 @@ function M.it(name, fn)
 	local ok, err = pcall(fn)
 	if ok then
 		stats.pass = stats.pass + 1
-		print("  PASS  " .. label)
 	else
 		stats.fail = stats.fail + 1
 		table.insert(stats.failures, { label = label, err = err })
