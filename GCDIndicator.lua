@@ -14,7 +14,6 @@ GCDI.configs = {
 	barHeight = 8,
 	bgPadding = 2,
 	debugMode = false,
-	useNativeStackBinding = false,  -- experimental A/B toggle, see CHANGE-TRACKER.md
 	compactMode = true,  -- flow-packed spell/item/buff layout, see CHANGE-TRACKER.md
 }
 local configs = GCDI.configs
@@ -60,7 +59,6 @@ local trackedSpells = GCDI.trackedSpells
 local spellBars = {}
 local trackedItems = {}
 local itemBars = {}
-local pendingScanTimer = nil
 local resourceBars = {}
 local previewMode = false  -- Preview mode state for positioning
 
@@ -81,8 +79,7 @@ local cdmBuffFrames = {}  -- cooldownID -> CDM frame reference
 local lastBuffDebugState = {}  -- buffID -> { isActive } for debug-on-change only
 -- Interface 120100+ (12.1): instance-ID aura data APIs throw under secrecy for addons.
 local GCDI_AURAS_INSTANCE_API_UNSAFE = (tonumber((select(4, GetBuildInfo()))) or 0) >= 120100
-local cooldownToSpellID = {}  -- Maps CDM cooldownID -> actual spellID (like ArcUI)
-local spellIDToCooldownID = {}  -- REVERSE: Maps spellID -> cooldownID for frame lookup
+local spellIDToCooldownID = {}  -- Maps spellID -> cooldownID for frame lookup
 
 local CONSUMABLE_ITEM_IDS = {
 	[5512] = "Healthstone",
@@ -228,8 +225,6 @@ local function make_enabled_checker(category) return function(key) if not settin
 GCDI.is_spell_enabled = make_enabled_checker("spellSettings")
 GCDI.is_item_enabled = make_enabled_checker("itemSettings")
 GCDI.is_buff_enabled = make_enabled_checker("buffSettings")
-
-function GCDI.get_setting(category, key, field, default) if not settings then return default end local catSettings = settings[category] if not catSettings then return default end local entry = catSettings[key] if not entry then return default end return entry[field] or default end
 
 function GCDI.get_buff_settings(spellID)
 	if not settings or not settings.buffSettings then return {} end
@@ -439,10 +434,6 @@ function GCDI.get_all_catalog_spells_ordered()
 	return spellCatalogManager:GetAllOrdered()
 end
 
-function GCDI.move_spell_in_order(spellID, direction)
-	if spellCatalogManager then spellCatalogManager:MoveInOrder(spellID, direction) end
-end
-
 function GCDI.move_spell_to_bottom(spellID)
 	if spellCatalogManager then spellCatalogManager:MoveToBottom(spellID) end
 end
@@ -465,10 +456,6 @@ end
 function GCDI.get_all_catalog_items_ordered()
 	if not itemCatalogManager then return {} end
 	return itemCatalogManager:GetAllOrdered()
-end
-
-function GCDI.move_item_in_order(itemKey, direction)
-	if itemCatalogManager then itemCatalogManager:MoveInOrder(itemKey, direction) end
 end
 
 function GCDI.move_item_to_bottom(itemKey)
@@ -496,10 +483,6 @@ end
 function GCDI.get_all_catalog_buffs_ordered()
 	if not buffCatalogManager then return {} end
 	return buffCatalogManager:GetAllOrdered()
-end
-
-function GCDI.move_buff_in_order(spellID, direction)
-	if buffCatalogManager then buffCatalogManager:MoveInOrder(spellID, direction) end
 end
 
 function GCDI.move_buff_to_bottom(spellID)
@@ -1342,9 +1325,7 @@ local function update_buff_bar(buffID)
 			data.activeIndicator:SetColorTexture(BUFF_COLORS.active[1], BUFF_COLORS.active[2], BUFF_COLORS.active[3], 1)
 		end
 
-		-- data.nativeStackActive: engine ApplicationBar binding owns this bar's fill
-		-- (configs.useNativeStackBinding path) - don't fight it with a manual write.
-		if data.stackBar and GCDI.should_show_buff_stacks(buffID) and not data.nativeStackActive then
+		if data.stackBar and GCDI.should_show_buff_stacks(buffID) then
 			local apps
 			if data.manualTracking and not cdmFrame then
 				apps = data.stacks or 0
@@ -1457,157 +1438,6 @@ local function schedule_update_all_buff_bars_after_aura()
 		-- only polls icons at a low rate.
 		update_spell_icons()
 	end)
-end
-
--- ═══════════════════════════════════════════════════════════════════════════
--- EXPERIMENTAL: native AuraContainer/AddAuraSlot stack binding
--- ═══════════════════════════════════════════════════════════════════════════
--- Alternate to the C_UnitAuras spell-ID query path above (gcdi_get_buff_stack_
--- applications). Gated by configs.useNativeStackBinding (default OFF) so both
--- methods can be A/B tested without ripping either one out. See
--- CHANGE-TRACKER.md for exactly what this touches and how to fully remove it.
---
--- Must only be called from a clean (non-tainted) context - bar creation/
--- rebuild - never from inside UNIT_AURA. SetApplicationBar only accepts a
--- StatusBar the engine-created AuraButton itself owns (like SetDurationBar),
--- so this overlays an invisible native button's own bar exactly on top of our
--- existing stack StatusBar and hides ours once the engine confirms the bind.
-local nativeStackContainers = {}  -- [unit] -> AuraContainer
-
--- Tears down every native AuraContainer created so far and drops our Lua
--- references to them. There is no documented/verified AddAuraSlot removal
--- API (checked warcraft.wiki.gg's AuraContainer:AddAuraSlot page and this
--- codebase for an existing precedent - neither has one), so rather than
--- fabricate an unverified removal call, this destroys the whole container
--- frame instead: Hide() + SetParent(nil) is the same teardown pattern this
--- file already uses elsewhere (clear_buff_bars) to release frames, and
--- gcdi_ensure_native_stack_container's own comment notes a container must be
--- shown+enabled to self-register aura updates, so hiding/unparenting it
--- should stop that registration along with every slot bound to it. Must be
--- called before gcdi_setup_all_native_stack_slots() creates fresh containers
--- on rebuild, otherwise the old containers' bindings would keep accumulating
--- alongside the new ones.
-local function gcdi_teardown_native_stack_containers()
-	for unit, container in pairs(nativeStackContainers) do
-		if container then
-			container:Hide()
-			container:SetParent(nil)
-		end
-	end
-	wipe(nativeStackContainers)
-end
-
-local function gcdi_ensure_native_stack_container(unit)
-	local existing = nativeStackContainers[unit]
-	if existing then return existing end
-	if InCombatLockdown() then
-		debug("native stacks: container(" .. tostring(unit) .. ") deferred, in combat")
-		return nil
-	end
-	local ok, c = pcall(CreateFrame, "AuraContainer", nil, main_frame, "CustomAuraContainerTemplate")
-	if not ok or not c then
-		debug("native stacks: CreateFrame(AuraContainer) failed - " .. tostring(c))
-		return nil
-	end
-	if c.SetUnit then c:SetUnit(unit) end
-	if c.SetEnabled then c:SetEnabled(true) end
-	c:SetSize(1, 1)
-	c:Show()  -- must be shown+enabled to self-register aura updates
-	nativeStackContainers[unit] = c
-	debug("native stacks: container(" .. tostring(unit) .. ") created, AddAuraSlot=" .. tostring(c.AddAuraSlot ~= nil))
-	return c
-end
-
-local function gcdi_setup_native_stack_slot(buffKey, data, catalogEntry)
-	if not (data and data.stackBar and data.stackBar.bar) then return end
-	local unit = (catalogEntry and catalogEntry.isTargetDebuff) and "target" or "player"
-	local container = gcdi_ensure_native_stack_container(unit)
-	if not container then return end
-	if not container.AddAuraSlot then
-		debug("native stacks: " .. tostring(buffKey) .. " - AddAuraSlot not available on this client")
-		return
-	end
-
-	local ids, seen = {}, {}
-	local function addID(id)
-		if id and not seen[id] then seen[id] = true; ids[#ids + 1] = id end
-	end
-	addID(catalogEntry and catalogEntry.spellID)
-	addID(catalogEntry and catalogEntry.tooltipSpellID)
-	if #ids == 0 then
-		debug("native stacks: " .. tostring(buffKey) .. " - no spellID/tooltipSpellID, skipped")
-		return
-	end
-
-	local filter = (unit == "player") and "HELPFUL" or "HARMFUL"
-	local sourceBar = data.stackBar.bar
-	local maxApplications = data.stackBarMax or 1
-
-	debug("native stacks: " .. tostring(buffKey) .. " - AddAuraSlot ids=" .. table.concat(ids, ",") .. " filter=" .. filter)
-	local addOK, addErr = pcall(function()
-		container:AddAuraSlot("gcdi_stack_" .. tostring(buffKey), filter, {
-			candidateFilters = { includeSpellIDs = ids },
-			templateNames = { "GCDINativeStackButtonTemplate" },
-			initializeFrame = function(button)
-				debug("native stacks: " .. tostring(buffKey) .. " - initializeFrame fired, ArcBar=" ..
-					tostring(button and button.ArcBar ~= nil) .. " SetApplicationBar=" .. tostring(button and button.SetApplicationBar ~= nil))
-				if not (button and button.ArcBar and button.SetApplicationBar) then return end
-				-- Anchor+level the button itself over our bar: ArcBar is a child region,
-				-- so it only draws while its owning button is shown/positioned.
-				button:ClearAllPoints()
-				button:SetAllPoints(sourceBar)
-				button:SetFrameStrata(sourceBar:GetFrameStrata())
-				button:SetFrameLevel((sourceBar:GetFrameLevel() or 1) + 1)
-				local ab = button.ArcBar
-				-- SetApplicationBar resets the widget it's given (anchors/texture/color get
-				-- wiped back to defaults as it takes ownership) - bind FIRST, style AFTER,
-				-- matching ArcUI's order. Doing it the other way around silently discards
-				-- every style call below and leaves the bar blank/invisible.
-				button:SetApplicationBar(ab, {
-					maxApplications = maxApplications,
-					interpolation = Enum.StatusBarInterpolation and Enum.StatusBarInterpolation.Immediate or nil,
-				})
-				ab:ClearAllPoints()
-				ab:SetAllPoints(sourceBar)
-				local srcTex = sourceBar.GetStatusBarTexture and sourceBar:GetStatusBarTexture()
-				ab:SetStatusBarTexture((srcTex and srcTex.GetTexture and srcTex:GetTexture()) or "Interface\\Buttons\\WHITE8X8")
-				local r, g, b, a = sourceBar:GetStatusBarColor()
-				ab:SetStatusBarColor(r, g, b, a or 1)
-				if sourceBar.GetOrientation and ab.SetOrientation then ab:SetOrientation(sourceBar:GetOrientation()) end
-				if sourceBar.GetReverseFill and ab.SetReverseFill then ab:SetReverseFill(sourceBar:GetReverseFill()) end
-				ab:Show()
-				-- Engine-driven bar is now the real fill; stop writing to and hide the classic one.
-				data.nativeStackActive = true
-				sourceBar:Hide()
-				-- Note: do NOT read state back off ab/button here (GetSize, IsShown,
-				-- GetMinMaxValues, etc.) - once the engine owns this widget those reads can
-				-- come back as secret/opaque values and poison the whole debug string into
-				-- "<SECRET>" with no error. Only report what WE told it to be.
-				debug("native stacks: " .. tostring(buffKey) .. " - bound, classic bar hidden, maxApplications=" .. tostring(maxApplications))
-			end,
-		})
-	end)
-	if not addOK then
-		debug("native stacks: " .. tostring(buffKey) .. " - AddAuraSlot pcall failed: " .. tostring(addErr))
-		return
-	end
-	-- Without this, the slot only binds on the NEXT aura change event - a
-	-- buff already active when the slot registers (the common case: toggling
-	-- the option, or rebuilding bars mid-buff) would never call initializeFrame
-	-- and the bar would silently show nothing until the buff refreshes.
-	if container.UpdateAllAuras then
-		local ok, err = pcall(container.UpdateAllAuras, container)
-		if not ok then
-			debug("native stacks: " .. tostring(buffKey) .. " - UpdateAllAuras failed: " .. tostring(err))
-		end
-	end
-end
-
-local function gcdi_setup_all_native_stack_slots()
-	if not configs.useNativeStackBinding then return end
-	for buffKey, data in pairs(trackedBuffs) do
-		gcdi_setup_native_stack_slot(buffKey, data, GCDI.buffCatalog[buffKey])
-	end
 end
 
 local function create_buff_bar(buffKey, spellName, texture, tooltipSpellID)
@@ -1738,7 +1568,6 @@ local function clear_buff_bars()
 	end
 	wipe(trackedBuffs)
 	wipe(buffBars)
-	gcdi_teardown_native_stack_containers()
 end
 
 -- ═══════════════════════════════════════════════════════════════════════════
@@ -2816,25 +2645,16 @@ local GCDI_RESOURCE_ORDER = {
 -- script's squished-CamelCase convention, and buffs get a "Buff" suffix
 -- (if not already present) so a buff never collides with a same-named
 -- spell's entry (e.g. "IronfurBuff" vs. the "Ironfur" spell).
--- variant: "Primary" or "Secondary" - which spec slot this dump represents
--- (the companion script's dual-spec structure: GetPrimaryXList() vs.
--- GetSecondaryXList()/GetSecondaryResourceConfig()). The addon only ever
--- reflects whatever spec/build is currently active in-game, so the caller
--- must say which slot that corresponds to; defaults to "Primary" if omitted
--- or unrecognized.
-local function export_companion_config(variant)
-	if variant ~= "Primary" and variant ~= "Secondary" then
-		variant = "Primary"
-	end
+local function export_companion_config()
 	local lines = {}
-	table.insert(lines, "; Generated by GCDIndicator /gcdopt exportrotation (" .. variant .. ") - paste over Get" .. variant .. "SpellList()/Get" .. variant .. "BuffList()/Get" .. variant .. "ResourceConfig() in your companion script.")
+	table.insert(lines, "; Generated by GCDIndicator /gcdopt exportrotation - paste over GetSpellList()/GetBuffList()/GetResourceConfig() in your companion script.")
 	table.insert(lines, "; key/chargeColor/chargeBlackThreshold are NOT derived from the addon - fill them in by hand.")
 	table.insert(lines, "; hasGCD: false is only emitted for spells/items flagged 'Off GCD' in the Spells/Items tabs - defaults true (on-GCD) otherwise.")
 	table.insert(lines, "; Names are stripped of spaces/punctuation to match your companion script's naming style; buffs get a 'Buff' suffix so they don't collide with a same-named spell.")
 	table.insert(lines, "; hasProc/hasPandemic are inferred (trackIcon/duration-bar), not confirmed - see CHANGE-TRACKER.md.")
 	table.insert(lines, "; Resource max/charges values are a live snapshot (e.g. rage max can change with talents) - verify, don't assume stable.")
 	table.insert(lines, "")
-	table.insert(lines, "Get" .. variant .. "SpellList() {")
+	table.insert(lines, "GetSpellList() {")
 	table.insert(lines, "\treturn [")
 
 	for _, spellID in ipairs(get_ordered_spells()) do
@@ -2888,7 +2708,7 @@ local function export_companion_config(variant)
 	table.insert(lines, "\t]")
 	table.insert(lines, "}")
 	table.insert(lines, "")
-	table.insert(lines, "Get" .. variant .. "BuffList() {")
+	table.insert(lines, "GetBuffList() {")
 	table.insert(lines, "\treturn [")
 
 	for _, buffKey in ipairs(get_ordered_buffs()) do
@@ -2912,7 +2732,7 @@ local function export_companion_config(variant)
 	table.insert(lines, "\t]")
 	table.insert(lines, "}")
 	table.insert(lines, "")
-	table.insert(lines, "Get" .. variant .. "ResourceConfig() {")
+	table.insert(lines, "GetResourceConfig() {")
 	table.insert(lines, "\treturn [")
 
 	if gcdi_is_resource_enabled("health") then
@@ -3155,8 +2975,7 @@ local function scan_cdm_buff_frames()
 		-- Key by cooldownID so we get one bar per CDM slot (same spell can have multiple cdIDs, e.g. different sources)
 		local catalogKey = cooldownID
 		if spellID and spellID ~= cooldownID then
-			cooldownToSpellID[cooldownID] = spellID
-			spellIDToCooldownID[spellID] = cooldownID  -- REVERSE mapping for frame lookup
+			spellIDToCooldownID[spellID] = cooldownID  -- Maps spellID -> cooldownID for frame lookup
 		end
 		
 		-- Debug: show each frame found
@@ -3327,7 +3146,6 @@ rebuild_buff_bars = function()
 		end
 	end
 
-	gcdi_setup_all_native_stack_slots()
 	update_all_buff_bars()
 	reposition_all()
 end
@@ -3517,17 +3335,6 @@ GCDI.scan_buffs = function()
 	rebuild_buff_bars()
 end
 
-local function schedule_scan(delay)
-	if previewMode then return end  -- Don't scan/rebuild in preview mode
-	if pendingScanTimer then
-		pendingScanTimer:Cancel()
-	end
-	pendingScanTimer = C_Timer.NewTimer(delay, function()
-		pendingScanTimer = nil
-		scan_action_bars()
-	end)
-end
-
 -- ═══════════════════════════════════════════════════════════════════════════
 -- EVENT HANDLING
 -- ═══════════════════════════════════════════════════════════════════════════
@@ -3621,12 +3428,6 @@ local function on_event(self, event, arg1, arg2, ...)
 			if previewMode or InCombatLockdown() then return end
 			if gcdi_needs_charge_layout_rebuild() then
 				rebuild_spell_bars()
-			end
-			-- Native stack binding can only bind out of combat (AuraContainer creation
-			-- is combat-lockdown gated); retry any buffs left on the classic path
-			-- because combat started before they ever got a chance to bind.
-			if configs.useNativeStackBinding then
-				gcdi_setup_all_native_stack_slots()
 			end
 		end)
 		
@@ -4405,12 +4206,6 @@ SlashCmdList["GCDOPT"] = function(msg)
 	elseif msg == "debug" then
 		configs.debugMode = not configs.debugMode
 		print("GCDI_PREFIXDebug mode " .. (configs.debugMode and "ON" or "OFF"))
-	elseif msg == "nativestacks" then
-		-- A/B toggle for buff stack tracking: classic (C_UnitAuras query) vs
-		-- experimental (native AuraContainer/SetApplicationBar). See CHANGE-TRACKER.md.
-		configs.useNativeStackBinding = not configs.useNativeStackBinding
-		print("GCDI_PREFIXNative stack binding " .. (configs.useNativeStackBinding and "ON (experimental)" or "OFF (classic)"))
-		rebuild_buff_bars()
 	elseif msg == "compact" then
 		-- Flow-packed spell/item/buff layout toggle. See CHANGE-TRACKER.md.
 		configs.compactMode = not configs.compactMode
@@ -4433,11 +4228,13 @@ SlashCmdList["GCDOPT"] = function(msg)
 	elseif msg == "exportrotation" then
 		-- Companion-script config export: generates SpellList/BuffList
 		-- array text from the live catalog/settings state. See
-		-- export_companion_config() above reposition_all(). Asks Primary vs.
-		-- Secondary first (see the GCDI_EXPORT_ROTATION_CONFIG popup in
-		-- LibGCDI-Options.lua) since the addon only reflects whichever
-		-- spec/build is currently active.
-		StaticPopup_Show("GCDI_EXPORT_ROTATION_CONFIG")
+		-- export_companion_config() above reposition_all().
+		local text = export_companion_config()
+		if GCDI.show_export_import_popup then
+			GCDI.show_export_import_popup("export", text, "Rotation Config Export")
+		else
+			print(GCDI_PREFIX .. text)
+		end
 	elseif msg == "items" then
 		print("GCDI_PREFIX--- Item Catalog ---")
 		local count = 0

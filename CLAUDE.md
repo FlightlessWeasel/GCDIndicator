@@ -26,9 +26,8 @@ no code comments, no user-visible text (chat, tooltips, labels). Call it
 - **Don't modify third-party libs** (`Libs/LibRangeCheck-3.0`,
   `LibDataBroker-1.1`, `LibDBIcon-1.0`, `CallbackHandler-1.0`, `LibStub`,
   `LibDispellable-1.0`). `.toc` load order: LibStub-family → first-party
-  `Lib*` → `GCDIndicator.xml`/`.lua` → Options UI.
-- **Check `CHANGE-TRACKER.md`** before touching anything it references
-  (currently: `GCDINativeStackButtonTemplate` in `GCDIndicator.xml`).
+  `Lib*` → `GCDIndicator.lua` → Options UI.
+- **Check `CHANGE-TRACKER.md`** before touching anything it references.
 - **Real-time over caching.** Combat-visible data (buffs, stacks, GCD,
   resources) must stay near-real-time. Don't trade display latency for perf
   (ticker rate, cross-frame caching, batching) without confirming with the user.
@@ -85,8 +84,8 @@ no code comments, no user-visible text (chat, tooltips, labels). Call it
 ## Config vs. settings
 
 - `GCDI.configs` — global, not per-profile, hardcoded defaults in
-  `GCDIndicator.lua` (`debugMode`, `useNativeStackBinding`). Not persisted
-  unless explicitly wired to SavedVariables.
+  `GCDIndicator.lua` (`debugMode`, `compactMode`). Not persisted unless
+  explicitly wired to SavedVariables.
 - `settings.*` — profile-based, persisted via `LibGCDI-Profiles`, per spec/character.
 
 ## Conventions
@@ -96,8 +95,8 @@ no code comments, no user-visible text (chat, tooltips, labels). Call it
   `|cff00ff00GCDIndicator:|r `. Add a matching Settings-tab control in
   `LibGCDI-Options.lua` for anything a user should toggle without a command.
 - New experimental features: gate behind a `GCDI.configs` flag (see
-  `useNativeStackBinding`), wire both a slash command and Settings checkbox,
-  add a `CHANGE-TRACKER.md` entry with revert steps.
+  `compactMode`), wire both a slash command and Settings checkbox, add a
+  `CHANGE-TRACKER.md` entry with revert steps.
 - Spells/Items/Buffs tab row reordering uses drag-and-drop
   (`add_row_drag_handle`), not per-row buttons — read `docs/options-drag-reorder.md`
   before touching row layout there or extending drag-and-drop to another tab.

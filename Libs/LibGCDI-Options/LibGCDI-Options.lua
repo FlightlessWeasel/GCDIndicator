@@ -22,7 +22,6 @@ local optionsFrame = nil
 local spellRows = {}
 local itemRows = {}
 local buffRows = {}
-local optionsElements = {}
 local gcdTabElements = {}
 local resourcesTabElements = {}
 local itemsTabElements = {}
@@ -1237,18 +1236,16 @@ local function refresh_resources_tab()
 end
 
 local function add_top_bottom_nav(row, gripBtn, index, listSize, moveToTopFn, moveBottomFn, refreshFn)
-	local moveTopBtn = acquire_frame("Button", row, "UIPanelButtonTemplate")
+	local moveTopBtn = acquire_frame("Button", row, "UIPanelScrollUpButtonTemplate")
 	moveTopBtn:SetSize(18, 16)
 	moveTopBtn:SetPoint("LEFT", gripBtn, "RIGHT", 2, 0)
-	moveTopBtn:SetText("")
 	moveTopBtn:SetScript("OnEnter", function(self) GameTooltip:SetOwner(self, "ANCHOR_RIGHT") GameTooltip:SetText("Move to top") GameTooltip:AddLine("Jumps this entry to the start of the list - faster than dragging across a long, scrolled list.", 1, 1, 1, true) GameTooltip:Show() end)
 	moveTopBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
 	moveTopBtn:SetScript("OnClick", function() moveToTopFn() refreshFn() end)
 	if index <= 1 then moveTopBtn:Disable() end
-	local moveBottomBtn = acquire_frame("Button", row, "UIPanelButtonTemplate")
+	local moveBottomBtn = acquire_frame("Button", row, "UIPanelScrollDownButtonTemplate")
 	moveBottomBtn:SetSize(18, 16)
 	moveBottomBtn:SetPoint("LEFT", moveTopBtn, "RIGHT", 2, 0)
-	moveBottomBtn:SetText("")
 	moveBottomBtn:SetScript("OnEnter", function(self) GameTooltip:SetOwner(self, "ANCHOR_RIGHT") GameTooltip:SetText("Move to bottom") GameTooltip:AddLine("Jumps this entry to the end of the list - faster than dragging across a long, scrolled list.", 1, 1, 1, true) GameTooltip:Show() end)
 	moveBottomBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
 	moveBottomBtn:SetScript("OnClick", function() moveBottomFn() refreshFn() end)
@@ -2388,34 +2385,6 @@ StaticPopupDialogs["GCDI_DELETE_PROFILE_CONFIRM"] = {
 	preferredIndex = 3,
 }
 
--- Export rotation config: ask which spec slot (Primary/Secondary) this
--- export represents - the addon only ever reflects whichever spec/build is
--- currently active in-game, so the user has to say which companion-script
--- function block (GetPrimaryXList vs GetSecondaryXList) it should replace.
--- Note: Escape (hideOnEscape) triggers OnCancel, same as clicking
--- "Secondary" - there's no true no-op "cancel" option here, but either
--- choice is harmless (just opens a copyable text popup, doesn't change any
--- setting), so this is a rough edge, not a real risk.
-StaticPopupDialogs["GCDI_EXPORT_ROTATION_CONFIG"] = {
-	text = "Export current spells/items/buffs/resources as which spec slot?",
-	button1 = "Primary",
-	button2 = "Secondary",
-	OnAccept = function()
-		if GCDI.export_ahk_config and GCDI.show_export_import_popup then
-			GCDI.show_export_import_popup("export", GCDI.export_ahk_config("Primary"), "Rotation Config Export (Primary)")
-		end
-	end,
-	OnCancel = function()
-		if GCDI.export_ahk_config and GCDI.show_export_import_popup then
-			GCDI.show_export_import_popup("export", GCDI.export_ahk_config("Secondary"), "Rotation Config Export (Secondary)")
-		end
-	end,
-	timeout = 0,
-	whileDead = true,
-	hideOnEscape = true,
-	preferredIndex = 3,
-}
-
 -- Save confirmation dialog
 StaticPopupDialogs["GCDI_SAVE_PROFILE_CONFIRM"] = {
 	text = "Overwrite profile '%s' with current settings?",
@@ -3149,31 +3118,8 @@ local function create_options_frame()
 	end)
 	sYOffset = sYOffset - (SETTINGS_BUTTON_HEIGHT + SETTINGS_BLOCK_GAP)
 
-	-- Experimental: Native Stack Binding (A/B toggle, see CHANGE-TRACKER.md)
-	sYOffset = add_section_header(settingsFrame, sYOffset, "Experimental", nil, 500)
-
-	local nativeStackCheckbox = CreateFrame("CheckButton", nil, settingsFrame, "UICheckButtonTemplate")
-	nativeStackCheckbox:SetSize(24, 24)
-	nativeStackCheckbox:SetPoint("TOPLEFT", 0, sYOffset)
-	nativeStackCheckbox:SetChecked(configs.useNativeStackBinding == true)
-	optionsFrame.nativeStackCheckbox = nativeStackCheckbox
-	nativeStackCheckbox:SetScript("OnClick", function(self)
-		configs.useNativeStackBinding = self:GetChecked() and true or false
-		print(GCDI_PREFIX .. "Native stack binding " .. (configs.useNativeStackBinding and "ON (experimental)" or "OFF (classic)"))
-		if GCDI.rebuild_buff_bars then
-			GCDI.rebuild_buff_bars()
-		end
-	end)
-	local nativeStackLabel = settingsFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-	nativeStackLabel:SetPoint("LEFT", nativeStackCheckbox, "RIGHT", 5, 0)
-	nativeStackLabel:SetText("Use native engine stack binding (A/B test)")
-	local nativeStackHelp = settingsFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-	nativeStackHelp:SetPoint("TOPLEFT", nativeStackLabel, "BOTTOMLEFT", 0, -4)
-	nativeStackHelp:SetWidth(440)
-	nativeStackHelp:SetJustifyH("LEFT")
-	nativeStackHelp:SetText("Alternate buff stack tracking using the 12.1+ AuraContainer engine API instead of the classic C_UnitAuras query. Experimental and untested in combat - see CHANGE-TRACKER.md.")
-	nativeStackHelp:SetTextColor(0.55, 0.55, 0.55)
-	sYOffset = sYOffset - (SETTINGS_BUTTON_HEIGHT + 24 + SETTINGS_BLOCK_GAP)
+	-- Layout & Export section
+	sYOffset = add_section_header(settingsFrame, sYOffset, "Layout & Export", nil, 500)
 
 	-- Compact Mode (flow-packed spell/item/buff layout, see CHANGE-TRACKER.md)
 	local compactModeCheckbox = CreateFrame("CheckButton", nil, settingsFrame, "UICheckButtonTemplate")
@@ -3222,27 +3168,26 @@ local function create_options_frame()
 	-- Export rotation config (generates spell/item/buff/resource array text
 	-- from the live catalog/settings state, to paste into a companion
 	-- rotation script instead of hand-maintaining it - see
-	-- export_ahk_config() in GCDIndicator.lua)
+	-- export_companion_config() in GCDIndicator.lua)
 	local exportAhkBtn = create_settings_button(settingsFrame, sYOffset, 180, "Export Rotation Config", "Export Rotation Config", {
 		{ "Generates spell/item/buff array text from your current spells/items/buffs and their order.", 1, 1, 1 },
-		{ "Asks whether to label it Primary or Secondary spec first.", 1, 1, 1 },
 		{ "key/hasGCD fields still need to be filled in by hand - the addon has no concept of rotation keybinds.", 0.8, 0.6, 0.2 },
 	}, function()
-		StaticPopup_Show("GCDI_EXPORT_ROTATION_CONFIG")
+		if GCDI.export_companion_config and GCDI.show_export_import_popup then
+			GCDI.show_export_import_popup("export", GCDI.export_companion_config(), "Rotation Config Export")
+		end
 	end)
+	exportAhkBtn:ClearAllPoints()
 	exportAhkBtn:SetPoint("LEFT", exportBarsBtn, "RIGHT", 10, 0)
 
 	-- Re-syncs the Settings tab's checkbox states from current configs. The
 	-- tab's widgets are built once here (not pooled/rebuilt per refresh like
-	-- the other tabs), so without this, flipping configs.useNativeStackBinding/
-	-- compactMode via slash command while the panel is open left the checkbox
-	-- visually stale until the panel was closed and reopened (see
-	-- CHANGE-TRACKER.md) - switch_tab/refresh_options_frame now call this like
-	-- every other tab's refresh function.
+	-- the other tabs), so without this, flipping configs.compactMode via slash
+	-- command while the panel is open left the checkbox visually stale until
+	-- the panel was closed and reopened (see CHANGE-TRACKER.md) -
+	-- switch_tab/refresh_options_frame now call this like every other tab's
+	-- refresh function.
 	refresh_settings_tab = function()
-		if optionsFrame.nativeStackCheckbox then
-			optionsFrame.nativeStackCheckbox:SetChecked(configs.useNativeStackBinding == true)
-		end
 		if optionsFrame.compactModeCheckbox then
 			optionsFrame.compactModeCheckbox:SetChecked(configs.compactMode == true)
 		end

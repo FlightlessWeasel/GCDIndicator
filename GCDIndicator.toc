@@ -19,7 +19,6 @@ Libs\LibGCDI-Profiles\LibGCDI-Profiles.lua
 Libs\LibGCDI-Range\LibGCDI-Range.lua
 
 # Core addon (creates GCDI namespace)
-GCDIndicator.xml
 GCDIndicator.lua
 
 # Options UI module (requires GCDI namespace)
