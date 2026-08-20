@@ -1,23 +1,16 @@
--- ═══════════════════════════════════════════════════════════════════════════
--- LibGCDI-Options - Options UI for GCDIndicator
--- ═══════════════════════════════════════════════════════════════════════════
-
 local GCDI = _G.GCDI
 if not GCDI then
 	error("LibGCDI-Options requires GCDI to be loaded first")
 	return
 end
 
--- Library references
 local LibProfiles = LibStub("LibGCDI-Profiles")
 
--- Local references to GCDI data
-local settings = nil  -- Set during init
+local settings = nil
 local configs = GCDI.configs
 local RANGE_ITEMS = GCDI.RANGE_ITEMS
 local RANGE_YARDS_ORDER = GCDI.RANGE_YARDS_ORDER or { 0, 5, 8, 10, 12, 13, 15, 20, 25, 30, 35, 40 }
 
--- Local state for options frame
 local optionsFrame = nil
 local spellRows = {}
 local itemRows = {}
@@ -39,7 +32,6 @@ local function ensure_settings_entry(category, key)
 	return GCDI.settings[category][key]
 end
 
--- Forward declarations
 local refresh_profiles_tab
 local refresh_settings_tab
 local switch_tab
@@ -488,10 +480,6 @@ end
 -- ═══════════════════════════════════════════════════════════════════════════
 -- SHARED SECTION HEADER (separator line + title + optional description)
 -- ═══════════════════════════════════════════════════════════════════════════
---
--- Every tab breaks its content into labeled sections; this used to be a
--- hand-copied separator/title/desc block per section with drifting gaps
--- (25px in one tab, 20px in another). One helper, one set of gap constants.
 
 local SECTION_GAP_SEP_TO_TITLE = 20
 local SECTION_GAP_TITLE_TO_DESC = 25
@@ -531,14 +519,6 @@ end
 -- ═══════════════════════════════════════════════════════════════════════════
 -- TAB BAR
 -- ═══════════════════════════════════════════════════════════════════════════
---
--- Used to be 7 copy-pasted CreateFrame blocks with hand-guessed widths (45,
--- 75, 55...) and a background texture only ever touched by hover scripts —
--- switch_tab() never repainted it, so whichever tab was built with the
--- lighter initial alpha looked permanently "selected" no matter which tab
--- was actually open. One table-driven builder sizes each button from its
--- own label and exposes bg/fontstring so switch_tab can set a real active
--- state (see the `tabButtons` loop above).
 
 local TAB_DEFS = {
 	{ key = "gcd", text = "GCD" },
@@ -581,6 +561,15 @@ local function create_tab_button(parent, def, prevButton)
 	bg:SetColorTexture(unpack(TAB_BG_INACTIVE))
 	btn.bg = bg
 
+	if def.key == "profiles" then
+		local dot = btn:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+		dot:SetPoint("BOTTOMRIGHT", -2, 2)
+		dot:SetText("*")
+		dot:SetTextColor(1, 0.6, 0.1)
+		dot:SetShown(GCDI.profileDirty and true or false)
+		btn.dirtyDot = dot
+	end
+
 	btn:SetScript("OnClick", function() switch_tab(def.key) end)
 	btn:SetScript("OnEnter", function()
 		if currentTab ~= def.key then
@@ -594,6 +583,17 @@ local function create_tab_button(parent, def, prevButton)
 
 	tabButtons[def.key] = btn
 	return btn
+end
+
+-- Marks whether live settings have diverged from the saved profile; drives
+-- the "*" on the Profiles tab that tells the user to resave (auto-save is
+-- unreliable, so this is the real signal that unsaved changes exist).
+function GCDI.set_profile_dirty(isDirty)
+	GCDI.profileDirty = isDirty and true or false
+	local btn = tabButtons["profiles"]
+	if btn and btn.dirtyDot then
+		btn.dirtyDot:SetShown(GCDI.profileDirty)
+	end
 end
 
 -- ═══════════════════════════════════════════════════════════════════════════
@@ -615,9 +615,6 @@ local function refresh_gcd_tab()
 	
 	local frame = optionsFrame.gcdScrollChild
 	
-	-- Release existing elements back to the pool and collect the rebuild into the
-	-- same list. acquire_* registers automatically, so track() is now a no-op pass
-	-- through kept for readability at the call sites.
 	reset_track_list(gcdTabElements)
 
 	local function track(element)
@@ -641,7 +638,6 @@ local function refresh_gcd_tab()
 	desc:SetTextColor(0.7, 0.7, 0.7)
 	yOffset = yOffset - 25
 	
-	-- Ensure gcdSettings exists
 	if not settings.gcdSettings then
 		settings.gcdSettings = {
 			showGcdRow = true,
@@ -654,7 +650,6 @@ local function refresh_gcd_tab()
 		}
 	end
 	
-	-- Create toggle for each option
 	for _, opt in ipairs(GCD_INDICATOR_OPTIONS) do
 		local checkbox = track(acquire_frame("CheckButton", frame, "UICheckButtonTemplate"))
 		checkbox:SetSize(24, 24)
@@ -700,7 +695,6 @@ local function refresh_gcd_tab()
 	yOffset = add_section_header(frame, yOffset, "Mob Count Settings",
 		"Configure the nearby mob count indicator. White = at or above threshold, Black = below.")
 
-	-- Mob Count Range dropdown
 	local rangeLabel = track(acquire_fontstring(frame, "OVERLAY", "GameFontNormal"))
 	rangeLabel:SetPoint("TOPLEFT", 10, yOffset)
 	rangeLabel:SetText("Detection Range:")
@@ -708,8 +702,7 @@ local function refresh_gcd_tab()
 	local rangeDropdown = track(acquire_frame("Frame", frame, "UIDropDownMenuTemplate"))
 	rangeDropdown:SetPoint("LEFT", rangeLabel, "RIGHT", -5, -2)
 	UIDropDownMenu_SetWidth(rangeDropdown, 100)
-	
-	-- Mob count range: all brackets when LibRangeCheck is on; else only yards with a Range spell (proxy)
+
 	local function getMobRangeOptions()
 		local list = {}
 		if settings and settings.gcdSettings and settings.gcdSettings.useLibRangeCheck then
@@ -759,7 +752,6 @@ local function refresh_gcd_tab()
 		end
 	end
 	UIDropDownMenu_Initialize(rangeDropdown, initRangeDropdown)
-	-- Set initial text
 	local currentRange = settings.gcdSettings.mobCountRange or 8
 	local mobRangeOptions = getMobRangeOptions()
 	local inList = false
@@ -775,7 +767,6 @@ local function refresh_gcd_tab()
 	end
 	yOffset = yOffset - 35
 	
-	-- Mob Count Threshold dropdown
 	local thresholdLabel = track(acquire_fontstring(frame, "OVERLAY", "GameFontNormal"))
 	thresholdLabel:SetPoint("TOPLEFT", 10, yOffset)
 	thresholdLabel:SetText("Mob Threshold:")
@@ -805,7 +796,6 @@ local function refresh_gcd_tab()
 	UIDropDownMenu_SetText(thresholdDropdown, tostring(currentThreshold) .. (currentThreshold == 1 and " mob" or " mobs"))
 	yOffset = yOffset - 35
 	
-	-- Help text
 	local mobHelp = track(acquire_fontstring(frame, "OVERLAY", "GameFontHighlightSmall"))
 	mobHelp:SetPoint("TOPLEFT", 15, yOffset)
 	mobHelp:SetText("Tip: Counts hostiles on nameplates within the selected range. With LibRangeCheck (below), every bracket is available; without it, only brackets with a Range spell set on this tab. White when count >= threshold.")
@@ -845,7 +835,6 @@ local function refresh_gcd_tab()
 	lrcHelp:SetTextColor(0.55, 0.55, 0.55)
 	yOffset = yOffset - 48
 	
-	-- Global range fallback: label column right-justified so colons align; dropdowns share one width
 	local RANGE_DROPDOWN_LEFT = 150
 	local RANGE_DROPDOWN_WIDTH = 165
 	local RANGE_LABEL_GAP = 8
@@ -864,7 +853,6 @@ local function refresh_gcd_tab()
 	globalLabel:SetPoint("RIGHT", globalDropdown, "LEFT", -RANGE_LABEL_GAP, 0)
 	yOffset = yOffset - 28
 	
-	-- Range spells (in combat): one spell per range (keyed by yards)
 	local rangeSpellsHeader = track(acquire_fontstring(frame, "OVERLAY", "GameFontNormal"))
 	rangeSpellsHeader:SetPoint("TOPLEFT", 10, yOffset)
 	rangeSpellsHeader:SetText("Range spells (in combat):")
@@ -878,7 +866,6 @@ local function refresh_gcd_tab()
 	rangeSpellsHeader:SetScript("OnLeave", function() GameTooltip:Hide() end)
 	yOffset = yOffset - 22
 	
-	-- Build spell list for proxy dropdowns (spells that have range)
 	local spellOptionsForRange = { { value = nil, name = "-- None --" } }
 	do
 		local orderedSpells = GCDI.get_all_catalog_spells_ordered()
@@ -942,46 +929,38 @@ local function refresh_gcd_tab()
 	yOffset = add_section_header(frame, yOffset, "Stance/Form Colors",
 		"The stance indicator changes color based on your current form or stance.")
 
-	-- Get player's class
 	local _, playerClass = UnitClass("player")
 	local formColors = GCDI.FORM_COLORS
 	
-	-- Class name header
 	local className = track(acquire_fontstring(frame, "OVERLAY", "GameFontNormal"))
 	className:SetPoint("TOPLEFT", 10, yOffset)
 	className:SetText("Your Class: |cffffcc00" .. (playerClass or "Unknown") .. "|r")
 	yOffset = yOffset - 25
 	
-	-- Get available forms dynamically from the game API
 	local currentForm = GetShapeshiftForm() or 0
 	local formsToShow = GCDI.GetAvailableForms()
 	
-	-- Add color info to each form
 	for _, formInfo in ipairs(formsToShow) do
 		formInfo.color = formColors[formInfo.index] or formColors.default
 		formInfo.isCurrent = (currentForm == formInfo.index)
 	end
 	
-	-- Display each form
 	for _, formInfo in ipairs(formsToShow) do
 		local row = track(acquire_frame("Frame", frame))
 		row:SetSize(400, 20)
 		row:SetPoint("TOPLEFT", 15, yOffset)
 		
-		-- Color swatch
 		local colorSwatch = track(acquire_texture(row, "ARTWORK"))
 		colorSwatch:SetSize(16, 16)
 		colorSwatch:SetPoint("LEFT", 0, 0)
 		colorSwatch:SetColorTexture(formInfo.color[1], formInfo.color[2], formInfo.color[3], 1)
 		
-		-- Border around swatch
 		local swatchBorder = track(acquire_texture(row, "OVERLAY"))
 		swatchBorder:SetSize(18, 18)
 		swatchBorder:SetPoint("CENTER", colorSwatch, "CENTER", 0, 0)
 		swatchBorder:SetColorTexture(0.3, 0.3, 0.3, 1)
 		colorSwatch:SetDrawLayer("OVERLAY", 1)
 		
-		-- Form name
 		local formLabel = track(acquire_fontstring(row, "OVERLAY", "GameFontNormal"))
 		formLabel:SetPoint("LEFT", colorSwatch, "RIGHT", 10, 0)
 		
@@ -1002,25 +981,21 @@ local function refresh_gcd_tab()
 	
 	yOffset = add_section_header(frame, yOffset, "Indicator Legend")
 	
-	-- GCD Bar legend
 	local gcdLegend = track(acquire_fontstring(frame, "OVERLAY", "GameFontNormal"))
 	gcdLegend:SetPoint("TOPLEFT", 10, yOffset)
 	gcdLegend:SetText("|cffffffffGCD Bar:|r Shows global cooldown progress (white bar)")
 	yOffset = yOffset - 20
 	
-	-- Combat indicator legend
 	local combatLegend = track(acquire_fontstring(frame, "OVERLAY", "GameFontNormal"))
 	combatLegend:SetPoint("TOPLEFT", 10, yOffset)
 	combatLegend:SetText("|cffff0000Combat:|r Red = In Combat, |cff333333Black = Out of Combat|r")
 	yOffset = yOffset - 20
 	
-	-- Aggro indicator legend
 	local aggroLegend = track(acquire_fontstring(frame, "OVERLAY", "GameFontNormal"))
 	aggroLegend:SetPoint("TOPLEFT", 10, yOffset)
 	aggroLegend:SetText("|cffff8000Aggro:|r Orange = Has Threat, |cff666666Grey = No Threat|r, |cffffffffWhite = No Target|r")
 	yOffset = yOffset - 20
 	
-	-- Update scroll child height
 	frame:SetHeight(math.abs(yOffset) + 20)
 end
 
@@ -1070,10 +1045,8 @@ end
 local function refresh_resources_tab()
 	if not optionsFrame or not optionsFrame.resourcesScrollChild then return end
 	
-	-- Always sync settings reference
 	settings = GCDI.settings
 	
-	-- Ensure resourceSettings exists
 	if not settings.resourceSettings then
 		settings.resourceSettings = {}
 	end
@@ -1087,7 +1060,6 @@ local function refresh_resources_tab()
 		return element
 	end
 
-	-- Section title
 	local sectionTitle = track(acquire_fontstring(scrollChild, "OVERLAY", "GameFontNormalLarge"))
 	sectionTitle:SetPoint("TOPLEFT", 10, yOffset)
 	sectionTitle:SetText("Resource Bars")
@@ -1099,7 +1071,6 @@ local function refresh_resources_tab()
 	sectionDesc:SetTextColor(0.7, 0.7, 0.7)
 	yOffset = yOffset - 30
 	
-	-- Helper to format numbers human-readable
 	local function formatNumber(num)
 		if num >= 1000000 then
 			return string.format("%.1fM", num / 1000000)
@@ -1145,24 +1116,18 @@ local function refresh_resources_tab()
 	classHeader:SetText("Class")
 	yOffset = yOffset - 20
 
-	-- Only list resources the current character's class can ever use (across
-	-- specs/forms - see resource_applies_to_class); classID is unused here,
-	-- only the classFileName token.
 	local _, playerClassToken = UnitClass("player")
 
-	-- Create checkbox for each resource this class can use
 	for _, resource in ipairs(RESOURCE_NAMES) do
 		if resource_applies_to_class(resource, playerClassToken) then
 			local row = track(acquire_frame("Frame", scrollChild))
 			row:SetSize(520, 30)
 			row:SetPoint("TOPLEFT", 10, yOffset)
 
-			-- Enabled checkbox
 			local checkbox = acquire_frame("CheckButton", row, "UICheckButtonTemplate")
 			checkbox:SetSize(24, 24)
 			checkbox:SetPoint("LEFT", RESOURCES_COLUMNS.checkbox, 0)
 
-			-- Default to enabled if not set (stagger defaults off — Brewmaster-only bar)
 			local isEnabled = settings.resourceSettings[resource.key]
 			if isEnabled == nil then
 				isEnabled = (resource.key ~= "stagger")
@@ -1176,20 +1141,17 @@ local function refresh_resources_tab()
 				GCDI.reposition_all()
 			end)
 
-			-- Color swatch
 			local colorSwatch = acquire_texture(row, "ARTWORK")
 			colorSwatch:SetSize(16, 16)
 			colorSwatch:SetPoint("LEFT", RESOURCES_COLUMNS.swatch, 0)
 			colorSwatch:SetColorTexture(resource.color[1], resource.color[2], resource.color[3], 1)
 
-			-- Resource name (width capped so long names can't run into the Max column)
 			local nameText = acquire_fontstring(row, "OVERLAY", "GameFontNormal")
 			nameText:SetPoint("LEFT", RESOURCES_COLUMNS.name, 0)
 			nameText:SetWidth(RESOURCES_COLUMNS.max - RESOURCES_COLUMNS.name - 8)
 			nameText:SetJustifyH("LEFT")
 			nameText:SetText(resource.name)
 
-			-- Get max value
 			local maxValue = 0
 			if resource.key == "health" or resource.key == "stagger" then
 				local rawMax = UnitHealthMax("player")
@@ -1199,7 +1161,6 @@ local function refresh_resources_tab()
 				maxValue = tonumber(rawMax) or 0
 			end
 
-			-- Max value display (centered)
 			local maxText = acquire_fontstring(row, "OVERLAY", "GameFontNormalSmall")
 			maxText:SetPoint("LEFT", RESOURCES_COLUMNS.max, 0)
 			maxText:SetWidth(40)
@@ -1210,7 +1171,6 @@ local function refresh_resources_tab()
 				maxText:SetText("|cff666666-|r")
 			end
 
-			-- Bar type display (centered)
 			local typeText = acquire_fontstring(row, "OVERLAY", "GameFontNormalSmall")
 			typeText:SetPoint("LEFT", RESOURCES_COLUMNS.type, 0)
 			typeText:SetWidth(55)
@@ -1221,7 +1181,6 @@ local function refresh_resources_tab()
 				typeText:SetText("|cff88ff88Bar|r")
 			end
 
-			-- Class display
 			local classText = acquire_fontstring(row, "OVERLAY", "GameFontNormalSmall")
 			classText:SetPoint("LEFT", RESOURCES_COLUMNS.class, 0)
 			classText:SetWidth(200)
@@ -1281,17 +1240,15 @@ end
 -- SPELLS TAB
 -- ═══════════════════════════════════════════════════════════════════════════
 
-local spellsTabElements = {}  -- Track all UI elements created in spells tab
+local spellsTabElements = {}
 
 local function clear_spells_tab_elements()
-	-- Rows and their children are registered by acquire_*, so releasing the tracking
-	-- list reclaims the whole tree. spellRows must NOT be released separately or the
-	-- same row would be returned to the pool twice.
+	-- spellRows must NOT be released separately or the same row would be
+	-- returned to the pool twice.
 	reset_track_list(spellsTabElements)
 	wipe(spellRows)
 end
 
--- Helper to track created elements (acquire_* registers automatically)
 local function track(element)
 	return element
 end
@@ -1299,16 +1256,13 @@ end
 local function refresh_spells_tab()
 	if not optionsFrame or not optionsFrame.spellsScrollChild then return end
 	
-	-- Always sync settings reference
 	settings = GCDI.settings
 	
-	-- Clear ALL existing elements (not just spell rows)
 	clear_spells_tab_elements()
 	
 	local scrollChild = optionsFrame.spellsScrollChild
 	local yOffset = -10
 	
-	-- Rescan Spells button
 	local rescanSpellsBtn = track(acquire_frame("Button", scrollChild, "UIPanelButtonTemplate"))
 	rescanSpellsBtn:SetSize(100, 22)
 	rescanSpellsBtn:SetPoint("TOPLEFT", 10, yOffset)
@@ -1353,7 +1307,6 @@ local function refresh_spells_tab()
 		drag       = { x = 539 },                 -- 507+24 (checkbox) + 8px gap
 	}
 
-	-- Column headers
 	local enabledHeader = track(acquire_fontstring(scrollChild, "OVERLAY", "GameFontNormalSmall"))
 	enabledHeader:SetPoint("TOPLEFT", header_x(SPELLS_COLUMNS.enabled), yOffset)
 	enabledHeader:SetText("On")
@@ -1393,7 +1346,6 @@ local function refresh_spells_tab()
 	orderHeader:SetText("Order")
 	yOffset = yOffset - 20
 	
-	-- Create rows for each spell
 	local orderedSpells = GCDI.get_all_catalog_spells_ordered()
 	local disabledSectionStarted = false
 	local slotYs = {}
@@ -1407,20 +1359,17 @@ local function refresh_spells_tab()
 		local spellName = catalogEntry.name
 		local texture = catalogEntry.texture
 
-		-- Ensure spell has settings entry
 		if not settings.spellSettings[spellID] then
 			settings.spellSettings[spellID] = { enabled = true, rangeFallbackYards = nil, selfCast = false, hasNativeRange = nil, trackIcon = false, chargePipOverride = nil, offGCD = false }
 		end
 		local spellSettings = settings.spellSettings[spellID]
 
-		-- Add separator before first disabled spell
 		if not GCDI.is_spell_enabled(spellID) and not disabledSectionStarted then
 			disabledSectionStarted = true
 			yOffset = add_disabled_section_separator(scrollChild, yOffset, 590, "Spells")
 		end
 		slotYs[i] = yOffset
 		
-		-- Check native range
 		local spellData = GCDI.trackedSpells[spellID]
 		local actionSlot = spellData and spellData.actionSlot or GCDI.get_action_slot_for_spell(spellID)
 		local hasNativeRange = spellSettings.hasNativeRange
@@ -1436,14 +1385,12 @@ local function refresh_spells_tab()
 		row:SetSize(600, 30)
 		row:SetPoint("TOPLEFT", 10, yOffset)
 
-		-- Enabled checkbox
 		local checkbox = acquire_frame("CheckButton", row, "UICheckButtonTemplate")
 		checkbox:SetSize(24, 24)
 		checkbox:SetPoint("LEFT", SPELLS_COLUMNS.enabled.x, 0)
 		checkbox:SetChecked(spellSettings.enabled ~= false)
 		checkbox:SetScript("OnClick", make_enabled_handler("spellSettings", spellID, GCDI.rebuild_spell_bars))
 		
-		-- Self-Cast checkbox
 		local selfCastCheckbox = acquire_frame("CheckButton", row, "UICheckButtonTemplate")
 		selfCastCheckbox:SetSize(24, 24)
 		selfCastCheckbox:SetPoint("LEFT", SPELLS_COLUMNS.selfCast.x, 0)
@@ -1464,7 +1411,6 @@ local function refresh_spells_tab()
 		end)
 		selfCastCheckbox:SetScript("OnLeave", function() GameTooltip:Hide() end)
 		
-		-- Track Icon checkbox
 		local trackIconCheckbox = acquire_frame("CheckButton", row, "UICheckButtonTemplate")
 		trackIconCheckbox:SetSize(24, 24)
 		trackIconCheckbox:SetPoint("LEFT", SPELLS_COLUMNS.trackIcon.x, 0)
@@ -1505,21 +1451,18 @@ local function refresh_spells_tab()
 		end)
 		offGcdCheckbox:SetScript("OnLeave", function() GameTooltip:Hide() end)
 
-		-- Spell icon
 		add_icon_with_tooltip(row, texture, function(self)
 			GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
 			GameTooltip:SetSpellByID(spellID)
 			GameTooltip:Show()
 		end, SPELLS_COLUMNS.icon.x)
 		
-		-- Spell name
 		local nameText = acquire_fontstring(row, "OVERLAY", "GameFontNormal")
 		nameText:SetPoint("LEFT", SPELLS_COLUMNS.name.x, 0)
 		nameText:SetWidth(90)
 		nameText:SetJustifyH("LEFT")
 		nameText:SetText(spellName)
 
-		-- Native range indicator
 		local rangeIndicatorText = acquire_fontstring(row, "OVERLAY", "GameFontNormalSmall")
 		rangeIndicatorText:SetPoint("LEFT", SPELLS_COLUMNS.native.x, 0)
 		if spellSettings.hasNativeRange then
@@ -1528,7 +1471,6 @@ local function refresh_spells_tab()
 			rangeIndicatorText:SetText("|cff888888-|r")
 		end
 
-		-- Tooltip for indicator (2px left of the indicator text, to widen the hit area)
 		local indicatorTooltip = acquire_frame("Frame", row)
 		indicatorTooltip:SetPoint("LEFT", SPELLS_COLUMNS.native.x - 2, 0)
 		indicatorTooltip:SetSize(24, 24)
@@ -1546,7 +1488,6 @@ local function refresh_spells_tab()
 		end)
 		indicatorTooltip:SetScript("OnLeave", function() GameTooltip:Hide() end)
 		
-		-- Range dropdown
 		local rangeDropdown = acquire_frame("Frame", row, "UIDropDownMenuTemplate")
 		rangeDropdown:SetPoint("LEFT", SPELLS_COLUMNS.range.x, 0)
 		UIDropDownMenu_SetWidth(rangeDropdown, SPELLS_COLUMNS.range.width)
@@ -1613,7 +1554,6 @@ local function refresh_spells_tab()
 		
 		UIDropDownMenu_Initialize(rangeDropdown, initSpellRangeDropdown)
 		
-		-- Set selected: 1 = Use Global/Native; 2+ = range option by yards (proxy-only)
 		local currentYards = spellSettings.rangeFallbackYards
 		if currentYards == nil and spellSettings.rangeFallback ~= nil and GCDI.LEGACY_INDEX_TO_YARDS then
 			currentYards = GCDI.LEGACY_INDEX_TO_YARDS[spellSettings.rangeFallback]
@@ -1635,7 +1575,6 @@ local function refresh_spells_tab()
 			end
 		end
 		
-		-- Charge pip count override (when max charges are secret or missing; e.g. Keg Smash = 2 pips)
 		local chgDropdown = track(acquire_frame("Frame", row, "UIDropDownMenuTemplate"))
 		chgDropdown:SetPoint("LEFT", SPELLS_COLUMNS.chargePips.x, 0)
 		UIDropDownMenu_SetWidth(chgDropdown, SPELLS_COLUMNS.chargePips.width)
@@ -1693,8 +1632,6 @@ local function refresh_spells_tab()
 		
 		spellRows[i] = row
 
-		-- Drag handle (replaces the old Up/Down buttons) + Top/Bottom
-		-- quick-action arrows for jumping straight to either end of a long list.
 		local gripBtn = add_row_drag_handle(row, spellRows, orderedSpells, i, slotYs, GCDI.commit_spell_order, refresh_spells_tab)
 		gripBtn:SetPoint("LEFT", SPELLS_COLUMNS.drag.x, 0)
 
@@ -1713,11 +1650,9 @@ end
 local function refresh_items_tab()
 	if not optionsFrame or not optionsFrame.itemsScrollChild then return end
 	
-	-- Always sync settings reference
 	settings = GCDI.settings
 	
-	-- Rows and their children are registered by acquire_*, so the tracking list owns
-	-- the whole tree; itemRows must not be released separately (double free).
+	-- itemRows must not be released separately (double free).
 	reset_track_list(itemsTabElements)
 	wipe(itemRows)
 
@@ -1728,7 +1663,6 @@ local function refresh_items_tab()
 		return element
 	end
 
-	-- Rescan Items button
 	local rescanItemsBtn = track(acquire_frame("Button", scrollChild, "UIPanelButtonTemplate"))
 	rescanItemsBtn:SetSize(100, 22)
 	rescanItemsBtn:SetPoint("TOPLEFT", 10, yOffset)
@@ -1747,9 +1681,6 @@ local function refresh_items_tab()
 	rescanItemsBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
 	yOffset = yOffset - 30
 	
-	-- Single source of truth for this tab's column x-offsets (row-relative -
-	-- rows themselves sit at ROW_BASE_X). See SPELLS_COLUMNS above / header_x()
-	-- for how headerX overrides work.
 	local ITEMS_COLUMNS = {
 		enabled = { x = 0 },
 		charges = { x = 28 },
@@ -1788,7 +1719,6 @@ local function refresh_items_tab()
 	gcdHeader:SetText("GCD")
 	yOffset = yOffset - 20
 	
-	-- Create rows
 	local orderedItems = GCDI.get_all_catalog_items_ordered()
 	local disabledSectionStarted = false
 	local slotYs = {}
@@ -1821,7 +1751,6 @@ local function refresh_items_tab()
 			itemSettings = settings.itemSettings[itemKey]
 		end
 		
-		-- Separator before disabled items
 		if not GCDI.is_item_enabled(itemKey) and not disabledSectionStarted then
 			disabledSectionStarted = true
 			yOffset = add_disabled_section_separator(scrollChild, yOffset, 450, "Items")
@@ -1832,14 +1761,12 @@ local function refresh_items_tab()
 		row:SetSize(480, 30)
 		row:SetPoint("TOPLEFT", 10, yOffset)
 
-		-- Enabled checkbox
 		local checkbox = acquire_frame("CheckButton", row, "UICheckButtonTemplate")
 		checkbox:SetSize(24, 24)
 		checkbox:SetPoint("LEFT", ITEMS_COLUMNS.enabled.x, 0)
 		checkbox:SetChecked(itemSettings.enabled ~= false)
 		checkbox:SetScript("OnClick", make_enabled_handler("itemSettings", itemKey, function() GCDI.rebuild_item_bars() end, true))
 		
-		-- Show Charges checkbox
 		local chargesCheckbox = acquire_frame("CheckButton", row, "UICheckButtonTemplate")
 		chargesCheckbox:SetSize(24, 24)
 		chargesCheckbox:SetPoint("LEFT", ITEMS_COLUMNS.charges.x, 0)
@@ -1860,7 +1787,6 @@ local function refresh_items_tab()
 		end)
 		chargesCheckbox:SetScript("OnLeave", function() GameTooltip:Hide() end)
 		
-		-- Item icon
 		add_icon_with_tooltip(row, texture, function(self)
 			GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
 			if catalogEntry.slot then
@@ -1871,15 +1797,12 @@ local function refresh_items_tab()
 			GameTooltip:Show()
 		end, ITEMS_COLUMNS.icon.x)
 		
-		-- Item name (was going right up to the Type column's start - capped so
-		-- a long name can't run under it or the drag handle)
 		local nameText = acquire_fontstring(row, "OVERLAY", "GameFontNormal")
 		nameText:SetPoint("LEFT", ITEMS_COLUMNS.name.x, 0)
 		nameText:SetWidth(ITEMS_COLUMNS.name.width)
 		nameText:SetJustifyH("LEFT")
 		nameText:SetText(itemName)
 
-		-- Type indicator (centered in its own column, was unpositioned/overlapping)
 		local typeText = acquire_fontstring(row, "OVERLAY", "GameFontNormalSmall")
 		typeText:SetPoint("LEFT", ITEMS_COLUMNS.type.x, 0)
 		typeText:SetWidth(ITEMS_COLUMNS.type.width)
@@ -1892,8 +1815,6 @@ local function refresh_items_tab()
 		
 		itemRows[i] = row
 
-		-- Drag handle (replaces the old Up/Down buttons) + Top/Bottom
-		-- quick-action arrows for jumping straight to either end of a long list.
 		local gripBtn = add_row_drag_handle(row, itemRows, orderedItems, i, slotYs, GCDI.commit_item_order, refresh_items_tab)
 		gripBtn:SetPoint("LEFT", ITEMS_COLUMNS.drag.x, 0)
 
@@ -1933,7 +1854,6 @@ end
 local function refresh_buffs_tab()
 	if not optionsFrame or not optionsFrame.buffsScrollChild then return end
 	
-	-- Always sync settings reference
 	settings = GCDI.settings
 	
 	-- Rows and their children are registered by acquire_*, so the tracking list owns
@@ -1948,7 +1868,6 @@ local function refresh_buffs_tab()
 		return element
 	end
 
-	-- Rescan Buffs button
 	local rescanBuffsBtn = track(acquire_frame("Button", scrollChild, "UIPanelButtonTemplate"))
 	rescanBuffsBtn:SetSize(100, 22)
 	rescanBuffsBtn:SetPoint("TOPLEFT", 10, yOffset)
@@ -1967,7 +1886,6 @@ local function refresh_buffs_tab()
 	rescanBuffsBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
 	yOffset = yOffset - 30
 	
-	-- Add Buff section
 	local addBuffLabel = track(acquire_fontstring(scrollChild, "OVERLAY", "GameFontNormal"))
 	addBuffLabel:SetPoint("TOPLEFT", 10, yOffset)
 	addBuffLabel:SetText("Add Buff by Spell ID:")
@@ -2008,7 +1926,6 @@ local function refresh_buffs_tab()
 	helpText:SetText("Tip: Get spell IDs from Wowhead or addon tooltips. Buffs are auto-detected when applied.")
 	yOffset = yOffset - 55
 	
-	-- Separator
 	local sep = track(acquire_texture(scrollChild, "ARTWORK"))
 	sep:SetColorTexture(0.4, 0.4, 0.4, 1)
 	sep:SetSize(540, 1)
@@ -2066,7 +1983,6 @@ local function refresh_buffs_tab()
 	orderHeader:SetText("Order")
 	yOffset = yOffset - 20
 	
-	-- Create rows
 	local orderedBuffs = GCDI.get_all_catalog_buffs_ordered()
 	local disabledSectionStarted = false
 	local slotYs = {}
@@ -2091,7 +2007,6 @@ local function refresh_buffs_tab()
 		
 		local buffName = catalogEntry.name
 		local texture = catalogEntry.texture
-		-- buffKey is cooldownID for CDM entries; show spellID when present (matches CDM/spell IDs)
 		local displayID = catalogEntry.spellID or buffKey
 		
 		local buffSettings = settings.buffSettings and settings.buffSettings[buffKey]
@@ -2101,7 +2016,6 @@ local function refresh_buffs_tab()
 			buffSettings = settings.buffSettings[buffKey]
 		end
 		
-		-- Separator before disabled buffs
 		if not GCDI.is_buff_enabled(buffKey) and not disabledSectionStarted then
 			disabledSectionStarted = true
 			yOffset = add_disabled_section_separator(scrollChild, yOffset, 540, "Buffs")
@@ -2112,14 +2026,12 @@ local function refresh_buffs_tab()
 		row:SetSize(540, 30)
 		row:SetPoint("TOPLEFT", 10, yOffset)
 		
-		-- Enabled checkbox
 		local checkbox = acquire_frame("CheckButton", row, "UICheckButtonTemplate")
 		checkbox:SetSize(24, 24)
 		checkbox:SetPoint("LEFT", BUFFS_COLUMNS.enabled.x, 0)
 		checkbox:SetChecked(buffSettings.enabled ~= false)
 		checkbox:SetScript("OnClick", make_enabled_handler("buffSettings", buffKey, function() GCDI.rebuild_buff_bars() end, true))
 		
-		-- Show Stacks checkbox
 		local stacksCheckbox = acquire_frame("CheckButton", row, "UICheckButtonTemplate")
 		stacksCheckbox:SetSize(24, 24)
 		stacksCheckbox:SetPoint("LEFT", BUFFS_COLUMNS.stacks.x, 0)
@@ -2140,7 +2052,6 @@ local function refresh_buffs_tab()
 		end)
 		stacksCheckbox:SetScript("OnLeave", function() GameTooltip:Hide() end)
 		
-		-- Buff icon
 		local buffTooltipSpellID = catalogEntry.tooltipSpellID or catalogEntry.spellID or buffKey
 		add_icon_with_tooltip(row, texture, function(self)
 			if buffTooltipSpellID and buffTooltipSpellID > 0 then
@@ -2150,8 +2061,6 @@ local function refresh_buffs_tab()
 			end
 		end, BUFFS_COLUMNS.icon.x)
 		
-		-- Buff name with spell ID (displayID = spell ID when from CDM; matches
-		-- CDM/spell IDs). Width capped so a long name can't run into Max Stacks.
 		local nameText = acquire_fontstring(row, "OVERLAY", "GameFontNormal")
 		nameText:SetPoint("LEFT", BUFFS_COLUMNS.name.x, 0)
 		nameText:SetWidth(BUFFS_COLUMNS.name.width)
@@ -2162,7 +2071,6 @@ local function refresh_buffs_tab()
 			nameText:SetScript("OnLeave", function() GameTooltip:Hide() end)
 		end
 		
-		-- Max stacks dropdown
 		local maxStacksDropdown = acquire_frame("Frame", row, "UIDropDownMenuTemplate")
 		maxStacksDropdown:SetPoint("LEFT", BUFFS_COLUMNS.maxStacks.x, 0)
 		UIDropDownMenu_SetWidth(maxStacksDropdown, BUFFS_COLUMNS.maxStacks.width)
@@ -2195,7 +2103,6 @@ local function refresh_buffs_tab()
 		UIDropDownMenu_Initialize(maxStacksDropdown, initMaxStacksDropdown)
 		UIDropDownMenu_SetSelectedID(maxStacksDropdown, buffSettings.maxStacksDisplay or 5)
 		
-		-- Duration bar checkbox
 		local durationCb = acquire_frame("CheckButton", row, "UICheckButtonTemplate")
 		durationCb:SetPoint("LEFT", BUFFS_COLUMNS.duration.x, 0)
 		durationCb:SetSize(24, 24)
@@ -2262,10 +2169,6 @@ local function refresh_buffs_tab()
 		
 		buffRows[i] = row
 
-		-- Drag handle (replaces the old Up/Down buttons) + Top/Bottom
-		-- quick-action arrows for jumping straight to either end of a long list
-		-- (buffs previously had no bottom shortcut at all - added here for
-		-- parity with Spells/Items).
 		local gripBtn = add_row_drag_handle(row, buffRows, orderedBuffs, i, slotYs, GCDI.commit_buff_order, refresh_buffs_tab)
 		gripBtn:SetPoint("LEFT", BUFFS_COLUMNS.drag.x, 0)
 
@@ -2372,6 +2275,7 @@ StaticPopupDialogs["GCDI_DELETE_PROFILE_CONFIRM"] = {
 			settings.profiles[profileName] = nil
 			if settings.currentProfile == profileName then
 				settings.currentProfile = nil
+				if GCDI.set_profile_dirty then GCDI.set_profile_dirty(false) end
 			end
 			print(GCDI_PREFIX .. "Profile '" .. profileName .. "' deleted!")
 			if GCDI.refresh_options_frame then
@@ -2392,7 +2296,6 @@ StaticPopupDialogs["GCDI_SAVE_PROFILE_CONFIRM"] = {
 	button2 = "Cancel",
 	OnAccept = function(self, profileName)
 		if profileName and profileName ~= "" then
-			-- Perform the save (inline version of do_save_profile)
 			local s = GCDI.settings
 			if not s then return end
 			
@@ -2416,7 +2319,10 @@ StaticPopupDialogs["GCDI_SAVE_PROFILE_CONFIRM"] = {
 				end
 				return copy
 			end
-			
+
+			local _, classToken = UnitClass("player")
+			LibProfiles:EnforceClassResources(s, classToken)
+
 			s.profiles[profileName] = {
 				globalRangeFallbackYards = s.globalRangeFallbackYards,
 				rangeProxySpells = s.rangeProxySpells and deepcopy(s.rangeProxySpells) or {},
@@ -2433,13 +2339,15 @@ StaticPopupDialogs["GCDI_SAVE_PROFILE_CONFIRM"] = {
 				buffCatalog = deepcopy(GCDI.buffCatalog),
 			}
 			s.currentProfile = profileName
-			
+
 			print(GCDI_PREFIX .. "Profile '" .. profileName .. "' saved!")
-			
+			if GCDI.set_profile_dirty then GCDI.set_profile_dirty(false) end
+
 			GCDI.rebuild_spell_bars()
 			GCDI.rebuild_item_bars()
 			GCDI.rebuild_buff_bars()
 			GCDI.reposition_all()
+			refresh_resources_tab()
 			if GCDI.refresh_options_frame then
 				GCDI.refresh_options_frame()
 			end
@@ -2479,7 +2387,6 @@ StaticPopupDialogs["GCDI_IMPORT_PROFILE_NAME"] = {
 			return
 		end
 		
-		-- Apply the imported settings
 		local s = GCDI.settings
 		if data.gy ~= nil then s.globalRangeFallbackYards = data.gy end
 		if data.rp ~= nil then s.rangeProxySpells = data.rp end
@@ -2499,7 +2406,14 @@ StaticPopupDialogs["GCDI_IMPORT_PROFILE_NAME"] = {
 		if data.bo then s.buffOrder = data.bo end
 		if data.rs then s.resourceSettings = data.rs end
 		if data.gs then s.gcdSettings = data.gs end
-		
+
+		do
+			local _, classToken = UnitClass("player")
+			if LibProfiles:EnforceClassResources(s, classToken) then
+				print(GCDI_PREFIX .. "Disabled imported resource bars that don't belong to your class.")
+			end
+		end
+
 		-- Save as new profile
 		s.profiles = s.profiles or {}
 		s.profiles[name] = {
@@ -2515,12 +2429,13 @@ StaticPopupDialogs["GCDI_IMPORT_PROFILE_NAME"] = {
 			gcdSettings = s.gcdSettings or {},
 		}
 		s.currentProfile = name
-		
+		if GCDI.set_profile_dirty then GCDI.set_profile_dirty(false) end
+
 		GCDI.rebuild_spell_bars()
 		GCDI.rebuild_item_bars()
 		GCDI.rebuild_buff_bars()
 		GCDI.reposition_all()
-		
+
 		print(GCDI_PREFIX .. "Imported as profile '" .. name .. "'!")
 		if GCDI.refresh_options_frame then GCDI.refresh_options_frame() end
 	end,
@@ -2543,16 +2458,21 @@ StaticPopupDialogs["GCDI_IMPORT_PROFILE_NAME"] = {
 	preferredIndex = 3,
 }
 
--- Local function to save profile (calls into main addon)
 local function do_save_profile(name)
 	if not name or name == "" then return false end
 	
-	-- Always use GCDI.settings directly to ensure we have the latest
 	local s = GCDI.settings
 	if not s then return false end
-	
+
 	s.profiles = s.profiles or {}
-	
+
+	if not s.profiles[name] then
+		-- New profile: start with only the current class's resource bars
+		-- enabled, not whatever the previous profile happened to have on.
+		local _, classToken = UnitClass("player")
+		s.resourceSettings = LibProfiles:GetClassResourceDefaults(classToken)
+	end
+
 	-- Deep copy function (handles circular refs and skips frames)
 	local function deepcopy(orig, seen)
 		if type(orig) ~= 'table' then
@@ -2592,18 +2512,16 @@ local function do_save_profile(name)
 	}
 	s.currentProfile = name
 	
-	-- Update local settings reference
 	settings = s
 	
 	print(GCDI_PREFIX .. "Profile '" .. name .. "' saved!")
+	if GCDI.set_profile_dirty then GCDI.set_profile_dirty(false) end
 	return true
 end
 
--- Serialization functions from LibGCDI-Profiles
 local serialize_compact = LibProfiles.serialize
 local deserialize_compact = LibProfiles.deserialize
 
--- Export/Import popup window
 local exportImportFrame = nil
 
 local function show_export_import_popup(mode, initialText, titleOverride)
@@ -2619,19 +2537,16 @@ local function show_export_import_popup(mode, initialText, titleOverride)
 		exportImportFrame:SetFrameStrata("DIALOG")
 		exportImportFrame:SetFrameLevel(100)
 		
-		-- Background for text area
 		local editBg = exportImportFrame:CreateTexture(nil, "BACKGROUND", nil, 1)
 		editBg:SetPoint("TOPLEFT", 12, -32)
 		editBg:SetPoint("BOTTOMRIGHT", -12, 70)
 		editBg:SetColorTexture(0, 0, 0, 0.8)
 		
-		-- Create scroll frame
 		local scrollFrame = CreateFrame("ScrollFrame", "GCDIExportImportScroll", exportImportFrame, "UIPanelScrollFrameTemplate")
 		scrollFrame:SetPoint("TOPLEFT", 14, -34)
 		scrollFrame:SetPoint("BOTTOMRIGHT", -32, 72)
 		exportImportFrame.scrollFrame = scrollFrame
 		
-		-- Create scroll child to hold the edit box
 		local scrollChild = CreateFrame("Frame", nil, scrollFrame)
 		scrollChild:SetSize(430, 220)
 		scrollFrame:SetScrollChild(scrollChild)
@@ -2694,7 +2609,6 @@ local function show_export_import_popup(mode, initialText, titleOverride)
 		closeBtn:SetText("Close")
 		closeBtn:SetScript("OnClick", function() exportImportFrame:Hide() end)
 		
-		-- Select All button for export mode
 		local selectAllBtn = CreateFrame("Button", nil, exportImportFrame, "UIPanelButtonTemplate")
 		selectAllBtn:SetSize(100, 25)
 		selectAllBtn:SetPoint("BOTTOM", 0, 15)
@@ -2735,7 +2649,6 @@ local profilesTabElements = {}
 refresh_profiles_tab = function()
 	if not optionsFrame or not optionsFrame.profilesFrame then return end
 	
-	-- Always sync settings reference
 	settings = GCDI.settings
 	
 	reset_track_list(profilesTabElements)
@@ -2763,7 +2676,6 @@ refresh_profiles_tab = function()
 	sectionDesc:SetTextColor(0.7, 0.7, 0.7)
 	yOffset = yOffset - 30
 	
-	-- Current Profile Dropdown
 	local profileLabel = track(acquire_fontstring(frame, "OVERLAY", "GameFontNormal"))
 	profileLabel:SetPoint("TOPLEFT", 5, yOffset)
 	profileLabel:SetText("Current Profile:")
@@ -2803,7 +2715,6 @@ refresh_profiles_tab = function()
 	UIDropDownMenu_SetText(profileDropdown, settings.currentProfile or "-- None --")
 	yOffset = yOffset - 35
 	
-	-- Buttons row
 	local hasCurrentProfile = settings.currentProfile and settings.currentProfile ~= ""
 	
 	local saveBtn = track(acquire_frame("Button", frame, "UIPanelButtonTemplate"))
@@ -2851,7 +2762,6 @@ refresh_profiles_tab = function()
 	deleteBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
 	yOffset = yOffset - 35
 	
-	-- Create New Profile
 	local createLabel = track(acquire_fontstring(frame, "OVERLAY", "GameFontNormal"))
 	createLabel:SetPoint("TOPLEFT", 5, yOffset)
 	createLabel:SetText("Create New:")
@@ -2877,6 +2787,7 @@ refresh_profiles_tab = function()
 			GCDI.rebuild_item_bars()
 			GCDI.rebuild_buff_bars()
 			GCDI.reposition_all()
+			refresh_resources_tab()
 			refresh_profiles_tab()
 		else
 			print("|cffff0000GCDIndicator:|r Enter a profile name!")
@@ -2950,7 +2861,6 @@ local function refresh_options_frame()
 	if not optionsFrame then return end
 	if not optionsFrame:IsShown() then return end
 	
-	-- Update settings reference
 	settings = GCDI.settings
 	
 	if currentTab == "gcd" then
@@ -2978,7 +2888,6 @@ GCDI.refresh_options_frame = refresh_options_frame
 -- ═══════════════════════════════════════════════════════════════════════════
 
 local function create_options_frame()
-	-- Update settings reference
 	settings = GCDI.settings
 	
 	if optionsFrame then
@@ -2987,7 +2896,6 @@ local function create_options_frame()
 		return
 	end
 	
-	-- Main frame
 	optionsFrame = CreateFrame("Frame", "GCDIndicatorOptions", UIParent, "BasicFrameTemplateWithInset")
 	optionsFrame:SetSize(670, 500)
 	optionsFrame:SetPoint("CENTER")
@@ -3033,12 +2941,6 @@ local function create_options_frame()
 	end
 	local settingsFrame = optionsFrame.settingsScrollChild
 
-	-- Settings tab used to place every widget at a hand-measured absolute Y
-	-- (-70, -150, -175, -220...) instead of the yOffset-accumulator pattern
-	-- every other tab uses, so gaps between blocks drifted (42px here, 17px
-	-- there) purely by feel, and the "Experimental" block was visibly bolted
-	-- onto the bottom without adjusting anything around it. Same accumulator
-	-- + section-header helper as the other tabs now.
 	local SETTINGS_BUTTON_HEIGHT = 28
 	local SETTINGS_BUTTON_GAP = 10
 	local SETTINGS_BLOCK_GAP = 20
@@ -3066,7 +2968,6 @@ local function create_options_frame()
 	sYOffset = add_section_header(settingsFrame, sYOffset, "Frame Position",
 		"Use these buttons to move or reset the GCD indicator bars.", 500, false)
 
-	-- Move Frame Button
 	create_settings_button(settingsFrame, sYOffset, 150, "Move Frame", "Move Frame", {
 		{ "Click to enable move mode.", 1, 1, 1 },
 		{ "Drag the frame to reposition it.", 0.7, 0.7, 0.7 },
@@ -3079,7 +2980,6 @@ local function create_options_frame()
 	end)
 	sYOffset = sYOffset - (SETTINGS_BUTTON_HEIGHT + SETTINGS_BUTTON_GAP)
 
-	-- Reset Position Button
 	create_settings_button(settingsFrame, sYOffset, 150, "Reset Position", "Reset Position", {
 		{ "Reset the frame to the default center position.", 1, 1, 1 },
 	}, function()
@@ -3090,7 +2990,6 @@ local function create_options_frame()
 	end)
 	sYOffset = sYOffset - (SETTINGS_BUTTON_HEIGHT + SETTINGS_BLOCK_GAP)
 
-	-- Minimap Button Toggle
 	sYOffset = add_section_header(settingsFrame, sYOffset, "Minimap Button", nil, 500)
 
 	create_settings_button(settingsFrame, sYOffset, 150, "Toggle Minimap Icon", "Toggle Minimap Icon", {
@@ -3104,7 +3003,6 @@ local function create_options_frame()
 	end)
 	sYOffset = sYOffset - (SETTINGS_BUTTON_HEIGHT + SETTINGS_BLOCK_GAP)
 
-	-- Preview Mode Section
 	sYOffset = add_section_header(settingsFrame, sYOffset, "Preview Mode",
 		"Show all bars filled with visible colors for positioning.", 500)
 
@@ -3118,10 +3016,8 @@ local function create_options_frame()
 	end)
 	sYOffset = sYOffset - (SETTINGS_BUTTON_HEIGHT + SETTINGS_BLOCK_GAP)
 
-	-- Layout & Export section
 	sYOffset = add_section_header(settingsFrame, sYOffset, "Layout & Export", nil, 500)
 
-	-- Compact Mode (flow-packed spell/item/buff layout, see CHANGE-TRACKER.md)
 	local compactModeCheckbox = CreateFrame("CheckButton", nil, settingsFrame, "UICheckButtonTemplate")
 	compactModeCheckbox:SetSize(24, 24)
 	compactModeCheckbox:SetPoint("TOPLEFT", 0, sYOffset)
@@ -3153,9 +3049,6 @@ local function create_options_frame()
 	compactModeHelp:SetTextColor(0.55, 0.55, 0.55)
 	sYOffset = sYOffset - (SETTINGS_BUTTON_HEIGHT + 24 + SETTINGS_BLOCK_GAP)
 
-	-- Export bar positions (diagnostic: cross-check against what the
-	-- companion script computes for the same spell/item/buff list, see
-	-- export_bar_positions() in GCDIndicator.lua)
 	local exportBarsBtn = create_settings_button(settingsFrame, sYOffset, 180, "Export Bar Positions", "Export Bar Positions", {
 		{ "Dumps every visible bar's position/size for cross-checking against your companion script.", 1, 1, 1 },
 	}, function()
@@ -3184,9 +3077,8 @@ local function create_options_frame()
 	-- tab's widgets are built once here (not pooled/rebuilt per refresh like
 	-- the other tabs), so without this, flipping configs.compactMode via slash
 	-- command while the panel is open left the checkbox visually stale until
-	-- the panel was closed and reopened (see CHANGE-TRACKER.md) -
-	-- switch_tab/refresh_options_frame now call this like every other tab's
-	-- refresh function.
+	-- the panel was closed and reopened - switch_tab/refresh_options_frame
+	-- now call this like every other tab's refresh function.
 	refresh_settings_tab = function()
 		if optionsFrame.compactModeCheckbox then
 			optionsFrame.compactModeCheckbox:SetChecked(configs.compactMode == true)
@@ -3200,7 +3092,6 @@ local function create_options_frame()
 	profilesFrame:Hide()
 	optionsFrame.profilesFrame = profilesFrame
 	
-	-- BOTTOM BUTTONS
 	local closeBtn = CreateFrame("Button", nil, optionsFrame, "UIPanelButtonTemplate")
 	closeBtn:SetSize(80, 22)
 	closeBtn:SetPoint("BOTTOMRIGHT", -10, 10)
@@ -3213,5 +3104,4 @@ local function create_options_frame()
 	optionsFrame:Show()
 end
 
--- Export create function
 GCDI.create_options_frame = create_options_frame

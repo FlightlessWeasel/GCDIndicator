@@ -1,16 +1,7 @@
--- ═══════════════════════════════════════════════════════════════════════════
--- LibGCDI-Profiles - Profile Management for GCDIndicator
--- ═══════════════════════════════════════════════════════════════════════════
-
 local MAJOR, MINOR = "LibGCDI-Profiles", 1
 local lib = LibStub:NewLibrary(MAJOR, MINOR)
 if not lib then return end
 
--- ═══════════════════════════════════════════════════════════════════════════
--- UTILITY FUNCTIONS
--- ═══════════════════════════════════════════════════════════════════════════
-
--- Deep copy a table, skipping frames and functions
 local function deepcopy(orig, seen)
 	if type(orig) ~= 'table' then
 		return orig
@@ -27,11 +18,9 @@ local function deepcopy(orig, seen)
 	for k, v in pairs(orig) do
 		local vtype = type(v)
 		if vtype == 'function' then
-			-- skip functions
 		elseif vtype == 'table' and type(v.GetObjectType) == 'function' then
 			-- skip WoW frame objects
 		elseif vtype == 'userdata' then
-			-- skip userdata
 		else
 			copy[k] = deepcopy(v, seen)
 		end
@@ -55,11 +44,6 @@ local function spell_settings_for_save(ss)
 end
 lib.SpellSettingsForSave = spell_settings_for_save
 
--- ═══════════════════════════════════════════════════════════════════════════
--- SERIALIZATION
--- ═══════════════════════════════════════════════════════════════════════════
-
--- Compact serialization for export (one line, minimal whitespace)
 local function serialize_compact(tbl)
 	local parts = {}
 	for k, v in pairs(tbl) do
@@ -83,13 +67,11 @@ end
 
 lib.serialize = serialize_compact
 
--- Deserialize compact format back to a table
 local function deserialize_compact(str)
 	if type(str) ~= "string" then
 		return nil, "Invalid data"
 	end
 
-	-- Imports are user-provided, so bound parsing work as well as the accepted grammar.
 	local MAX_INPUT_LENGTH = 1024 * 1024
 	local MAX_DEPTH = 64
 	local MAX_ENTRIES = 10000
@@ -173,7 +155,7 @@ local function deserialize_compact(str)
 	end
 
 	local function parse_string()
-		pos = pos + 1 -- opening quote
+		pos = pos + 1
 		local parts = {}
 		while pos <= length do
 			local c = str:sub(pos, pos)
@@ -229,7 +211,7 @@ local function deserialize_compact(str)
 		if depth > MAX_DEPTH then
 			return fail("nesting limit exceeded")
 		end
-		pos = pos + 1 -- opening brace
+		pos = pos + 1
 		local result = {}
 		skip_whitespace()
 		if str:sub(pos, pos) == "}" then
@@ -331,15 +313,6 @@ end
 
 lib.deserialize = deserialize_compact
 
--- ═══════════════════════════════════════════════════════════════════════════
--- PROFILE MANAGEMENT
--- ═══════════════════════════════════════════════════════════════════════════
-
--- Save a profile
--- @param settings: The settings table to save to
--- @param name: Profile name
--- @param catalogs: Table containing {spellCatalog, itemCatalog, buffCatalog}
--- @return boolean: Success
 function lib:SaveProfile(settings, name, catalogs)
 	if not settings or not name or name == "" then return false end
 	
@@ -356,8 +329,7 @@ function lib:SaveProfile(settings, name, catalogs)
 		resourceSettings = deepcopy(settings.resourceSettings or {}),
 		gcdSettings = deepcopy(settings.gcdSettings or {}),
 	}
-	
-	-- Save catalogs if provided
+
 	if catalogs then
 		if catalogs.spellCatalog then
 			settings.profiles[name].spellCatalog = deepcopy(catalogs.spellCatalog)
@@ -374,11 +346,6 @@ function lib:SaveProfile(settings, name, catalogs)
 	return true
 end
 
--- Load a profile
--- @param settings: The settings table to load into
--- @param name: Profile name
--- @param catalogs: Table to load catalogs into (optional)
--- @return boolean: Success
 function lib:LoadProfile(settings, name, catalogs)
 	if not settings or not name then return false end
 	if not settings.profiles or not settings.profiles[name] then
@@ -414,8 +381,7 @@ function lib:LoadProfile(settings, name, catalogs)
 	settings.resourceSettings = deepcopy(profile.resourceSettings or {})
 	settings.gcdSettings = deepcopy(profile.gcdSettings or {})
 	settings.currentProfile = name
-	
-	-- Load catalogs if container provided
+
 	if catalogs then
 		if profile.spellCatalog then
 			for k in pairs(catalogs.spellCatalog or {}) do
@@ -446,10 +412,6 @@ function lib:LoadProfile(settings, name, catalogs)
 	return true
 end
 
--- Delete a profile
--- @param settings: The settings table
--- @param name: Profile name to delete
--- @return boolean: Success
 function lib:DeleteProfile(settings, name)
 	if not settings or not name then return false end
 	if not settings.profiles or not settings.profiles[name] then return false end
@@ -461,17 +423,75 @@ function lib:DeleteProfile(settings, name)
 	return true
 end
 
--- Auto-save to current profile
--- @param settings: The settings table
--- @param catalogs: Table containing {spellCatalog, itemCatalog, buffCatalog}
 function lib:AutoSave(settings, catalogs)
 	if not settings or not settings.currentProfile then return end
 	self:SaveProfile(settings, settings.currentProfile, catalogs)
 end
 
--- Get list of profile names
--- @param settings: The settings table
--- @return table: Sorted list of profile names
+-- key -> classFileName tokens (UnitClass("player")'s 2nd return) that can use
+-- this resource across all of that class's specs/forms; a key absent from
+-- this table (health) applies to every class. Mirrors LibGCDI-Options's
+-- RESOURCE_NAMES.classTokens, which drives the Resources tab checkbox rows.
+local RESOURCE_CLASS_TOKENS = {
+	mana = { "MAGE", "PRIEST", "WARLOCK", "PALADIN", "DRUID", "SHAMAN", "MONK", "EVOKER" },
+	rage = { "WARRIOR", "DRUID" },
+	energy = { "ROGUE", "DRUID", "MONK" },
+	focus = { "HUNTER" },
+	runicPower = { "DEATHKNIGHT" },
+	runes = { "DEATHKNIGHT" },
+	comboPoints = { "ROGUE", "DRUID" },
+	soulShards = { "WARLOCK" },
+	holyPower = { "PALADIN" },
+	chi = { "MONK" },
+	arcaneCharges = { "MAGE" },
+	insanity = { "PRIEST" },
+	maelstrom = { "SHAMAN" },
+	fury = { "DEMONHUNTER" },
+	pain = { "DEMONHUNTER" },
+	astralPower = { "DRUID" },
+	essence = { "EVOKER" },
+	stagger = { "MONK" },
+}
+lib.RESOURCE_CLASS_TOKENS = RESOURCE_CLASS_TOKENS
+
+local function resource_applies_to_class(key, classToken)
+	local tokens = RESOURCE_CLASS_TOKENS[key]
+	if not tokens then return true end
+	for _, token in ipairs(tokens) do
+		if token == classToken then return true end
+	end
+	return false
+end
+lib.ResourceAppliesToClass = resource_applies_to_class
+
+-- Fresh resourceSettings table for `classToken`: enabled for health and every
+-- resource that class can use, disabled for everything else. Stagger always
+-- starts disabled even for Monks, matching the pre-existing standalone default.
+function lib:GetClassResourceDefaults(classToken)
+	local defaults = { health = true, stagger = false }
+	for key in pairs(RESOURCE_CLASS_TOKENS) do
+		if key ~= "stagger" then
+			defaults[key] = resource_applies_to_class(key, classToken)
+		end
+	end
+	return defaults
+end
+
+-- Disables any resourceSettings entry `classToken` can't use (e.g. leftover
+-- Mana=true after switching to a Rogue). Returns true if it changed anything,
+-- so callers can prompt the user to resave the profile with the fix applied.
+function lib:EnforceClassResources(settings, classToken)
+	if not settings or not settings.resourceSettings then return false end
+	local changed = false
+	for key, enabled in pairs(settings.resourceSettings) do
+		if enabled and not resource_applies_to_class(key, classToken) then
+			settings.resourceSettings[key] = false
+			changed = true
+		end
+	end
+	return changed
+end
+
 function lib:GetProfileNames(settings)
 	local names = {}
 	if settings and settings.profiles then
@@ -483,9 +503,6 @@ function lib:GetProfileNames(settings)
 	return names
 end
 
--- Export settings to string
--- @param settings: Settings to export
--- @return string: Serialized settings string, or nil on error
 function lib:ExportSettings(settings)
 	local exportData = {
 		v = 1,
@@ -508,9 +525,6 @@ function lib:ExportSettings(settings)
 	return nil
 end
 
--- Import settings from string
--- @param str: Serialized settings string
--- @return table: Deserialized settings, or nil and error message
 function lib:ImportSettings(str)
 	return deserialize_compact(str)
 end

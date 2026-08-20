@@ -14,7 +14,7 @@ Flag such changes to the user and check `../AHK/CLAUDE.md`'s mapping table.
 
 **Never mention AHK inside `GCDIndicator.lua` or `LibGCDI-Options.lua`** —
 no code comments, no user-visible text (chat, tooltips, labels). Call it
-"the companion script." This file and `CHANGE-TRACKER.md` may name AHK freely.
+"the companion script." This file may name AHK freely.
 
 ## Critical constraints
 
@@ -29,7 +29,6 @@ no code comments, no user-visible text (chat, tooltips, labels). Call it
   see `docs/librangecheck-trim.md`) — normal editing rules apply. `.toc`
   load order: LibStub-family → first-party `Lib*` → `GCDIndicator.lua` →
   Options UI.
-- **Check `CHANGE-TRACKER.md`** before touching anything it references.
 - **Real-time over caching.** Combat-visible data (buffs, stacks, GCD,
   resources) must stay near-real-time. Don't trade display latency for perf
   (ticker rate, cross-frame caching, batching) without confirming with the user.
@@ -66,7 +65,7 @@ no code comments, no user-visible text (chat, tooltips, labels). Call it
   auto-loads into every session) for any structural refactor/new subsystem/
   non-obvious pattern (what/why/how + API contracts), and add a one-line
   pointer to it from the relevant section here. In addition to
-  `CHANGE-TRACKER.md` and `MISTAKES.md`.
+  `MISTAKES.md`.
 
 ## Verification tooling
 
@@ -89,6 +88,9 @@ no code comments, no user-visible text (chat, tooltips, labels). Call it
   `GCDIndicator.lua` (`debugMode`, `compactMode`). Not persisted unless
   explicitly wired to SavedVariables.
 - `settings.*` — profile-based, persisted via `LibGCDI-Profiles`, per spec/character.
+- `settings.resourceSettings[key]` must never default to enabled for a
+  resource the player's class can't use, and load/save paths must re-enforce
+  that — see `docs/resource-class-defaults.md`.
 
 ## Conventions
 
@@ -97,11 +99,20 @@ no code comments, no user-visible text (chat, tooltips, labels). Call it
   `|cff00ff00GCDIndicator:|r `. Add a matching Settings-tab control in
   `LibGCDI-Options.lua` for anything a user should toggle without a command.
 - New experimental features: gate behind a `GCDI.configs` flag (see
-  `compactMode`), wire both a slash command and Settings checkbox, add a
-  `CHANGE-TRACKER.md` entry with revert steps.
+  `compactMode`), wire both a slash command and Settings checkbox.
+- Code should read clearly without comments — prefer clear naming and
+  structure over explanatory comments. A comment earns its place only if the
+  code it sits on is complex/non-obvious enough that a reader could not
+  otherwise tell what it does (e.g. a hidden constraint like WoW taint rules
+  that forces an odd control-flow shape). Never add a comment to justify
+  *why* a design decision was made (rationale, alternatives considered,
+  history) if the code reads the same without it — drop those. Don't bloat
+  code or add excess whitespace to avoid a needed comment: if a concise
+  comment is shorter than the bloat/whitespace needed to avoid it, add the
+  comment, kept terse.
 - Spells/Items/Buffs tab row reordering uses drag-and-drop
   (`add_row_drag_handle`), not per-row buttons — read `docs/options-drag-reorder.md`
   before touching row layout there or extending drag-and-drop to another tab.
-- Log mistakes in `MISTAKES.md` (repo root): **What happened** / **Root
-  cause** / **Prevention**, whenever a change turns out wrong. Create the
-  file on first use.
+- Log mistakes in `MISTAKES.md` (repo root) whenever a change turns out
+  wrong: what broke, root cause, fix — a few tight sentences each, not
+  headers/prose. Create the file on first use.
