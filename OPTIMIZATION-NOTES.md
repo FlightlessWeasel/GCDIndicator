@@ -1,15 +1,19 @@
 # GCDIndicator optimization pass — session notes
 
-**Date:** 2026-08-11
-**Branch:** `12.1-optimized` (branched off `12.1-Start`)
-**HEAD:** `c8564ce` — "Cut per-frame work: phase the update ticker, cache range lookups"
-**Uncommitted:** `Libs/LibGCDI-Options/LibGCDI-Options.lua` (widget pooling — see "Where I stopped")
+**Date:** 2026-08-11 (session), merged 2026-08-15 via PR #6 (`12.1-optimized` → `main`)
+**Branch:** was `12.1-optimized` (branched off `12.1-Start`); fully merged, branch retired.
+**Status:** both the ticker restructure (`c8564ce`) and the options UI widget pooling
+(`2c0498b`, formerly "Uncommitted" below) are on `main`. The ticker has been running in-game
+since the merge — later fixes (e.g. "Fix CDM buff-stack crash in combat", `00fd6af`) touch
+systems it drives, confirming it's been exercised live. No specific in-game confirmation was
+recorded for the options-panel widget-pooling checklist further down; treat that section's
+"still needs testing" items as open until someone actually runs through them.
 
-> ⚠️ **Nothing here has been tested in-game.** No WoW client and no Lua interpreter were
-> available. Verification was limited to (a) `luaparse` syntax checks and (b) differential
-> scope analysis — parsing git-HEAD and working-tree versions and diffing the set of
-> unresolved globals to prove no new globals appeared and none were dropped. That catches
-> typos and missing locals. It does **not** catch runtime/API/visual regressions.
+> This pass was originally verified without a WoW client or Lua interpreter — via (a)
+> `luaparse` syntax checks and (b) differential scope analysis (diffing unresolved globals
+> between git-HEAD and working-tree versions to prove none were added or dropped). That
+> catches typos and missing locals, not runtime/API/visual regressions. The notes below are
+> left as written at the time; see the status line above for what's since been confirmed.
 
 ---
 
@@ -139,9 +143,10 @@ gcdi_invalidate_charge_spell_list()
 
 ---
 
-## Uncommitted: options UI widget pooling
+## Options UI widget pooling (committed `2c0498b`, merged via PR #6)
 
-`Libs/LibGCDI-Options/LibGCDI-Options.lua` — **written, syntax-checked, not committed.**
+`Libs/LibGCDI-Options/LibGCDI-Options.lua` — written, syntax-checked, committed and merged to
+`main`. In-game confirmation of the checklist below hasn't been recorded since.
 
 **The bug it fixes:** WoW never garbage-collects Frames/FontStrings/Textures. `SetParent(nil)`
 only orphans them. Every tab refresh built a fresh widget tree and dropped the old one, so
@@ -228,7 +233,7 @@ Verified: `luaparse` syntax OK, scope diff vs `HEAD` clean (no new/dropped unres
 `_G.GameFontNormal`/`_G.GameFontHighlight` used explicitly, matching the file's existing
 `_G.GCDI` convention, so they don't register as bare globals).
 
-**Still not tested in-game — this is now the top priority.** Priority order:
+**Still no recorded in-game confirmation for this checklist.** Priority order:
 - Open options, switch every tab several times, rescan, load a profile — watch for
   greyed-out buttons, wrong fonts, cropped textures, stuck grey text.
 - Toggle preview mode on and off; confirm nothing stays preview-colored.

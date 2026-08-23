@@ -1,6 +1,6 @@
 # GCDIndicator
 
-A comprehensive pixel-based status indicator addon for World of Warcraft
+A pixel-based status indicator addon for World of Warcraft
 
 ## Status Bar Indicators
 
