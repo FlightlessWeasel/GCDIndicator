@@ -847,6 +847,7 @@ local function refresh_gcd_tab()
 
 	local globalDropdown = track(create_range_dropdown(frame, RANGE_DROPDOWN_WIDTH, settings.globalRangeFallbackYards or 5, function(yards)
 		settings.globalRangeFallbackYards = yards
+		GCDI.auto_save_to_profile()
 		GCDI.UpdateRangeIndicators()
 	end))
 	globalDropdown:SetPoint("TOPLEFT", frame, "TOPLEFT", RANGE_DROPDOWN_LEFT, yOffset - 2)
@@ -905,6 +906,7 @@ local function refresh_gcd_tab()
 							settings.rangeProxySpells[y] = opt.value
 							currentProxy = opt.value
 							UIDropDownMenu_SetText(dropdown, opt.name)
+							GCDI.auto_save_to_profile()
 							GCDI.UpdateRangeIndicators()
 							if GCDI.refresh_options_frame then GCDI.refresh_options_frame() end
 						end
