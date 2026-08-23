@@ -3189,6 +3189,20 @@ local function create_options_frame()
 	end)
 	dYOffset = dYOffset - (SETTINGS_BUTTON_HEIGHT + SETTINGS_BLOCK_GAP)
 
+	dYOffset = add_section_header(developerFrame, dYOffset, "Companion Script",
+		"Shows a marker the companion script can scan the screen for to detect this frame's position automatically.", 500)
+
+	local calibrateBtn = create_settings_button(developerFrame, dYOffset, 180, "Calibrate Position", "Calibrate Position", {
+		{ "Shows a small color marker above the bars.", 1, 1, 1 },
+		{ "Run \"Detect Position\" in the companion script's Launcher while it's visible.", 0.7, 0.7, 0.7 },
+		{ "Click again to hide it.", 0.7, 0.7, 0.7 },
+	}, function()
+		if GCDI.toggle_calibration_mode then
+			GCDI.toggle_calibration_mode()
+		end
+	end)
+	dYOffset = dYOffset - (SETTINGS_BUTTON_HEIGHT + SETTINGS_BLOCK_GAP)
+
 	developerFrame:SetHeight(math.abs(dYOffset) + 20)
 
 	refresh_developer_tab = function()

@@ -295,7 +295,7 @@ save_profile = function(name)
 	}
 	local success = LibProfiles:SaveProfile(settings, name, catalogs)
 	if success then
-		print("GCDI_PREFIXProfile '" .. name .. "' saved!")
+		print(GCDI_PREFIX .. "Profile '" .. name .. "' saved!")
 	end
 	return success
 end
@@ -324,7 +324,7 @@ function GCDI.load_profile(name)
 		rebuild_buff_bars()
 		reposition_all()
 		if GCDI.refresh_options_frame then GCDI.refresh_options_frame() end
-		print("GCDI_PREFIXProfile '" .. name .. "' loaded!")
+		print(GCDI_PREFIX .. "Profile '" .. name .. "' loaded!")
 	end
 	return success
 end
@@ -332,7 +332,7 @@ end
 delete_profile = function(name)
 	local success = LibProfiles:DeleteProfile(settings, name)
 	if success then
-		print("GCDI_PREFIXProfile '" .. name .. "' deleted!")
+		print(GCDI_PREFIX .. "Profile '" .. name .. "' deleted!")
 	end
 	return success
 end
@@ -373,7 +373,7 @@ local function init_catalog_managers()
 		isEnabled = GCDI.is_spell_enabled,
 		onReorder = function() 
 			rebuild_spell_bars()
-			print("GCDI_PREFIXSpell bars rebuilt")
+			print(GCDI_PREFIX .. "Spell bars rebuilt")
 		end,
 	})
 	
@@ -387,7 +387,7 @@ local function init_catalog_managers()
 		onReorder = function() 
 			rebuild_item_bars()
 			reposition_all()
-			print("GCDI_PREFIXItem bars rebuilt")
+			print(GCDI_PREFIX .. "Item bars rebuilt")
 		end,
 	})
 	
@@ -401,7 +401,7 @@ local function init_catalog_managers()
 		onReorder = function() 
 			rebuild_buff_bars()
 			reposition_all()
-			print("GCDI_PREFIXBuff bars rebuilt")
+			print(GCDI_PREFIX .. "Buff bars rebuilt")
 		end,
 	})
 end
@@ -3794,7 +3794,7 @@ local function init()
 				scan_cdm_buff_frames()
 			end)
 			
-			print("GCDI_PREFIXProfile '" .. settings.currentProfile .. "' loaded")
+			print(GCDI_PREFIX .. "Profile '" .. settings.currentProfile .. "' loaded")
 		end)
 	end
 	
@@ -4038,7 +4038,7 @@ function GCDI.toggle_preview_mode()
 			main_frame.stanceIndicator:SetColorTexture(0.5, 0.3, 0, 1)  -- Bear form color
 		end
 
-		print("GCDI_PREFIXPreview mode |cff00ff00ON|r - All bars filled")
+		print(GCDI_PREFIX .. "Preview mode |cff00ff00ON|r - All bars filled")
 		if configs.debugMode and resourceBars.health and resourceBars.health.healAbsorbBar then
 			print("|cff888888GCDIndicator:|r Debug: health 60/100 + heal absorb 25 (plain numbers for layout; real secrets only come from combat APIs)|r")
 		end
@@ -4104,7 +4104,120 @@ function GCDI.toggle_preview_mode()
 		-- Reposition to restore proper layout based on settings
 		reposition_all()
 		
-		print("GCDI_PREFIXPreview mode |cffff0000OFF|r - Normal display restored")
+		print(GCDI_PREFIX .. "Preview mode |cffff0000OFF|r - Normal display restored")
+	end
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- CALIBRATION MODE
+-- Shows a small marker the companion script scans the screen for, so it can
+-- derive main_frame.anchor's on-screen position on its own instead of a
+-- human hand-tuning matching constants in both repos. The marker is four
+-- solid swatches placed edge-to-edge to the right of the global bar, same
+-- row (never overlapping real indicators), plus a black backing a few
+-- pixels larger so the scan can confirm a black border before trusting the
+-- match. Deliberately same-row, not above/below: the default anchor sits
+-- close enough to the top of the screen that an above/below offset can push
+-- the marker off screen depending on where the user has docked the frame,
+-- but there's essentially always room to the right.
+--
+-- The first three swatches are fixed, mutually-distant primaries the
+-- companion script measures the on-screen *width* of (not just probes at an
+-- assumed pixel offset) - that width doubles as a live UI-scale reading, so
+-- detection stays correct at any WoW UI Scale setting instead of assuming
+-- one. The fourth swatch encodes configs.compactMode (white vs. mid-gray),
+-- so calibration can't silently record the wrong bar layout for whatever
+-- mode the addon happened to be in. See CALIBRATION_COLORS/
+-- CALIBRATION_MODE_COLORS/_OFFSET_X below - the companion script mirrors
+-- these, keep both sides in sync.
+-- ═══════════════════════════════════════════════════════════════════════════
+
+local calibrationMode = false
+local calibrationBackground = nil
+local calibrationSwatches = nil
+
+-- Colors the companion script looks for, left to right. Pure, maximally
+-- distinct primaries; safe against false positives because the match
+-- requires all three in exact adjacency plus the black border, not a single
+-- color hit anywhere on screen.
+GCDI.CALIBRATION_COLORS = {
+	{ 1, 0, 0 },
+	{ 0, 1, 0 },
+	{ 0, 0, 1 },
+}
+
+-- Fourth marker swatch: reflects configs.compactMode at the moment
+-- calibration mode is switched on. White/gray chosen for a wide brightness
+-- gap so the companion script's tolerance-based match can't confuse them.
+GCDI.CALIBRATION_MODE_COLORS = {
+	compact = { 1, 1, 1 },
+	normal = { 0.5, 0.5, 0.5 },
+}
+
+-- Unscaled UI-pixel distance from the anchor's left edge to the marker's
+-- left edge - comfortably clears the global bar's 7 status-indicator boxes
+-- (~86px at current size/spacing) with room for a few more before the two
+-- would need to be re-tuned together. The companion script mirrors this
+-- value; keep both in sync.
+local CALIBRATION_OFFSET_X = 140
+local CALIBRATION_BORDER = 3
+
+function GCDI.toggle_calibration_mode()
+	calibrationMode = not calibrationMode
+
+	if calibrationMode then
+		local swatchSize = configs.size
+		local modeColor = configs.compactMode and GCDI.CALIBRATION_MODE_COLORS.compact or GCDI.CALIBRATION_MODE_COLORS.normal
+
+		if not calibrationSwatches then
+			calibrationBackground = main_frame:CreateTexture(nil, "BACKGROUND", nil, -8)
+			calibrationBackground:SetColorTexture(0, 0, 0, 1)
+
+			calibrationSwatches = {}
+			local prevAnchor
+			for i, color in ipairs(GCDI.CALIBRATION_COLORS) do
+				local swatch = main_frame:CreateTexture(nil, "ARTWORK")
+				swatch:SetSize(swatchSize, swatchSize)
+				if prevAnchor then
+					swatch:SetPoint("LEFT", prevAnchor, "RIGHT", 0, 0)
+				else
+					swatch:SetPoint("TOPLEFT", main_frame.anchor, "TOPLEFT", CALIBRATION_OFFSET_X, 0)
+				end
+				swatch:SetColorTexture(color[1], color[2], color[3], 1)
+				calibrationSwatches[i] = swatch
+				prevAnchor = swatch
+			end
+
+			local modeSwatch = main_frame:CreateTexture(nil, "ARTWORK")
+			modeSwatch:SetSize(swatchSize, swatchSize)
+			modeSwatch:SetPoint("LEFT", prevAnchor, "RIGHT", 0, 0)
+			calibrationSwatches[#calibrationSwatches + 1] = modeSwatch
+
+			calibrationBackground:SetPoint("TOPLEFT", calibrationSwatches[1], "TOPLEFT", -CALIBRATION_BORDER, CALIBRATION_BORDER)
+			calibrationBackground:SetPoint("BOTTOMRIGHT", calibrationSwatches[#calibrationSwatches], "BOTTOMRIGHT", CALIBRATION_BORDER, -CALIBRATION_BORDER)
+		end
+
+		-- The mode swatch's color must reflect the CURRENT compactMode every
+		-- time calibration mode is (re)shown, not just at first creation.
+		calibrationSwatches[#calibrationSwatches]:SetColorTexture(modeColor[1], modeColor[2], modeColor[3], 1)
+
+		calibrationBackground:Show()
+		for _, swatch in ipairs(calibrationSwatches) do
+			swatch:Show()
+		end
+
+		print(GCDI_PREFIX .. "Calibration mode |cff00ff00ON|r - run \"Detect Position\" in the companion script's Launcher")
+	else
+		if calibrationBackground then
+			calibrationBackground:Hide()
+		end
+		if calibrationSwatches then
+			for _, swatch in ipairs(calibrationSwatches) do
+				swatch:Hide()
+			end
+		end
+
+		print(GCDI_PREFIX .. "Calibration mode |cffff0000OFF|r")
 	end
 end
 
@@ -4115,7 +4228,7 @@ end
 -- ═══════════════════════════════════════════════════════════════════════════
 
 local function print_item_catalog()
-	print("GCDI_PREFIX--- Item Catalog ---")
+	print(GCDI_PREFIX .. "--- Item Catalog ---")
 	local count = 0
 	for key, data in pairs(GCDI.itemCatalog) do
 		count = count + 1
@@ -4127,7 +4240,7 @@ GCDI.print_item_catalog = print_item_catalog
 
 local function print_buff_status()
 	-- List tracked buffs and their status
-	print("GCDI_PREFIX--- Tracked Buffs Status ---")
+	print(GCDI_PREFIX .. "--- Tracked Buffs Status ---")
 	print("|cff888888Note: Buff spell IDs are secret. Get IDs from Wowhead or tooltip addons.|r")
 	local count = 0
 	for spellID, data in pairs(GCDI.buffCatalog) do
@@ -4146,7 +4259,7 @@ GCDI.print_buff_status = print_buff_status
 
 local function print_buff_settings_debug()
 	-- Debug: show what's saved in settings.buffSettings
-	print("GCDI_PREFIX--- Buff Settings Debug ---")
+	print(GCDI_PREFIX .. "--- Buff Settings Debug ---")
 	if settings and settings.buffSettings then
 		local count = 0
 		for key, val in pairs(settings.buffSettings) do
@@ -4158,7 +4271,7 @@ local function print_buff_settings_debug()
 	else
 		print("  settings.buffSettings is nil or empty")
 	end
-	print("GCDI_PREFIX--- Buff Catalog ---")
+	print(GCDI_PREFIX .. "--- Buff Catalog ---")
 	local catCount = 0
 	for spellID, data in pairs(GCDI.buffCatalog) do
 		catCount = catCount + 1
@@ -4175,18 +4288,18 @@ GCDI.print_buff_settings_debug = print_buff_settings_debug
 
 local function import_buffs_from_cdm()
 	-- Force import from CDM
-	print("GCDI_PREFIXImporting buffs from Cooldown Manager...")
+	print(GCDI_PREFIX .. "Importing buffs from Cooldown Manager...")
 	local newBuffs = scan_cdm_buff_frames()
 	rebuild_buff_bars()
 	local totalBuffs = 0
 	for _ in pairs(GCDI.buffCatalog) do totalBuffs = totalBuffs + 1 end
-	print("GCDI_PREFIXImported " .. newBuffs .. " new buffs (" .. totalBuffs .. " total)")
+	print(GCDI_PREFIX .. "Imported " .. newBuffs .. " new buffs (" .. totalBuffs .. " total)")
 end
 GCDI.import_buffs_from_cdm = import_buffs_from_cdm
 
 local function print_range_debug()
 	-- Debug range detection for all tracked spells
-	print("GCDI_PREFIX--- Range Detection Debug ---")
+	print(GCDI_PREFIX .. "--- Range Detection Debug ---")
 	local globalYards = settings.globalRangeFallbackYards or 5
 	print("|cff888888Global Range Fallback: " .. tostring(globalYards) .. " yd (" .. (LibRange.RANGE_ITEMS[globalYards] and LibRange.RANGE_ITEMS[globalYards].name or "Unknown") .. ")|r")
 	print("|cff888888Target: " .. (UnitExists("target") and UnitName("target") or "None") .. "|r")
@@ -4243,7 +4356,7 @@ GCDI.print_range_debug = print_range_debug
 
 local function test_range_indicators()
 	-- Force all range indicators to bright colors for visibility testing
-	print("GCDI_PREFIXTesting range indicator visibility...")
+	print(GCDI_PREFIX .. "Testing range indicator visibility...")
 	local count = 0
 	for spellID, data in pairs(trackedSpells) do
 		if data.rangeOverlay then
@@ -4267,14 +4380,14 @@ local function test_range_indicators()
 			print("  Spell " .. spellID .. ": |cffff0000NO RANGE OVERLAY|r (self-cast or not created)")
 		end
 	end
-	print("GCDI_PREFIXSet " .. count .. " range overlays to bright colors")
+	print(GCDI_PREFIX .. "Set " .. count .. " range overlays to bright colors")
 	print("|cffffcc00Note: Colors will reset on next target change or update tick|r")
 end
 GCDI.test_range_indicators = test_range_indicators
 
 local function scan_cooldown_manager()
 	-- Scan Blizzard's Cooldown Manager for buff frames
-	print("GCDI_PREFIX--- Scanning Cooldown Manager ---")
+	print(GCDI_PREFIX .. "--- Scanning Cooldown Manager ---")
 	local viewer = _G["BuffIconCooldownViewer"]
 	if not viewer then
 		print("|cffff0000BuffIconCooldownViewer not found!|r")
@@ -4353,11 +4466,11 @@ SlashCmdList["GCDOPT"] = function(msg)
 	elseif msg == "debug" then
 		configs.debugMode = not configs.debugMode
 		settings.debugMode = configs.debugMode  -- persist (SavedVariablesPerCharacter)
-		print("GCDI_PREFIXDebug mode " .. (configs.debugMode and "ON" or "OFF"))
+		print(GCDI_PREFIX .. "Debug mode " .. (configs.debugMode and "ON" or "OFF"))
 	elseif msg == "compact" then
 		configs.compactMode = not configs.compactMode
 		settings.compactMode = configs.compactMode  -- persist (SavedVariablesPerCharacter)
-		print("GCDI_PREFIXCompact mode " .. (configs.compactMode and "ON" or "OFF"))
+		print(GCDI_PREFIX .. "Compact mode " .. (configs.compactMode and "ON" or "OFF"))
 		-- Box layout (icon square present/absent) is baked in at creation
 		-- time, not just position, so toggling needs a full rebuild.
 		rebuild_spell_bars()  -- also rebuilds item bars
@@ -4398,9 +4511,11 @@ SlashCmdList["GCDOPT"] = function(msg)
 		-- Toggle minimap button visibility
 		GCDI.ToggleMinimapButton()
 		local hidden = settings.minimap and settings.minimap.hide
-		print("GCDI_PREFIXMinimap button " .. (hidden and "hidden" or "shown"))
+		print(GCDI_PREFIX .. "Minimap button " .. (hidden and "hidden" or "shown"))
 	elseif msg == "testbuffs" or msg == "cdm" then
 		scan_cooldown_manager()
+	elseif msg == "calibrate" then
+		GCDI.toggle_calibration_mode()
 	else
 		if GCDI.create_options_frame then
 			GCDI.create_options_frame()
@@ -4411,7 +4526,7 @@ SlashCmdList["GCDOPT"] = function(msg)
 end
 
 C_Timer.After(2, function()
-	print("GCDI_PREFIXType |cffffcc00/gcdopt|r to open options, |cffffcc00/gcdi|r to move bars")
+	print(GCDI_PREFIX .. "Type |cffffcc00/gcdopt|r to open options, |cffffcc00/gcdi|r to move bars")
 end)
 
 C_Timer.After(0.5, init)
