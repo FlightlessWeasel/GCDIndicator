@@ -44,3 +44,4 @@ from a deliberate design decision with alternatives that were weighed.
 | [0005](0005-librangecheck-first-party-trim.md) | First-party trimmed fork of LibRangeCheck-3.0 | Accepted |
 | [0006](0006-options-drag-to-reorder.md) | Drag-to-reorder rows in the Options UI | Accepted |
 | [0007](0007-hand-rolled-test-harness.md) | Hand-rolled Lua 5.1 test harness instead of busted | Accepted |
+| [0008](0008-ultra-compact-mode.md) | Ultra-Compact Mode: machine-only minimum-footprint layout | Accepted |

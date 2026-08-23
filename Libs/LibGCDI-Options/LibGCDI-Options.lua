@@ -3061,6 +3061,38 @@ local function create_options_frame()
 	compactModeHelp:SetTextColor(0.55, 0.55, 0.55)
 	sYOffset = sYOffset - (SETTINGS_BUTTON_HEIGHT + 24 + SETTINGS_BLOCK_GAP)
 
+	local ultraCompactModeCheckbox = CreateFrame("CheckButton", nil, settingsFrame, "UICheckButtonTemplate")
+	ultraCompactModeCheckbox:SetSize(24, 24)
+	ultraCompactModeCheckbox:SetPoint("TOPLEFT", 0, sYOffset)
+	ultraCompactModeCheckbox:SetChecked(configs.ultraCompactMode == true)
+	optionsFrame.ultraCompactModeCheckbox = ultraCompactModeCheckbox
+	ultraCompactModeCheckbox:SetScript("OnClick", function(self)
+		configs.ultraCompactMode = self:GetChecked() and true or false
+		if settings then
+			settings.ultraCompactMode = configs.ultraCompactMode  -- persist (SavedVariablesPerCharacter)
+		end
+		print(GCDI_PREFIX .. "Ultra-Compact mode " .. (configs.ultraCompactMode and "ON" or "OFF"))
+		if GCDI.rebuild_spell_bars then
+			GCDI.rebuild_spell_bars()  -- also rebuilds item bars
+		end
+		if GCDI.rebuild_buff_bars then
+			GCDI.rebuild_buff_bars()
+		end
+		if GCDI.resize_status_row then
+			GCDI.resize_status_row()
+		end
+	end)
+	local ultraCompactModeLabel = settingsFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+	ultraCompactModeLabel:SetPoint("LEFT", ultraCompactModeCheckbox, "RIGHT", 5, 0)
+	ultraCompactModeLabel:SetText("Ultra-Compact mode (smallest possible size, not meant to be human-readable)")
+	local ultraCompactModeHelp = settingsFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+	ultraCompactModeHelp:SetPoint("TOPLEFT", ultraCompactModeLabel, "BOTTOMLEFT", 0, -4)
+	ultraCompactModeHelp:SetWidth(440)
+	ultraCompactModeHelp:SetJustifyH("LEFT")
+	ultraCompactModeHelp:SetText("Shrinks the status row and spell/item/buff boxes to their smallest footprint, purely so a companion script has less screen area to sample - not meant to be readable at a glance. Resource bars are unaffected. Also update your companion script's ultra-compact toggle to match, or pixel reads will desync.")
+	ultraCompactModeHelp:SetTextColor(0.55, 0.55, 0.55)
+	sYOffset = sYOffset - (SETTINGS_BUTTON_HEIGHT + 24 + SETTINGS_BLOCK_GAP)
+
 	local exportBarsBtn = create_settings_button(settingsFrame, sYOffset, 180, "Export Bar Positions", "Export Bar Positions", {
 		{ "Dumps every visible bar's position/size for cross-checking against your companion script.", 1, 1, 1 },
 	}, function()
@@ -3094,6 +3126,9 @@ local function create_options_frame()
 	refresh_settings_tab = function()
 		if optionsFrame.compactModeCheckbox then
 			optionsFrame.compactModeCheckbox:SetChecked(configs.compactMode == true)
+		end
+		if optionsFrame.ultraCompactModeCheckbox then
+			optionsFrame.ultraCompactModeCheckbox:SetChecked(configs.ultraCompactMode == true)
 		end
 	end
 

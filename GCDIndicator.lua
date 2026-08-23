@@ -13,6 +13,24 @@ GCDI.configs = {
 	bgPadding = 2,
 	debugMode = false,
 	compactMode = true,
+	-- Ultra-Compact Mode: machine-only minimum footprint for the companion
+	-- script's pixel sampling, not meant to be human-legible. Only applies
+	-- to the status row and spell/item/buff bars (never resource bars - see
+	-- GCDI.effective_bar_geometry). Unvalidated starting points - no live
+	-- WoW client here to confirm the smallest size that doesn't blend/
+	-- antialias at a given UI Scale; tune after in-game testing.
+	ultraCompactMode = false,
+	ultraStatusSize = 3,
+	ultraBarSize = 3,
+	ultraPad = 0,
+	ultraSpacing = 0,
+	ultraCompactGap = 1,
+	-- 200, not narrower: resource bars are always 200px wide and never shrink
+	-- (see above), so the companion script's capture region is already at
+	-- least 200px wide whenever a resource bar is shown. Wrapping this row
+	-- narrower doesn't save any capture width, it only adds rows (height)
+	-- for no area savings - the opposite of what Ultra-Compact Mode is for.
+	ultraCompactRowMaxWidth = 200,
 }
 local configs = GCDI.configs
 
@@ -758,6 +776,31 @@ local function update_all_charge_indicators()
 	update_charge_indicators_tick()
 end
 
+-- Ultra-Compact Mode only shrinks the status row and spell/item/buff bars,
+-- never resource bars - callers that must stay resource-bar-sized read
+-- configs.barHeight/bgPadding/barSpacing directly instead of calling this.
+-- Attached directly to GCDI (not a top-level `local function`) to avoid
+-- spending one of the main chunk's 200 local-variable slots - see the
+-- existing `function GCDI.foo()` helpers throughout this file for the same
+-- pattern; only genuinely hot per-tick functions get a forward-declared
+-- top-level local (reposition_all, rebuild_spell_bars, etc. near the top
+-- of the file).
+function GCDI.effective_bar_geometry()
+	if configs.ultraCompactMode then
+		return configs.ultraBarSize, configs.ultraPad, configs.ultraSpacing
+	end
+	return configs.barHeight, configs.bgPadding, configs.barSpacing
+end
+
+-- Same idea as GCDI.effective_bar_geometry, for the status row's box size
+-- (configs.size), which is a separate config field from barHeight.
+function GCDI.effective_status_geometry()
+	if configs.ultraCompactMode then
+		return configs.ultraStatusSize, configs.ultraPad
+	end
+	return configs.size, configs.bgPadding
+end
+
 local function create_bar_container(parent, texture, compact, barSize, pad)
 	local containerWidth = compact and barSize or (barSize * 4 + pad * 2)
 	local container = CreateFrame("Frame", nil, parent)
@@ -813,20 +856,19 @@ end
 
 local function create_spell_bar(spellID, spellName, texture, actionSlot)
 	local barIndex = #spellBars + 1
-	local barSize = configs.barHeight
-	local pad = configs.bgPadding
-	
+	local barSize, pad = GCDI.effective_bar_geometry()
+
 	local chargeInfo = gcdi_get_spell_charge_info(spellID, actionSlot)
 	local isChargeSpell = (chargeInfo ~= nil)
 	local maxCharges = gcdi_effective_max_charge_pips(spellID, chargeInfo)
-	
+
 	local showChargeIndicators = maxCharges > 1
-	
+
 	local trackIcon = should_track_spell_icon(spellID)
-	
+
 	local isSelfCast = is_spell_self_cast(spellID)
 
-	local compact = configs.compactMode
+	local compact = configs.compactMode or configs.ultraCompactMode
 
 	-- Calculate container width based on spell settings
 	-- Layout: [pad][icon?][2?][cooldown][2][range?][2][charge stack?][2][iconChange?][pad]
@@ -1009,12 +1051,11 @@ end
 
 local function create_item_bar(itemKey, itemName, texture, itemID, slot)
 	local barIndex = #itemBars + 1
-	local barSize = configs.barHeight
-	local pad = configs.bgPadding
-	
+	local barSize, pad = GCDI.effective_bar_geometry()
+
 	local showCharges = should_show_item_charges(itemKey)
 
-	local compact = configs.compactMode
+	local compact = configs.compactMode or configs.ultraCompactMode
 
 	local numSquares = 1 + (compact and 0 or 1) + (showCharges and 1 or 0)
 	local numGaps = ((compact and 0 or 1) + (showCharges and 1 or 0)) * 2
@@ -1550,16 +1591,15 @@ GCDI.setup_dispel_overlay = gcdi_setup_dispel_overlay
 
 local function create_buff_bar(buffKey, spellName, texture, tooltipSpellID)
 	local barIndex = #buffBars + 1
-	local barSize = configs.barHeight
-	local pad = configs.bgPadding
-	
+	local barSize, pad = GCDI.effective_bar_geometry()
+
 	local showStacks = GCDI.should_show_buff_stacks(buffKey)
 	-- Max segments + bar width: options only. Live stack count is never used to size the bar.
 	local maxStacks = GCDI.get_buff_max_stacks_display(buffKey)
 
 	local showDurationBar = GCDI.should_show_duration_bar(buffKey)
 
-	local compact = configs.compactMode
+	local compact = configs.compactMode or configs.ultraCompactMode
 
 	local stackWidth = showStacks and maxStacks > 0 and (maxStacks * barSize + (maxStacks - 1) * 2) or 0
 	local extraGap = showStacks and 2 or 0
@@ -2194,16 +2234,19 @@ local function update_mob_count_indicator()
 end
 
 reposition_all = function()
-	local barSize = configs.barHeight
+	-- Resource bars always use the base geometry - Ultra-Compact Mode never
+	-- shrinks them, only the status row and spell/item/buff bars below.
+	local resourceBarSize, resourcePad = configs.barHeight, configs.bgPadding
 	local spacing = configs.barSpacing
-	local pad = configs.bgPadding
-	
-	local resourceBarHeight = barSize + pad * 2
-	local gcdContainerHeight = configs.size + pad * 2
-	local spellBarHeight = barSize + pad * 2
-	
-	local resourceBarWidth = 200 + pad * 2
-	local columnWidth = math.floor(200 / 3) + pad * 2
+	local spellBarSize, spellPad = GCDI.effective_bar_geometry()
+	local statusSize, statusPad = GCDI.effective_status_geometry()
+
+	local resourceBarHeight = resourceBarSize + resourcePad * 2
+	local gcdContainerHeight = statusSize + statusPad * 2
+	local spellBarHeight = spellBarSize + spellPad * 2
+
+	local resourceBarWidth = 200 + resourcePad * 2
+	local columnWidth = math.floor(200 / 3) + spellPad * 2
 	local columnGap = 4
 	
 	local yOffset = 0
@@ -2298,9 +2341,9 @@ reposition_all = function()
 	local finalY
 	local maxWidth = resourceBarWidth
 
-	if configs.compactMode then
-		local compactGap = 2
-		local compactRowMaxWidth = 200
+	if configs.compactMode or configs.ultraCompactMode then
+		local compactGap = configs.ultraCompactMode and configs.ultraCompactGap or 2
+		local compactRowMaxWidth = configs.ultraCompactMode and configs.ultraCompactRowMaxWidth or 200
 
 		local allEntries = {}
 		for _, entry in ipairs(allSpellsAndItems) do
@@ -2434,8 +2477,8 @@ local function export_bar_positions()
 	local lines = {}
 	table.insert(lines, "GCDIndicator bar position export")
 	table.insert(lines, string.format(
-		"compactMode=%s size=%d barHeight=%d bgPadding=%d barSpacing=%d",
-		tostring(configs.compactMode), configs.size, configs.barHeight, configs.bgPadding, configs.barSpacing))
+		"compactMode=%s ultraCompactMode=%s size=%d barHeight=%d bgPadding=%d barSpacing=%d",
+		tostring(configs.compactMode), tostring(configs.ultraCompactMode), configs.size, configs.barHeight, configs.bgPadding, configs.barSpacing))
 	table.insert(lines, "kind\tname\tx\ty\tw\th")
 
 	local anchor = main_frame.anchor
@@ -3229,6 +3272,53 @@ end
 
 GCDI.rebuild_item_bars = rebuild_item_bars
 
+-- Status row (GCD/Combat/Aggro/Channeling/Dispel/AOE/stance) has a fixed
+-- structure - Ultra-Compact Mode never adds/removes a box, only shrinks
+-- them - so this resizes the existing frames in place rather than
+-- destroying and recreating them. That matters: the native dispel overlay
+-- (gcdi_setup_dispel_overlay) anchors itself to the exact main_frame.dispelbar
+-- frame object it saw at bind time and never re-anchors (no teardown/rebind
+-- path exists - see docs/dispel-indicator.md). Destroying and recreating
+-- dispelbar would silently orphan that overlay's anchor. Resizing the same
+-- object in place keeps SetAllPoints(sourceBar) valid across a mode toggle.
+function GCDI.resize_status_row()
+	local container = main_frame.gcdcontainer
+	if not container then return end
+
+	local statusSize, statusPad = GCDI.effective_status_geometry()
+	local sepSize = 2
+	local containerWidth = (statusSize * 7) + (sepSize * 6) + (statusPad * 2)
+	container:SetSize(containerWidth, statusSize + statusPad * 2)
+
+	if main_frame.stanceIndicator then
+		main_frame.stanceIndicator:SetSize(statusSize, statusSize)
+		main_frame.stanceIndicator:ClearAllPoints()
+		main_frame.stanceIndicator:SetPoint("LEFT", statusPad, 0)
+	end
+
+	if main_frame.gcdRowSeps then
+		for _, sep in ipairs(main_frame.gcdRowSeps) do
+			sep:SetSize(sepSize, statusSize)
+		end
+	end
+
+	if main_frame.gcdWhiteBg then
+		main_frame.gcdWhiteBg:SetSize(statusSize, statusSize)
+	end
+
+	if main_frame.gcdbar then
+		local gcdClip = main_frame.gcdbar:GetParent()
+		if gcdClip then gcdClip:SetSize(statusSize, statusSize) end
+		main_frame.gcdbar:SetSize(10000, statusSize)
+	end
+
+	for _, name in ipairs({ "combatbar", "aggrobar", "castingbar", "mobcountbar", "dispelbar" }) do
+		if main_frame[name] then
+			main_frame[name]:SetSize(statusSize, statusSize)
+		end
+	end
+end
+
 rebuild_spell_bars = function()
 	clear_spell_bars()
 	
@@ -3568,6 +3658,7 @@ local function init()
 	-- slash command and options checkbox write both configs.compactMode and
 	-- settings.compactMode so the choice survives reload/logout.
 	configs.compactMode = (settings.compactMode == true)
+	configs.ultraCompactMode = (settings.ultraCompactMode == true)
 	configs.debugMode = (settings.debugMode == true)
 
 	init_catalog_managers()
@@ -3584,48 +3675,52 @@ local function init()
 	anchor:SetPoint("TOPLEFT", UIParent, "TOPLEFT", 20, -5)
 	main_frame.anchor = anchor
 	
+	local statusSize, statusPad = GCDI.effective_status_geometry()
 	local sepSize = 2
-	local containerWidth = (configs.size * 7) + (sepSize * 6) + (pad * 2)
+	local containerWidth = (statusSize * 7) + (sepSize * 6) + (statusPad * 2)
 	local gcdCombatContainer = CreateFrame("Frame", nil, main_frame)
-	gcdCombatContainer:SetSize(containerWidth, configs.size + pad * 2)
+	gcdCombatContainer:SetSize(containerWidth, statusSize + statusPad * 2)
 	main_frame.gcdcontainer = gcdCombatContainer
-	
+
 	local gcdCombatBg = gcdCombatContainer:CreateTexture(nil, "BACKGROUND")
 	gcdCombatBg:SetAllPoints()
 	gcdCombatBg:SetColorTexture(0, 0, 0, 1)
-	
+
 	local stanceIndicator = gcdCombatContainer:CreateTexture(nil, "ARTWORK")
-	stanceIndicator:SetSize(configs.size, configs.size)
-	stanceIndicator:SetPoint("LEFT", pad, 0)
+	stanceIndicator:SetSize(statusSize, statusSize)
+	stanceIndicator:SetPoint("LEFT", statusPad, 0)
 	stanceIndicator:SetColorTexture(0.5, 0.5, 0.5, 1)
 	main_frame.stanceIndicator = stanceIndicator
-	
+
 	local sep1 = gcdCombatContainer:CreateTexture(nil, "ARTWORK")
-	sep1:SetSize(sepSize, configs.size)
+	sep1:SetSize(sepSize, statusSize)
 	sep1:SetPoint("LEFT", stanceIndicator, "RIGHT", 0, 0)
 	sep1:SetColorTexture(0, 0, 0, 1)
-	
-	-- White background for GCD (outside clip, ensures visibility)
+
+	-- White background for GCD (outside clip, ensures visibility). Kept on
+	-- main_frame (unlike the other separators below) so resize_status_row
+	-- can restyle it when Ultra-Compact Mode toggles.
 	local gcdWhiteBg = gcdCombatContainer:CreateTexture(nil, "ARTWORK")
-	gcdWhiteBg:SetSize(configs.size, configs.size)
+	gcdWhiteBg:SetSize(statusSize, statusSize)
 	gcdWhiteBg:SetPoint("LEFT", sep1, "RIGHT", 0, 0)
 	gcdWhiteBg:SetColorTexture(1, 1, 1, 1)
-	
+	main_frame.gcdWhiteBg = gcdWhiteBg
+
 	local gcdClip = CreateFrame("Frame", nil, gcdCombatContainer)
-	gcdClip:SetSize(configs.size, configs.size)
+	gcdClip:SetSize(statusSize, statusSize)
 	gcdClip:SetPoint("LEFT", sep1, "RIGHT", 0, 0)
 	gcdClip:SetClipsChildren(true)
 	gcdClip:SetFrameLevel(gcdCombatContainer:GetFrameLevel() + 1)
-	
+
 	local gcdbar = CreateFrame("StatusBar", nil, gcdClip)
 	init_status_bar_texture(gcdbar)
 	gcdbar:SetMinMaxValues(0, 1)
 	gcdbar:SetValue(0)
-	gcdbar:SetSize(10000, configs.size)
+	gcdbar:SetSize(10000, statusSize)
 	gcdbar:SetStatusBarColor(0, 0, 0)
 	gcdbar:SetPoint("LEFT")
 	main_frame.gcdbar = gcdbar
-	
+
 	local gcdIndicatorDefs = {
 		{"combatbar", {0, 0, 0}},
 		{"aggrobar", {0.3, 0.3, 0.3}},
@@ -3633,25 +3728,32 @@ local function init()
 		{"mobcountbar", {0, 0, 0}},
 		{"dispelbar", {0.28, 0.28, 0.32}},
 	}
+	-- All 6 row separators (sep1 + one per indicator below) are kept on
+	-- main_frame.gcdRowSeps so resize_status_row can resize every one of
+	-- them, not just the last (gcdRowSep6, kept separately since
+	-- reposition_all already reads it by that name to gate dispel visibility).
+	local rowSeps = { sep1 }
 	local prevAnchor = gcdClip
 	local lastSep
 	for _, def in ipairs(gcdIndicatorDefs) do
 		local name, color = def[1], def[2]
 		local sep = gcdCombatContainer:CreateTexture(nil, "ARTWORK")
-		sep:SetSize(sepSize, configs.size)
+		sep:SetSize(sepSize, statusSize)
 		sep:SetPoint("LEFT", prevAnchor, "RIGHT", 0, 0)
 		sep:SetColorTexture(0, 0, 0, 1)
 		lastSep = sep
+		rowSeps[#rowSeps + 1] = sep
 		local bar = CreateFrame("StatusBar", nil, gcdCombatContainer)
 		init_status_bar_texture(bar)
 		bar:SetMinMaxValues(0, 100)
 		bar:SetValue(100)
-		bar:SetSize(configs.size, configs.size)
+		bar:SetSize(statusSize, statusSize)
 		bar:SetStatusBarColor(color[1], color[2], color[3])
 		bar:SetPoint("LEFT", sep, "RIGHT", 0, 0)
 		main_frame[name] = bar
 		prevAnchor = bar
 	end
+	main_frame.gcdRowSeps = rowSeps
 	main_frame.gcdRowSep6 = lastSep
 	GCDIndicator_Positions = GCDIndicator_Positions or {}
 	local libGCDI = LibStub and LibStub:GetLibrary("LibGCDI", true)
@@ -4114,9 +4216,13 @@ end
 -- derive main_frame.anchor's on-screen position on its own instead of a
 -- human hand-tuning matching constants in both repos. The marker is four
 -- solid swatches placed edge-to-edge to the right of the global bar, same
--- row (never overlapping real indicators), plus a black backing a few
--- pixels larger so the scan can confirm a black border before trusting the
--- match. Deliberately same-row, not above/below: the default anchor sits
+-- row, plus a black backing a few pixels larger so the scan can confirm a
+-- black border before trusting the match. Real content can still land under
+-- that x-offset (e.g. the resource bar row taking row 0's place when "Show
+-- GCD Row" is off), so the marker lives on its own frame above main_frame's
+-- level - frame level beats draw layer across different frames, so without
+-- that the marker would silently lose to whatever real bar overlaps it.
+-- Deliberately same-row, not above/below: the default anchor sits
 -- close enough to the top of the screen that an above/below offset can push
 -- the marker off screen depending on where the user has docked the frame,
 -- but there's essentially always room to the right.
@@ -4125,9 +4231,10 @@ end
 -- companion script measures the on-screen *width* of (not just probes at an
 -- assumed pixel offset) - that width doubles as a live UI-scale reading, so
 -- detection stays correct at any WoW UI Scale setting instead of assuming
--- one. The fourth swatch encodes configs.compactMode (white vs. mid-gray),
--- so calibration can't silently record the wrong bar layout for whatever
--- mode the addon happened to be in. See CALIBRATION_COLORS/
+-- one. The fourth swatch encodes the effective layout mode (mid-gray/white/
+-- yellow = normal/compact/ultra-compact), so calibration can't silently
+-- record the wrong bar layout for whatever mode the addon happened to be
+-- in. See CALIBRATION_COLORS/
 -- CALIBRATION_MODE_COLORS/_OFFSET_X below - the companion script mirrors
 -- these, keep both sides in sync.
 -- ═══════════════════════════════════════════════════════════════════════════
@@ -4146,10 +4253,12 @@ GCDI.CALIBRATION_COLORS = {
 	{ 0, 0, 1 },
 }
 
--- Fourth marker swatch: reflects configs.compactMode at the moment
--- calibration mode is switched on. White/gray chosen for a wide brightness
--- gap so the companion script's tolerance-based match can't confuse them.
+-- Fourth marker swatch: reflects the effective layout mode (normal/compact/
+-- ultra-compact) at the moment calibration mode is switched on. White/gray/
+-- yellow chosen so the companion script's per-channel tolerance-based match
+-- can't confuse any pair of them.
 GCDI.CALIBRATION_MODE_COLORS = {
+	ultra = { 1, 1, 0 },
 	compact = { 1, 1, 1 },
 	normal = { 0.5, 0.5, 0.5 },
 }
@@ -4167,16 +4276,33 @@ function GCDI.toggle_calibration_mode()
 
 	if calibrationMode then
 		local swatchSize = configs.size
-		local modeColor = configs.compactMode and GCDI.CALIBRATION_MODE_COLORS.compact or GCDI.CALIBRATION_MODE_COLORS.normal
+		local modeColor = configs.ultraCompactMode and GCDI.CALIBRATION_MODE_COLORS.ultra
+			or configs.compactMode and GCDI.CALIBRATION_MODE_COLORS.compact
+			or GCDI.CALIBRATION_MODE_COLORS.normal
 
 		if not calibrationSwatches then
-			calibrationBackground = main_frame:CreateTexture(nil, "BACKGROUND", nil, -8)
+			-- Own frame, well above main_frame's level: resource/status/spell
+			-- bar containers are child frames created at main_frame's level + 1,
+			-- and frame level beats draw layer across different frames, so a
+			-- texture parented directly to main_frame (this marker's old parent)
+			-- silently loses to any real bar container that happens to overlap
+			-- it on screen (e.g. the 200px-wide resource bar row that takes
+			-- row 0's place when "Show GCD Row" is off, well past this marker's
+			-- x-offset). This frame guarantees the marker always wins. Kept as
+			-- a function-local, not a top-level one (the main chunk is already
+			-- near its 200-local-slot ceiling) - calibrationBackground/
+			-- calibrationSwatches already persist it across calls via
+			-- GetParent() when needed, so no extra top-level slot is required.
+			local calibrationFrame = CreateFrame("Frame", nil, main_frame)
+			calibrationFrame:SetFrameLevel(main_frame:GetFrameLevel() + 50)
+
+			calibrationBackground = calibrationFrame:CreateTexture(nil, "BACKGROUND", nil, -8)
 			calibrationBackground:SetColorTexture(0, 0, 0, 1)
 
 			calibrationSwatches = {}
 			local prevAnchor
 			for i, color in ipairs(GCDI.CALIBRATION_COLORS) do
-				local swatch = main_frame:CreateTexture(nil, "ARTWORK")
+				local swatch = calibrationFrame:CreateTexture(nil, "ARTWORK")
 				swatch:SetSize(swatchSize, swatchSize)
 				if prevAnchor then
 					swatch:SetPoint("LEFT", prevAnchor, "RIGHT", 0, 0)
@@ -4188,7 +4314,7 @@ function GCDI.toggle_calibration_mode()
 				prevAnchor = swatch
 			end
 
-			local modeSwatch = main_frame:CreateTexture(nil, "ARTWORK")
+			local modeSwatch = calibrationFrame:CreateTexture(nil, "ARTWORK")
 			modeSwatch:SetSize(swatchSize, swatchSize)
 			modeSwatch:SetPoint("LEFT", prevAnchor, "RIGHT", 0, 0)
 			calibrationSwatches[#calibrationSwatches + 1] = modeSwatch
@@ -4475,6 +4601,17 @@ SlashCmdList["GCDOPT"] = function(msg)
 		-- time, not just position, so toggling needs a full rebuild.
 		rebuild_spell_bars()  -- also rebuilds item bars
 		rebuild_buff_bars()
+	elseif msg == "ultracompact" then
+		configs.ultraCompactMode = not configs.ultraCompactMode
+		settings.ultraCompactMode = configs.ultraCompactMode  -- persist (SavedVariablesPerCharacter)
+		print(GCDI_PREFIX .. "Ultra-Compact mode " .. (configs.ultraCompactMode and "ON" or "OFF"))
+		-- Box layout is baked in at creation time for spell/item/buff bars,
+		-- same as "compact" above, so those still need a full rebuild. The
+		-- status row's structure never changes (only its box size), so it
+		-- resizes in place - see resize_status_row's comment for why.
+		rebuild_spell_bars()  -- also rebuilds item bars
+		rebuild_buff_bars()
+		GCDI.resize_status_row()
 	elseif msg == "exportbars" then
 		-- Diagnostic dump of every visible bar's position/size, for
 		-- cross-checking against what the companion script computes. See
