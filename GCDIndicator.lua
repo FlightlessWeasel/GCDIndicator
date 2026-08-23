@@ -3568,6 +3568,7 @@ local function init()
 	-- slash command and options checkbox write both configs.compactMode and
 	-- settings.compactMode so the choice survives reload/logout.
 	configs.compactMode = (settings.compactMode == true)
+	configs.debugMode = (settings.debugMode == true)
 
 	init_catalog_managers()
 	
@@ -4108,6 +4109,238 @@ function GCDI.toggle_preview_mode()
 end
 
 -- ═══════════════════════════════════════════════════════════════════════════
+-- DEVELOPER DIAGNOSTICS
+-- Shared by the /gcdopt slash commands and the Options > Developer tab
+-- buttons, so both entry points run identical logic.
+-- ═══════════════════════════════════════════════════════════════════════════
+
+local function print_item_catalog()
+	print("GCDI_PREFIX--- Item Catalog ---")
+	local count = 0
+	for key, data in pairs(GCDI.itemCatalog) do
+		count = count + 1
+		print("  " .. key .. " = " .. tostring(data.name) .. " (ID: " .. tostring(data.itemID) .. ")")
+	end
+	print(GCDI_PREFIX .. count .. " items in catalog")
+end
+GCDI.print_item_catalog = print_item_catalog
+
+local function print_buff_status()
+	-- List tracked buffs and their status
+	print("GCDI_PREFIX--- Tracked Buffs Status ---")
+	print("|cff888888Note: Buff spell IDs are secret. Get IDs from Wowhead or tooltip addons.|r")
+	local count = 0
+	for spellID, data in pairs(GCDI.buffCatalog) do
+		count = count + 1
+		local ok, hasAura = pcall(function()
+			return C_UnitAuras.GetUnitAuraBySpellID("player", spellID) ~= nil
+		end)
+		local status = ok and hasAura and "|cff00ff00ACTIVE|r" or "|cff888888inactive|r"
+		print("  " .. data.name .. " (ID: |cffffcc00" .. spellID .. "|r) - " .. status)
+	end
+	if count == 0 then
+		print("  No buffs being tracked. Add buffs in /gcdopt -> Buffs tab")
+	end
+end
+GCDI.print_buff_status = print_buff_status
+
+local function print_buff_settings_debug()
+	-- Debug: show what's saved in settings.buffSettings
+	print("GCDI_PREFIX--- Buff Settings Debug ---")
+	if settings and settings.buffSettings then
+		local count = 0
+		for key, val in pairs(settings.buffSettings) do
+			count = count + 1
+			local keyType = type(key)
+			print("  Key: " .. tostring(key) .. " (type: " .. keyType .. "), enabled: " .. tostring(val.enabled))
+		end
+		print(GCDI_PREFIX .. count .. " entries in buffSettings")
+	else
+		print("  settings.buffSettings is nil or empty")
+	end
+	print("GCDI_PREFIX--- Buff Catalog ---")
+	local catCount = 0
+	for spellID, data in pairs(GCDI.buffCatalog) do
+		catCount = catCount + 1
+		-- Test if this buff can be detected
+		local ok, hasAura = pcall(function()
+			return C_UnitAuras.GetPlayerAuraBySpellID(spellID) ~= nil
+		end)
+		local canDetect = ok and hasAura and "YES" or "maybe-secret"
+		print("  " .. tostring(spellID) .. " = " .. tostring(data.name) .. " (detectable: " .. canDetect .. ")")
+	end
+	print(GCDI_PREFIX .. catCount .. " entries in buffCatalog")
+end
+GCDI.print_buff_settings_debug = print_buff_settings_debug
+
+local function import_buffs_from_cdm()
+	-- Force import from CDM
+	print("GCDI_PREFIXImporting buffs from Cooldown Manager...")
+	local newBuffs = scan_cdm_buff_frames()
+	rebuild_buff_bars()
+	local totalBuffs = 0
+	for _ in pairs(GCDI.buffCatalog) do totalBuffs = totalBuffs + 1 end
+	print("GCDI_PREFIXImported " .. newBuffs .. " new buffs (" .. totalBuffs .. " total)")
+end
+GCDI.import_buffs_from_cdm = import_buffs_from_cdm
+
+local function print_range_debug()
+	-- Debug range detection for all tracked spells
+	print("GCDI_PREFIX--- Range Detection Debug ---")
+	local globalYards = settings.globalRangeFallbackYards or 5
+	print("|cff888888Global Range Fallback: " .. tostring(globalYards) .. " yd (" .. (LibRange.RANGE_ITEMS[globalYards] and LibRange.RANGE_ITEMS[globalYards].name or "Unknown") .. ")|r")
+	print("|cff888888Target: " .. (UnitExists("target") and UnitName("target") or "None") .. "|r")
+	print("")
+
+	for spellID, data in pairs(trackedSpells) do
+		local catalogEntry = GCDI.spellCatalog[spellID]
+		local spellName = catalogEntry and catalogEntry.name or ("Spell " .. spellID)
+		local actionSlot = data.actionSlot
+		local spellSettings = settings.spellSettings and settings.spellSettings[spellID] or {}
+
+		local rangeMethod = "Global fallback (proxy)"
+		if spellSettings.selfCast then
+			rangeMethod = "Self-Cast (hidden)"
+		elseif spellSettings.rangeFallbackYards ~= nil or spellSettings.rangeFallback ~= nil then
+			local yards = spellSettings.rangeFallbackYards
+			if yards == nil and spellSettings.rangeFallback ~= nil and LibRange.LEGACY_INDEX_TO_YARDS[spellSettings.rangeFallback] then
+				yards = LibRange.LEGACY_INDEX_TO_YARDS[spellSettings.rangeFallback]
+			end
+			rangeMethod = "Override: " .. (yards and LibRange.RANGE_ITEMS[yards] and LibRange.RANGE_ITEMS[yards].name or tostring(yards) .. " yd")
+		elseif spellSettings.hasNativeRange and actionSlot then
+			rangeMethod = "Native (IsActionInRange)"
+		elseif actionSlot then
+			rangeMethod = "Action Slot (will try native)"
+		end
+
+		local slotInfo = actionSlot and ("|cff00ff00Slot " .. actionSlot .. "|r") or "|cffff0000No slot found|r"
+		local rangeResult = "N/A"
+
+		if actionSlot and UnitExists("target") then
+			local inRange = IsActionInRange(actionSlot)
+			if inRange == true then
+				rangeResult = "|cff00ff00IN RANGE|r"
+			elseif inRange == false then
+				rangeResult = "|cffff0000OUT OF RANGE|r"
+			else
+				rangeResult = "|cff888888nil (no range info)|r"
+			end
+		end
+
+		print("  " .. spellName .. " (ID: " .. spellID .. ")")
+		print("    Action: " .. slotInfo .. " | Method: " .. rangeMethod)
+		if UnitExists("target") then
+			print("    Range Check: " .. rangeResult)
+		end
+	end
+
+	if not UnitExists("target") then
+		print("")
+		print("|cffffcc00Tip: Target an enemy to see range check results|r")
+	end
+end
+GCDI.print_range_debug = print_range_debug
+
+local function test_range_indicators()
+	-- Force all range indicators to bright colors for visibility testing
+	print("GCDI_PREFIXTesting range indicator visibility...")
+	local count = 0
+	for spellID, data in pairs(trackedSpells) do
+		if data.rangeOverlay then
+			count = count + 1
+			-- Cycle through bright colors
+			local colorIndex = count % 3
+			if colorIndex == 0 then
+				data.rangeOverlay:SetColorTexture(1, 0, 1, 1)  -- Magenta
+			elseif colorIndex == 1 then
+				data.rangeOverlay:SetColorTexture(0, 1, 1, 1)  -- Cyan
+			else
+				data.rangeOverlay:SetColorTexture(1, 1, 0, 1)  -- Yellow
+			end
+			data.rangeOverlay:Show()
+			if data.rangeBase then
+				data.rangeBase:SetColorTexture(0, 0, 0, 1)  -- Black base for contrast
+				data.rangeBase:Show()
+			end
+			print("  Spell " .. spellID .. ": overlay=" .. tostring(data.rangeOverlay:IsShown()) .. ", visible=" .. tostring(data.rangeOverlay:IsVisible()))
+		else
+			print("  Spell " .. spellID .. ": |cffff0000NO RANGE OVERLAY|r (self-cast or not created)")
+		end
+	end
+	print("GCDI_PREFIXSet " .. count .. " range overlays to bright colors")
+	print("|cffffcc00Note: Colors will reset on next target change or update tick|r")
+end
+GCDI.test_range_indicators = test_range_indicators
+
+local function scan_cooldown_manager()
+	-- Scan Blizzard's Cooldown Manager for buff frames
+	print("GCDI_PREFIX--- Scanning Cooldown Manager ---")
+	local viewer = _G["BuffIconCooldownViewer"]
+	if not viewer then
+		print("|cffff0000BuffIconCooldownViewer not found!|r")
+		print("Make sure Blizzard's Cooldown Manager is enabled in Edit Mode.")
+		return
+	end
+
+	print("Viewer found: " .. tostring(viewer))
+	print("Has itemFramePool: " .. tostring(viewer.itemFramePool ~= nil))
+
+	local activeCount = 0
+	local frameCount = 0
+
+	-- Helper to print frame info without materializing secret-capable spell IDs.
+	local function printFrameInfo(frame)
+		frameCount = frameCount + 1
+		local cooldownID = frame.cooldownID
+		if not cooldownID then
+			print("  [frame without cooldownID]")
+			return
+		end
+
+		-- Probe CDM info only for presence. Spell IDs can be secret and must not
+		-- be retained or formatted in debug output.
+		local infoOK, hasCooldownInfo = pcall(function()
+			return frame.cooldownInfo ~= nil
+		end)
+		if (not infoOK or not hasCooldownInfo) and C_CooldownViewer and C_CooldownViewer.GetCooldownViewerCooldownInfo then
+			pcall(function()
+				return C_CooldownViewer.GetCooldownViewerCooldownInfo(cooldownID) ~= nil
+			end)
+		end
+
+		-- Active = auraInstanceID present (do not call GetAuraDataByAuraInstanceID; throws when secret/tainted on 12.1+)
+		local auraOK, hasAura = pcall(function()
+			return frame.auraInstanceID ~= nil
+		end)
+		hasAura = auraOK and hasAura
+		local activeStr = hasAura and "|cff00ff00ACTIVE|r" or "|cff888888inactive|r"
+		if hasAura then activeCount = activeCount + 1 end
+
+		print("  cdID: |cffffcc00" .. tostring(cooldownID) .. "|r - " .. activeStr)
+	end
+
+	-- Try itemFramePool first
+	if viewer.itemFramePool then
+		print("Using itemFramePool:EnumerateActive()...")
+		for frame in viewer.itemFramePool:EnumerateActive() do
+			printFrameInfo(frame)
+		end
+	end
+
+	-- Also check GetChildren if itemFramePool didn't find anything
+	if frameCount == 0 then
+		print("Using GetChildren()...")
+		local children = {viewer:GetChildren()}
+		for _, frame in ipairs(children) do
+			printFrameInfo(frame)
+		end
+	end
+
+	print(GCDI_PREFIX .. frameCount .. " frames, " .. activeCount .. " active")
+end
+GCDI.scan_cooldown_manager = scan_cooldown_manager
+
+-- ═══════════════════════════════════════════════════════════════════════════
 -- SLASH COMMANDS
 -- ═══════════════════════════════════════════════════════════════════════════
 
@@ -4119,6 +4352,7 @@ SlashCmdList["GCDOPT"] = function(msg)
 		scan_action_bars()
 	elseif msg == "debug" then
 		configs.debugMode = not configs.debugMode
+		settings.debugMode = configs.debugMode  -- persist (SavedVariablesPerCharacter)
 		print("GCDI_PREFIXDebug mode " .. (configs.debugMode and "ON" or "OFF"))
 	elseif msg == "compact" then
 		configs.compactMode = not configs.compactMode
@@ -4149,219 +4383,24 @@ SlashCmdList["GCDOPT"] = function(msg)
 			print(GCDI_PREFIX .. text)
 		end
 	elseif msg == "items" then
-		print("GCDI_PREFIX--- Item Catalog ---")
-		local count = 0
-		for key, data in pairs(GCDI.itemCatalog) do
-			count = count + 1
-			print("  " .. key .. " = " .. tostring(data.name) .. " (ID: " .. tostring(data.itemID) .. ")")
-		end
-		print(GCDI_PREFIX .. count .. " items in catalog")
+		print_item_catalog()
 	elseif msg == "buffs" then
-		-- List tracked buffs and their status
-		print("GCDI_PREFIX--- Tracked Buffs Status ---")
-		print("|cff888888Note: Buff spell IDs are secret. Get IDs from Wowhead or tooltip addons.|r")
-		local count = 0
-		for spellID, data in pairs(GCDI.buffCatalog) do
-			count = count + 1
-			local ok, hasAura = pcall(function()
-				return C_UnitAuras.GetUnitAuraBySpellID("player", spellID) ~= nil
-			end)
-			local status = ok and hasAura and "|cff00ff00ACTIVE|r" or "|cff888888inactive|r"
-			print("  " .. data.name .. " (ID: |cffffcc00" .. spellID .. "|r) - " .. status)
-		end
-		if count == 0 then
-			print("  No buffs being tracked. Add buffs in /gcdopt -> Buffs tab")
-		end
+		print_buff_status()
 	elseif msg == "buffdebug" then
-		-- Debug: show what's saved in settings.buffSettings
-		print("GCDI_PREFIX--- Buff Settings Debug ---")
-		if settings and settings.buffSettings then
-			local count = 0
-			for key, val in pairs(settings.buffSettings) do
-				count = count + 1
-				local keyType = type(key)
-				print("  Key: " .. tostring(key) .. " (type: " .. keyType .. "), enabled: " .. tostring(val.enabled))
-			end
-			print(GCDI_PREFIX .. count .. " entries in buffSettings")
-		else
-			print("  settings.buffSettings is nil or empty")
-		end
-		print("GCDI_PREFIX--- Buff Catalog ---")
-		local catCount = 0
-		for spellID, data in pairs(GCDI.buffCatalog) do
-			catCount = catCount + 1
-			-- Test if this buff can be detected
-			local ok, hasAura = pcall(function()
-				return C_UnitAuras.GetPlayerAuraBySpellID(spellID) ~= nil
-			end)
-			local canDetect = ok and hasAura and "YES" or "maybe-secret"
-			print("  " .. tostring(spellID) .. " = " .. tostring(data.name) .. " (detectable: " .. canDetect .. ")")
-		end
-		print(GCDI_PREFIX .. catCount .. " entries in buffCatalog")
+		print_buff_settings_debug()
 	elseif msg == "cdmimport" then
-		-- Force import from CDM
-		print("GCDI_PREFIXImporting buffs from Cooldown Manager...")
-		local newBuffs = scan_cdm_buff_frames()
-		rebuild_buff_bars()
-		local totalBuffs = 0
-		for _ in pairs(GCDI.buffCatalog) do totalBuffs = totalBuffs + 1 end
-		print("GCDI_PREFIXImported " .. newBuffs .. " new buffs (" .. totalBuffs .. " total)")
-	
+		import_buffs_from_cdm()
 	elseif msg == "range" then
-		-- Debug range detection for all tracked spells
-		print("GCDI_PREFIX--- Range Detection Debug ---")
-		local globalYards = settings.globalRangeFallbackYards or 5
-		print("|cff888888Global Range Fallback: " .. tostring(globalYards) .. " yd (" .. (LibRange.RANGE_ITEMS[globalYards] and LibRange.RANGE_ITEMS[globalYards].name or "Unknown") .. ")|r")
-		print("|cff888888Target: " .. (UnitExists("target") and UnitName("target") or "None") .. "|r")
-		print("")
-		
-		for spellID, data in pairs(trackedSpells) do
-			local catalogEntry = GCDI.spellCatalog[spellID]
-			local spellName = catalogEntry and catalogEntry.name or ("Spell " .. spellID)
-			local actionSlot = data.actionSlot
-			local spellSettings = settings.spellSettings and settings.spellSettings[spellID] or {}
-			
-			local rangeMethod = "Global fallback (proxy)"
-			if spellSettings.selfCast then
-				rangeMethod = "Self-Cast (hidden)"
-			elseif spellSettings.rangeFallbackYards ~= nil or spellSettings.rangeFallback ~= nil then
-				local yards = spellSettings.rangeFallbackYards
-				if yards == nil and spellSettings.rangeFallback ~= nil and LibRange.LEGACY_INDEX_TO_YARDS[spellSettings.rangeFallback] then
-					yards = LibRange.LEGACY_INDEX_TO_YARDS[spellSettings.rangeFallback]
-				end
-				rangeMethod = "Override: " .. (yards and LibRange.RANGE_ITEMS[yards] and LibRange.RANGE_ITEMS[yards].name or tostring(yards) .. " yd")
-			elseif spellSettings.hasNativeRange and actionSlot then
-				rangeMethod = "Native (IsActionInRange)"
-			elseif actionSlot then
-				rangeMethod = "Action Slot (will try native)"
-			end
-			
-			local slotInfo = actionSlot and ("|cff00ff00Slot " .. actionSlot .. "|r") or "|cffff0000No slot found|r"
-			local rangeResult = "N/A"
-			
-			if actionSlot and UnitExists("target") then
-				local inRange = IsActionInRange(actionSlot)
-				if inRange == true then
-					rangeResult = "|cff00ff00IN RANGE|r"
-				elseif inRange == false then
-					rangeResult = "|cffff0000OUT OF RANGE|r"
-				else
-					rangeResult = "|cff888888nil (no range info)|r"
-				end
-			end
-			
-			print("  " .. spellName .. " (ID: " .. spellID .. ")")
-			print("    Action: " .. slotInfo .. " | Method: " .. rangeMethod)
-			if UnitExists("target") then
-				print("    Range Check: " .. rangeResult)
-			end
-		end
-		
-		if not UnitExists("target") then
-			print("")
-			print("|cffffcc00Tip: Target an enemy to see range check results|r")
-		end
-	
+		print_range_debug()
 	elseif msg == "rangetest" then
-		-- Force all range indicators to bright colors for visibility testing
-		print("GCDI_PREFIXTesting range indicator visibility...")
-		local count = 0
-		for spellID, data in pairs(trackedSpells) do
-			if data.rangeOverlay then
-				count = count + 1
-				-- Cycle through bright colors
-				local colorIndex = count % 3
-				if colorIndex == 0 then
-					data.rangeOverlay:SetColorTexture(1, 0, 1, 1)  -- Magenta
-				elseif colorIndex == 1 then
-					data.rangeOverlay:SetColorTexture(0, 1, 1, 1)  -- Cyan
-				else
-					data.rangeOverlay:SetColorTexture(1, 1, 0, 1)  -- Yellow
-				end
-				data.rangeOverlay:Show()
-				if data.rangeBase then
-					data.rangeBase:SetColorTexture(0, 0, 0, 1)  -- Black base for contrast
-					data.rangeBase:Show()
-				end
-				print("  Spell " .. spellID .. ": overlay=" .. tostring(data.rangeOverlay:IsShown()) .. ", visible=" .. tostring(data.rangeOverlay:IsVisible()))
-			else
-				print("  Spell " .. spellID .. ": |cffff0000NO RANGE OVERLAY|r (self-cast or not created)")
-			end
-		end
-		print("GCDI_PREFIXSet " .. count .. " range overlays to bright colors")
-		print("|cffffcc00Note: Colors will reset on next target change or update tick|r")
-		
+		test_range_indicators()
 	elseif msg == "minimap" then
 		-- Toggle minimap button visibility
 		GCDI.ToggleMinimapButton()
 		local hidden = settings.minimap and settings.minimap.hide
 		print("GCDI_PREFIXMinimap button " .. (hidden and "hidden" or "shown"))
-		
 	elseif msg == "testbuffs" or msg == "cdm" then
-		-- Scan Blizzard's Cooldown Manager for buff frames
-		print("GCDI_PREFIX--- Scanning Cooldown Manager ---")
-		local viewer = _G["BuffIconCooldownViewer"]
-		if not viewer then
-			print("|cffff0000BuffIconCooldownViewer not found!|r")
-			print("Make sure Blizzard's Cooldown Manager is enabled in Edit Mode.")
-			return
-		end
-		
-		print("Viewer found: " .. tostring(viewer))
-		print("Has itemFramePool: " .. tostring(viewer.itemFramePool ~= nil))
-		
-		local activeCount = 0
-		local frameCount = 0
-		
-		-- Helper to print frame info without materializing secret-capable spell IDs.
-		local function printFrameInfo(frame)
-			frameCount = frameCount + 1
-			local cooldownID = frame.cooldownID
-			if not cooldownID then
-				print("  [frame without cooldownID]")
-				return
-			end
-			
-			-- Probe CDM info only for presence. Spell IDs can be secret and must not
-			-- be retained or formatted in debug output.
-			local infoOK, hasCooldownInfo = pcall(function()
-				return frame.cooldownInfo ~= nil
-			end)
-			if (not infoOK or not hasCooldownInfo) and C_CooldownViewer and C_CooldownViewer.GetCooldownViewerCooldownInfo then
-				pcall(function()
-					return C_CooldownViewer.GetCooldownViewerCooldownInfo(cooldownID) ~= nil
-				end)
-			end
-			
-			-- Active = auraInstanceID present (do not call GetAuraDataByAuraInstanceID; throws when secret/tainted on 12.1+)
-			local auraOK, hasAura = pcall(function()
-				return frame.auraInstanceID ~= nil
-			end)
-			hasAura = auraOK and hasAura
-			local activeStr = hasAura and "|cff00ff00ACTIVE|r" or "|cff888888inactive|r"
-			if hasAura then activeCount = activeCount + 1 end
-			
-			print("  cdID: |cffffcc00" .. tostring(cooldownID) .. "|r - " .. activeStr)
-		end
-		
-		-- Try itemFramePool first
-		if viewer.itemFramePool then
-			print("Using itemFramePool:EnumerateActive()...")
-			for frame in viewer.itemFramePool:EnumerateActive() do
-				printFrameInfo(frame)
-			end
-		end
-		
-		-- Also check GetChildren if itemFramePool didn't find anything
-		if frameCount == 0 then
-			print("Using GetChildren()...")
-			local children = {viewer:GetChildren()}
-			for _, frame in ipairs(children) do
-				printFrameInfo(frame)
-			end
-		end
-		
-		print(GCDI_PREFIX .. frameCount .. " frames, " .. activeCount .. " active")
+		scan_cooldown_manager()
 	else
 		if GCDI.create_options_frame then
 			GCDI.create_options_frame()

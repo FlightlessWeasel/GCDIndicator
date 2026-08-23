@@ -34,6 +34,7 @@ end
 
 local refresh_profiles_tab
 local refresh_settings_tab
+local refresh_developer_tab
 local switch_tab
 
 -- ═══════════════════════════════════════════════════════════════════════════
@@ -527,6 +528,7 @@ local TAB_DEFS = {
 	{ key = "items", text = "Items" },
 	{ key = "buffs", text = "Buffs" },
 	{ key = "settings", text = "Settings" },
+	{ key = "developer", text = "Developer" },
 	{ key = "profiles", text = "Profiles" },
 }
 
@@ -2241,10 +2243,13 @@ switch_tab = function(tabName)
 	if optionsFrame.settingsScrollFrame then
 		optionsFrame.settingsScrollFrame:SetShown(tabName == "settings")
 	end
+	if optionsFrame.developerScrollFrame then
+		optionsFrame.developerScrollFrame:SetShown(tabName == "developer")
+	end
 	if optionsFrame.profilesFrame then
 		optionsFrame.profilesFrame:SetShown(tabName == "profiles")
 	end
-	
+
 	if tabName == "gcd" then
 		refresh_gcd_tab()
 	elseif tabName == "resources" then
@@ -2257,6 +2262,8 @@ switch_tab = function(tabName)
 		refresh_buffs_tab()
 	elseif tabName == "settings" then
 		refresh_settings_tab()
+	elseif tabName == "developer" then
+		refresh_developer_tab()
 	elseif tabName == "profiles" then
 		refresh_profiles_tab()
 	end
@@ -2877,6 +2884,8 @@ local function refresh_options_frame()
 		refresh_buffs_tab()
 	elseif currentTab == "settings" then
 		refresh_settings_tab()
+	elseif currentTab == "developer" then
+		refresh_developer_tab()
 	elseif currentTab == "profiles" then
 		refresh_profiles_tab()
 	end
@@ -2937,6 +2946,7 @@ local function create_options_frame()
 		{ name = "items", width = 480, height = 600 },
 		{ name = "buffs", width = 540, height = 800 },
 		{ name = "settings", width = 500, height = 650 },
+		{ name = "developer", width = 500, height = 650 },
 	}
 	for _, def in ipairs(TAB_SCROLL_DEFS) do
 		create_tab_scroll_frame(def.name, def.width, def.height)
@@ -3084,6 +3094,106 @@ local function create_options_frame()
 	refresh_settings_tab = function()
 		if optionsFrame.compactModeCheckbox then
 			optionsFrame.compactModeCheckbox:SetChecked(configs.compactMode == true)
+		end
+	end
+
+	-- DEVELOPER TAB
+	-- Diagnostic/debug tools that mirror every /gcdopt slash command not
+	-- already surfaced elsewhere (compact/minimap/export live on Settings).
+	-- Buttons call the same GCDI.* functions the slash commands call, so
+	-- there is one implementation per command.
+	local developerFrame = optionsFrame.developerScrollChild
+
+	local dYOffset = -10
+
+	dYOffset = add_section_header(developerFrame, dYOffset, "Debug", nil, 500, false)
+
+	local debugModeCheckbox = CreateFrame("CheckButton", nil, developerFrame, "UICheckButtonTemplate")
+	debugModeCheckbox:SetSize(24, 24)
+	debugModeCheckbox:SetPoint("TOPLEFT", 0, dYOffset)
+	debugModeCheckbox:SetChecked(configs.debugMode == true)
+	optionsFrame.debugModeCheckbox = debugModeCheckbox
+	debugModeCheckbox:SetScript("OnClick", function(self)
+		configs.debugMode = self:GetChecked() and true or false
+		if settings then
+			settings.debugMode = configs.debugMode  -- persist (SavedVariablesPerCharacter)
+		end
+		print(GCDI_PREFIX .. "Debug mode " .. (configs.debugMode and "ON" or "OFF"))
+	end)
+	local debugModeLabel = developerFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+	debugModeLabel:SetPoint("LEFT", debugModeCheckbox, "RIGHT", 5, 0)
+	debugModeLabel:SetText("Debug mode (verbose diagnostic chat output)")
+	dYOffset = dYOffset - (SETTINGS_BUTTON_HEIGHT + SETTINGS_BUTTON_GAP)
+
+	local scanBtn = create_settings_button(developerFrame, dYOffset, 180, "Scan Action Bars", "Scan Action Bars", {
+		{ "Re-scans your action bars for tracked spells/items and rebuilds their action-slot mapping.", 1, 1, 1 },
+	}, function()
+		if GCDI.scan_action_bars then
+			GCDI.scan_action_bars()
+		end
+	end)
+	dYOffset = dYOffset - (SETTINGS_BUTTON_HEIGHT + SETTINGS_BLOCK_GAP)
+
+	dYOffset = add_section_header(developerFrame, dYOffset, "Diagnostics",
+		"Dump internal state to chat for troubleshooting.", 500)
+
+	local itemsBtn = create_settings_button(developerFrame, dYOffset, 180, "Item Catalog", "Item Catalog", {
+		{ "Lists every item in the item catalog and its item ID.", 1, 1, 1 },
+	}, function()
+		if GCDI.print_item_catalog then GCDI.print_item_catalog() end
+	end)
+	dYOffset = dYOffset - (SETTINGS_BUTTON_HEIGHT + SETTINGS_BUTTON_GAP)
+
+	local buffsBtn = create_settings_button(developerFrame, dYOffset, 180, "Tracked Buffs Status", "Tracked Buffs Status", {
+		{ "Lists every tracked buff and whether it's currently active on you.", 1, 1, 1 },
+	}, function()
+		if GCDI.print_buff_status then GCDI.print_buff_status() end
+	end)
+	dYOffset = dYOffset - (SETTINGS_BUTTON_HEIGHT + SETTINGS_BUTTON_GAP)
+
+	local buffDebugBtn = create_settings_button(developerFrame, dYOffset, 180, "Buff Settings Debug", "Buff Settings Debug", {
+		{ "Dumps saved buffSettings entries and buffCatalog detectability.", 1, 1, 1 },
+	}, function()
+		if GCDI.print_buff_settings_debug then GCDI.print_buff_settings_debug() end
+	end)
+	dYOffset = dYOffset - (SETTINGS_BUTTON_HEIGHT + SETTINGS_BUTTON_GAP)
+
+	local rangeDebugBtn = create_settings_button(developerFrame, dYOffset, 180, "Range Detection Debug", "Range Detection Debug", {
+		{ "Shows the range-check method and result for every tracked spell against your current target.", 1, 1, 1 },
+	}, function()
+		if GCDI.print_range_debug then GCDI.print_range_debug() end
+	end)
+	dYOffset = dYOffset - (SETTINGS_BUTTON_HEIGHT + SETTINGS_BUTTON_GAP)
+
+	local cdmScanBtn = create_settings_button(developerFrame, dYOffset, 180, "Cooldown Manager Scan", "Cooldown Manager Scan", {
+		{ "Scans Blizzard's Cooldown Manager buff frames and prints what it finds.", 1, 1, 1 },
+	}, function()
+		if GCDI.scan_cooldown_manager then GCDI.scan_cooldown_manager() end
+	end)
+	dYOffset = dYOffset - (SETTINGS_BUTTON_HEIGHT + SETTINGS_BLOCK_GAP)
+
+	dYOffset = add_section_header(developerFrame, dYOffset, "Actions", nil, 500)
+
+	local cdmImportBtn = create_settings_button(developerFrame, dYOffset, 220, "Import Buffs from Cooldown Manager", "Import Buffs from Cooldown Manager", {
+		{ "Forces an import of buffs from the Cooldown Manager and rebuilds buff bars.", 1, 1, 1 },
+	}, function()
+		if GCDI.import_buffs_from_cdm then GCDI.import_buffs_from_cdm() end
+	end)
+	dYOffset = dYOffset - (SETTINGS_BUTTON_HEIGHT + SETTINGS_BUTTON_GAP)
+
+	local rangeTestBtn = create_settings_button(developerFrame, dYOffset, 220, "Test Range Indicator Colors", "Test Range Indicator Colors", {
+		{ "Forces all range indicators to bright cycling colors for visibility testing.", 1, 1, 1 },
+		{ "Colors reset on the next target change or update tick.", 0.8, 0.6, 0.2 },
+	}, function()
+		if GCDI.test_range_indicators then GCDI.test_range_indicators() end
+	end)
+	dYOffset = dYOffset - (SETTINGS_BUTTON_HEIGHT + SETTINGS_BLOCK_GAP)
+
+	developerFrame:SetHeight(math.abs(dYOffset) + 20)
+
+	refresh_developer_tab = function()
+		if optionsFrame.debugModeCheckbox then
+			optionsFrame.debugModeCheckbox:SetChecked(configs.debugMode == true)
 		end
 	end
 
