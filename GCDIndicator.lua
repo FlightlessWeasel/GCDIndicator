@@ -1111,34 +1111,41 @@ local function gcdi_read_applications(auraData)
 end
 
 local function apps_from_aura(auraData)
-	if auraData == nil then return nil end
+	if auraData == nil then return nil, "no-auraData" end
 	local ok, apps = pcall(gcdi_read_applications, auraData)
-	if ok and apps ~= nil then
-		return apps
-	end
-	return nil
+	if not ok then return nil, "pcall-failed:" .. tostring(apps) end
+	if apps == nil then return nil, "applications-nil" end
+	return apps, nil
 end
 
 local function gcdi_try_aura_apps_for_spell(spellID, unit)
-	if not spellID or not C_UnitAuras then return nil end
+	if not spellID or not C_UnitAuras then return nil, "no-spellID-or-api" end
+	local lastReason
 	if unit == "player" and C_UnitAuras.GetPlayerAuraBySpellID then
 		local ok, result = pcall(C_UnitAuras.GetPlayerAuraBySpellID, spellID)
 		if ok then
-			local apps = apps_from_aura(result)
+			local apps, reason = apps_from_aura(result)
 			if apps ~= nil then return apps end
+			lastReason = "GetPlayerAuraBySpellID:" .. (reason or "?")
+		else
+			lastReason = "GetPlayerAuraBySpellID-pcall-failed:" .. tostring(result)
 		end
 	end
 	if C_UnitAuras.GetUnitAuraBySpellID then
 		local ok, result = pcall(C_UnitAuras.GetUnitAuraBySpellID, unit, spellID)
 		if ok then
-			local apps = apps_from_aura(result)
+			local apps, reason = apps_from_aura(result)
 			if apps ~= nil then return apps end
+			lastReason = "GetUnitAuraBySpellID:" .. (reason or "?")
+		else
+			lastReason = "GetUnitAuraBySpellID-pcall-failed:" .. tostring(result)
 		end
 	end
-	return nil
+	return nil, lastReason or "no-api"
 end
 
-local function gcdi_get_buff_stack_applications(cdmFrame, catalogEntry, data)
+local lastStackDebugState = {}  -- buffID -> last logged trace string, for debug-on-change only
+local function gcdi_get_buff_stack_applications(cdmFrame, catalogEntry, data, buffID)
 	local unit = (cdmFrame and ((cdmFrame.GetAuraDataUnit and cdmFrame:GetAuraDataUnit()) or cdmFrame.auraDataUnit))
 		or (catalogEntry and catalogEntry.isTargetDebuff and "target")
 		or "player"
@@ -1149,16 +1156,55 @@ local function gcdi_get_buff_stack_applications(cdmFrame, catalogEntry, data)
 	local primaryID = catalogEntry and catalogEntry.spellID
 	local secondaryID = (catalogEntry and catalogEntry.tooltipSpellID) or (data and data.tooltipSpellID)
 
-	local apps = gcdi_try_aura_apps_for_spell(primaryID, unit)
-	if apps ~= nil then return apps end
+	local apps, reason = gcdi_try_aura_apps_for_spell(primaryID, unit)
+	if apps ~= nil then
+		if configs.debugMode and buffID then
+			local trace = "primary:ok:" .. tostring(apps)
+			if lastStackDebugState[buffID] ~= trace then
+				lastStackDebugState[buffID] = trace
+				debug("Stacks " .. buffID .. " unit=" .. unit .. " primary=" .. tostring(primaryID) .. " -> " .. tostring(apps))
+			end
+		end
+		return apps
+	end
+	local primaryReason = reason
+
 	if secondaryID and secondaryID ~= primaryID then
-		apps = gcdi_try_aura_apps_for_spell(secondaryID, unit)
-		if apps ~= nil then return apps end
+		apps, reason = gcdi_try_aura_apps_for_spell(secondaryID, unit)
+		if apps ~= nil then
+			if configs.debugMode and buffID then
+				local trace = "secondary:ok:" .. tostring(apps)
+				if lastStackDebugState[buffID] ~= trace then
+					lastStackDebugState[buffID] = trace
+					debug("Stacks " .. buffID .. " unit=" .. unit .. " secondary=" .. tostring(secondaryID) .. " -> " .. tostring(apps))
+				end
+			end
+			return apps
+		end
 	end
 
+	local cachedReason = "no-cdmFrame"
 	if cdmFrame then
-		apps = apps_from_aura(cdmFrame.auraDataCached)
-		if apps ~= nil then return apps end
+		apps, cachedReason = apps_from_aura(cdmFrame.auraDataCached)
+		if apps ~= nil then
+			if configs.debugMode and buffID then
+				local trace = "cached:ok:" .. tostring(apps)
+				if lastStackDebugState[buffID] ~= trace then
+					lastStackDebugState[buffID] = trace
+					debug("Stacks " .. buffID .. " unit=" .. unit .. " cached -> " .. tostring(apps))
+				end
+			end
+			return apps
+		end
+	end
+
+	if configs.debugMode and buffID then
+		local trace = "fail:" .. tostring(primaryReason) .. "|" .. tostring(reason) .. "|" .. tostring(cachedReason)
+		if lastStackDebugState[buffID] ~= trace then
+			lastStackDebugState[buffID] = trace
+			debug("Stacks " .. buffID .. " unit=" .. unit .. " FAILED primary=[" .. tostring(primaryReason)
+				.. "] secondary=[" .. tostring(reason) .. "] cached=[" .. tostring(cachedReason) .. "]")
+		end
 	end
 	return nil
 end
@@ -1175,6 +1221,24 @@ local function gcdi_set_stack_bar_value(bar, maxS, apps)
 end
 
 local buffAuraUpdateGeneration = 0
+
+-- On-demand self-heal for a stale/missing cdmBuffFrames entry: the
+-- itemFramePool reassigns frame objects across cooldownIDs continuously (not
+-- just at zone transitions), and the RefreshData self-heal hook doesn't
+-- always win the race before a buff bar reads the map. EnumerateActive()
+-- only iterates currently-active frames, so this only helps for buffs that
+-- are actually up right now - that's exactly the case that matters, since
+-- an inactive buff correctly has nothing to find.
+local function gcdi_cdm_find_active_frame(cooldownID)
+	local viewer = _G["BuffIconCooldownViewer"]
+	if not viewer or not viewer.itemFramePool then return nil end
+	for frame in viewer.itemFramePool:EnumerateActive() do
+		if frame.cooldownID == cooldownID then
+			return frame
+		end
+	end
+	return nil
+end
 
 local function update_buff_bar(buffID)
 	if previewMode then return end
@@ -1213,6 +1277,15 @@ local function update_buff_bar(buffID)
 	if cdmFrame and cdmFrame.cooldownID and cdmFrame.cooldownID ~= cooldownID then
 		cdmFrame = nil
 		lookupMethod = "stale-discarded"
+	end
+
+	if not cdmFrame then
+		local freshFrame = gcdi_cdm_find_active_frame(cooldownID)
+		if freshFrame then
+			cdmFrame = freshFrame
+			cdmBuffFrames[cooldownID] = freshFrame
+			lookupMethod = "self-healed"
+		end
 	end
 
 	if not cdmFrame and configs.debugMode then
@@ -1269,7 +1342,7 @@ local function update_buff_bar(buffID)
 			if data.manualTracking and not cdmFrame then
 				apps = data.stacks or 0
 			else
-				apps = gcdi_get_buff_stack_applications(cdmFrame, catalogEntry, data)
+				apps = gcdi_get_buff_stack_applications(cdmFrame, catalogEntry, data, buffID)
 			end
 			-- Only write when we have a value. If applications are unreadable this
 			-- tick, keep the last displayed fill instead of blanking the bar.
@@ -1496,6 +1569,13 @@ local function create_buff_bar(buffKey, spellName, texture, tooltipSpellID)
 
 	local container, icon, clipContainer, bar = create_bar_container(main_frame, texture, compact, barSize, pad)
 	container:SetSize(containerWidth, barSize + pad * 2)
+
+	-- clipContainer/bar are create_bar_container's cooldown-sweep StatusBar,
+	-- used by create_spell_bar/create_item_bar. Buff bars don't have a
+	-- cooldown sweep, but clipContainer still lands at the same anchor as
+	-- activeIndicator below and, as a child frame, draws on top of it -
+	-- its opaque white cdBg was masking activeIndicator's color entirely.
+	clipContainer:Hide()
 
 	local activeIndicator = container:CreateTexture(nil, "ARTWORK")
 	activeIndicator:SetSize(barSize, barSize)
@@ -3674,7 +3754,7 @@ local function init()
 	main_frame:SetScript("OnEvent", on_event)
 
 	if gcdi_safe_unit_affecting_combat("player") then
-		combatbar:SetStatusBarColor(1, 0, 0)
+		main_frame.combatbar:SetStatusBarColor(1, 0, 0)
 	end
 	
 	-- Initialize GCD bar immediately (don't wait for events)
