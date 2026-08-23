@@ -12,6 +12,20 @@ to `GCDI.configs` (size/barHeight/bgPadding/barSpacing), bar/row/column
 layout, or indicator colors desyncs it **silently** (wrong reads, no crash).
 Flag such changes to the user and check `../AHK/CLAUDE.md`'s mapping table.
 
+The frame's on-screen anchor, the effective WoW UI Scale, and compactMode no
+longer need hand-syncing: `GCDI.toggle_calibration_mode()` (`/gcdopt
+calibrate`, or Options > Developer > Calibrate Position) shows a 4-swatch
+marker — three fixed primaries the companion script measures the on-screen
+*width* of (doubling as a UI-scale reading, not an assumed constant) plus a
+white/gray swatch reflecting `configs.compactMode` — which the companion
+script scans for to derive its own anchor/scale/compactMode constants. See
+`GCDI.CALIBRATION_COLORS`/`GCDI.CALIBRATION_MODE_COLORS`/
+`CALIBRATION_OFFSET_X`/`CALIBRATION_BORDER` in `GCDIndicator.lua` (search
+"CALIBRATION MODE"). Changing the marker's size, colors, swatch count, or
+offset from `main_frame.anchor` is exactly the kind of change that desyncs
+the companion script's `lib/PositionCalibration.ahk` — treat it the same as
+any other layout/color change above.
+
 **Never mention AHK inside `GCDIndicator.lua` or `LibGCDI-Options.lua`** —
 no code comments, no user-visible text (chat, tooltips, labels). Call it
 "the companion script." This file may name AHK freely.
