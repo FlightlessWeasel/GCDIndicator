@@ -53,6 +53,15 @@ Tracks buffs and DoTs with optional pandemic window indicators:
 | `/gcdopt` | Open options panel |
 | `/gcdopt scan` | Rescan action bars for spells |
 | `/gcdopt preview` | Toggle preview mode (shows all indicators) |
+| `/gcdopt debug` | Toggle debug mode (extra chat logging) |
+| `/gcdopt compact` | Toggle compact mode (flow-packed layout, no icons) |
+| `/gcdopt minimap` | Toggle the minimap button |
+| `/gcdopt items` | List the item catalog and its status |
+| `/gcdopt buffs` | List tracked buffs and their status |
+| `/gcdopt cdmimport` | Re-import tracked buffs from the Cooldown Manager |
+| `/gcdopt range` | Print range-detection debug info for tracked spells |
+| `/gcdopt exportbars` | Export every visible bar's position/size (for external tooling) |
+| `/gcdopt exportrotation` | Export the current spell/buff catalog as config text (for external tooling) |
 | `/gcdi` or `/asconfig` | Enter position config mode (drag to move) |
 | `/gcdr` or `/asclear` | Reset position to default |
 

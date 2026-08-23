@@ -127,8 +127,9 @@ never needs to know the current state to decide whether to repaint.
 ## Verified WoW API assumptions (12.x, not recalled from training data)
 
 Carried over from the Phase 0 probe and the native stack-binding sibling
-experiment (`CHANGE-TRACKER.md`'s "Native Stack Binding" entry), both
-directly relevant here since this overlay follows the same shape:
+experiment (`CHANGE-TRACKER.md`'s "Native Stack Binding" entry, now deleted —
+see `git show 563edc8:CHANGE-TRACKER.md`), both directly relevant here since
+this overlay follows the same shape:
 
 - Reads off an engine-bound `AuraContainer`/`AuraButton` after binding
   (`GetSize`, `IsShown`, `GetMinMaxValues`, etc.) can come back as

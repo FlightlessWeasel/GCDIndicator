@@ -58,8 +58,11 @@ reason about here).
     native `AuraContainer`-type frames can't happen inside a `UNIT_AURA`
     handler or (on most 12.1 builds) during combat lockdown.
   - **Native `AuraContainer`/`AddAuraSlot` stack binding**: experimental,
-    tracked in `CHANGE-TRACKER.md` — check that file for the current state
-    before assuming this binding's behavior.
+    current state tracked in `plans/cdm-buff-stacks-status.md` and
+    `plans/buff-stack-probe-plan.md` — check those before assuming this
+    binding's behavior. (`CHANGE-TRACKER.md`, formerly the tracking file, was
+    deleted in commit `29c7922`; its content is still readable via
+    `git show 563edc8:CHANGE-TRACKER.md`.)
 
 ## No vendored Blizzard source in this repo
 

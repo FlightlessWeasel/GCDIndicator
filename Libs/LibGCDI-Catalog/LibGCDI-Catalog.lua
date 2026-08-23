@@ -1,29 +1,10 @@
--- ═══════════════════════════════════════════════════════════════════════════
--- LibGCDI-Catalog - Generic catalog ordering for GCDIndicator
--- Handles spells, items, buffs with a single implementation
--- ═══════════════════════════════════════════════════════════════════════════
-
 local MAJOR, MINOR = "LibGCDI-Catalog", 1
 local lib = LibStub:NewLibrary(MAJOR, MINOR)
 if not lib then return end
 
--- ═══════════════════════════════════════════════════════════════════════════
--- CATALOG MANAGER CLASS
--- ═══════════════════════════════════════════════════════════════════════════
-
 local CatalogManager = {}
 CatalogManager.__index = CatalogManager
 
--- Create a new catalog manager
--- config = {
---   name = "spells",                    -- identifier for debugging
---   getCatalog = function() end,        -- returns the catalog table
---   getSettings = function() end,       -- returns the settings table
---   getOrderKey = function() end,       -- returns the order array from settings (e.g., settings.spellOrder)
---   setOrderKey = function(order) end,  -- sets the order array in settings
---   isEnabled = function(id) end,       -- returns if item is enabled
---   onReorder = function() end,         -- called after reordering (rebuild bars, etc.)
--- }
 function lib:NewCatalog(config)
     local manager = setmetatable({}, CatalogManager)
     manager.name = config.name or "unknown"
@@ -36,8 +17,6 @@ function lib:NewCatalog(config)
     return manager
 end
 
--- Get all catalog items ordered (enabled first, then disabled)
--- Returns: ordered array of IDs
 function CatalogManager:GetAllOrdered()
     local settings = self.getSettings()
     if not settings then return {} end
@@ -49,7 +28,6 @@ function CatalogManager:GetAllOrdered()
     local disabledOrdered = {}
     local inOrder = {}
     
-    -- First: items that are in the saved order
     for _, id in ipairs(orderArray) do
         if catalog[id] then
             inOrder[id] = true
@@ -61,7 +39,6 @@ function CatalogManager:GetAllOrdered()
         end
     end
     
-    -- Second: items not in saved order (sort alphabetically by name)
     local unsortedEnabled = {}
     local unsortedDisabled = {}
     for id, data in pairs(catalog) do
@@ -84,7 +61,6 @@ function CatalogManager:GetAllOrdered()
         table.insert(disabledOrdered, entry.id)
     end
     
-    -- Combine: enabled first, then disabled
     local result = {}
     for _, id in ipairs(enabledOrdered) do
         table.insert(result, id)
@@ -96,8 +72,6 @@ function CatalogManager:GetAllOrdered()
     return result
 end
 
--- Get only enabled items in order
--- Returns: ordered array of enabled IDs
 function CatalogManager:GetEnabledOrdered()
     local settings = self.getSettings()
     if not settings then return {} end
@@ -108,7 +82,6 @@ function CatalogManager:GetEnabledOrdered()
     local ordered = {}
     local inOrder = {}
     
-    -- First: items in saved order that are enabled
     for _, id in ipairs(orderArray) do
         if catalog[id] and self.isEnabled(id) then
             table.insert(ordered, id)
@@ -116,9 +89,8 @@ function CatalogManager:GetEnabledOrdered()
         end
     end
     
-    -- Second: items not in order that are enabled (sort alphabetically by name,
-    -- matching GetAllOrdered's convention -- pairs() order is undefined and would
-    -- desync HUD bar order from Options, and the companion script's pixel layout).
+    -- pairs() order is undefined; sorting alphabetically below is required or
+    -- HUD bar order desyncs from the companion script's pixel layout.
     local unsortedEnabled = {}
     for id, data in pairs(catalog) do
         if not inOrder[id] and self.isEnabled(id) then
@@ -134,7 +106,6 @@ function CatalogManager:GetEnabledOrdered()
     return ordered
 end
 
--- Save the current order
 function CatalogManager:SaveOrder(orderedList)
     local settings = self.getSettings()
     if not settings then
@@ -150,10 +121,6 @@ function CatalogManager:SaveOrder(orderedList)
     return true
 end
 
--- Save a full ordered list and run the standard post-reorder side effects
--- (profile auto-save, onReorder rebuild callback). Shared commit path for
--- MoveInOrder/MoveToBottom and for a drag-and-drop gesture that already has
--- a complete new ordering to persist in one shot.
 function CatalogManager:CommitOrder(orderedList)
     if not self:SaveOrder(orderedList) then
         return
@@ -168,8 +135,6 @@ function CatalogManager:CommitOrder(orderedList)
     end
 end
 
--- Move an item up or down in the order
--- direction: -1 for up, 1 for down
 function CatalogManager:MoveInOrder(id, direction)
     local ordered = self:GetAllOrdered()
     local currentIndex = nil
@@ -189,13 +154,11 @@ function CatalogManager:MoveInOrder(id, direction)
     local newIndex = currentIndex + direction
     if newIndex < 1 or newIndex > #ordered then return end
 
-    -- Swap
     ordered[currentIndex], ordered[newIndex] = ordered[newIndex], ordered[currentIndex]
 
     self:CommitOrder(ordered)
 end
 
--- Move an item to the bottom of the list
 function CatalogManager:MoveToBottom(id)
     local ordered = self:GetAllOrdered()
     local currentIndex = nil
@@ -214,7 +177,6 @@ function CatalogManager:MoveToBottom(id)
     self:CommitOrder(ordered)
 end
 
--- Move an item to the top of the list
 function CatalogManager:MoveToTop(id)
     local ordered = self:GetAllOrdered()
     local currentIndex = nil
@@ -233,5 +195,4 @@ function CatalogManager:MoveToTop(id)
     self:CommitOrder(ordered)
 end
 
--- Export the library
 lib.CatalogManager = CatalogManager

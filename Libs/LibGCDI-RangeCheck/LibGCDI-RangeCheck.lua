@@ -1,34 +1,3 @@
---[[
-Name: LibGCDI-RangeCheck
-Forked from: LibRangeCheck-3.0 rev 34 (mitch0, WoWUIDev Community), https://www.curseforge.com/wow/addons/librangecheck-3-0
-License: MIT (upstream)
-]]
-
---- LibGCDI-RangeCheck is a trimmed, first-party fork of LibRangeCheck-3.0, cut down to only the
--- surface GCDIndicator actually calls: lib:init() (bootstrap/refresh), lib:GetRange(unit, checkVisible,
--- noItems, maxCacheAge) (min/max yard estimate), and lib:GetSmartMaxChecker(range, inCombat) (friend/
--- harm/misc-aware in-range checker). See docs/ (or CHANGE-TRACKER.md) for the trim rationale and the
--- full list of removed API surface (all the Get*Checker accessor family, the debug/measurement block,
--- and other dead code) if upstream needs to be re-diffed later.
--- @usage
--- local rc = LibStub("LibGCDI-RangeCheck")
---
--- local minRange, maxRange = rc:GetRange('target')
--- if not minRange then
---     print("cannot get range estimate for target")
--- elseif not maxRange then
---     print("target is over " .. minRange .. " yards")
--- else
---     print("target is between " .. minRange .. " and " .. maxRange .. " yards")
--- end
---
--- local checker = rc:GetSmartMaxChecker(30, InCombatLockdown())
--- if checker and checker("target") then
---     print("target is within 30 yards")
--- end
---
--- @class file
--- @name LibGCDI-RangeCheck
 local MAJOR_VERSION = "LibGCDI-RangeCheck"
 local MINOR_VERSION = 1
 
