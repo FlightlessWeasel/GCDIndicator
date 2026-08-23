@@ -18,3 +18,25 @@ live capability/state checks (`pcall` the real call, or an explicit secrecy
 API) instead of version gates, unless the failure mode is a hard API
 removal. Now moot: detection moved to native `AuraContainer`/`AddAuraSlot`
 overlay, which doesn't gate on secrecy at all.
+
+## PLAYER_ENTERING_WORLD CDM rescan tainted Blizzard's CooldownViewer (2026-08-21)
+Added a synchronous `scan_cdm_buff_frames()` call to the `PLAYER_ENTERING_WORLD`
+handler to fix a stale `cdmBuffFrames` cache after zone transitions (CDM's
+`itemFramePool` reassigns frame objects across cooldownIDs - see `CLAUDE.md`).
+Caused `"attempt to perform boolean test on ... secret boolean value, while
+execution tainted by 'GCDIndicator'"` errors inside Blizzard's own
+`CooldownViewerItemData.lua`/`CooldownViewer.lua` (`RefreshTotemData`,
+`CheckAuraAddedAlertTriggers`) when exiting a dungeon mid-combat - exactly
+when Blizzard's own CDM visibility/layout refresh (`OnShow`/`RefreshLayout`)
+also runs off the same zone transition. **Root cause:** reading deep into
+CDM internals (`itemFramePool`, frame fields) synchronously in the same tick
+as Blizzard's own CDM refresh, not deferred like this codebase's established
+`UNIT_AURA` pattern (`RegisterUnitEvent` + `C_Timer.After(0, ...)`). **Fix:**
+removed the rescan entirely rather than deferring it - it didn't even solve
+the original bug (only captures *currently active* frames, so a not-yet-cast
+buff was never fixed by it) and was superseded by an on-demand self-heal
+inside `update_buff_bar` (`gcdi_cdm_find_active_frame`), which only ever runs
+from already-deferred call sites and fixed the bug on its own. Lesson: any
+new code that reads `C_CooldownViewer`/CDM frame-pool internals must be
+audited for which event/call-chain it runs in, not just wrapped in a pcall -
+taint isn't caught by pcall.

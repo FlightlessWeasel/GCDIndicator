@@ -66,6 +66,13 @@ no code comments, no user-visible text (chat, tooltips, labels). Call it
   non-obvious pattern (what/why/how + API contracts), and add a one-line
   pointer to it from the relevant section here. In addition to
   `MISTAKES.md`.
+- **Record deliberate design decisions as ADRs** in `docs/adr/` (see
+  `docs/adr/README.md` for format) — one file per decision, numbered
+  sequentially, covering the *why*/alternatives-considered for major
+  structural choices. A topic doc under `docs/` can still hold the full
+  implementation detail an ADR links to; the ADR itself is the decision
+  record. This is separate from `MISTAKES.md`, which is per-incident
+  postmortems, not decisions.
 
 ## Verification tooling
 
