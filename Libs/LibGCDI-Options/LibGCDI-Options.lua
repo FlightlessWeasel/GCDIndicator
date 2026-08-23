@@ -3193,7 +3193,7 @@ local function create_options_frame()
 		"Shows a marker the companion script can scan the screen for to detect this frame's position automatically.", 500)
 
 	local calibrateBtn = create_settings_button(developerFrame, dYOffset, 180, "Calibrate Position", "Calibrate Position", {
-		{ "Shows a small color marker above the bars.", 1, 1, 1 },
+		{ "Shows a small color marker to the right of the global bar.", 1, 1, 1 },
 		{ "Run \"Detect Position\" in the companion script's Launcher while it's visible.", 0.7, 0.7, 0.7 },
 		{ "Click again to hide it.", 0.7, 0.7, 0.7 },
 	}, function()
