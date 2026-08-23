@@ -40,3 +40,20 @@ from already-deferred call sites and fixed the bug on its own. Lesson: any
 new code that reads `C_CooldownViewer`/CDM frame-pool internals must be
 audited for which event/call-chain it runs in, not just wrapped in a pcall -
 taint isn't caught by pcall.
+
+Calibration-mode marker (`GCDI.toggle_calibration_mode`) parented its
+background/swatch textures directly to `main_frame`, and the header comment
+claimed the marker's fixed x-offset (`CALIBRATION_OFFSET_X = 140`) would
+"never overlap real indicators." That only held for the ~86px-wide status
+row. With "Show GCD Row" off, the resource bar (a real child `Frame`, 204px
+wide, created at `main_frame:GetFrameLevel() + 1` by CreateFrame's default)
+takes row 0's place and spatially overlaps the marker's x-range - and since
+frame level beats draw layer across *different* frames, the resource bar's
+background silently painted over the marker regardless of texture creation
+order or `BACKGROUND`/`ARTWORK` layer choice, breaking companion-script
+detection with no error. **Fix:** parent the marker's background/swatches to
+a dedicated child frame set to `main_frame:GetFrameLevel() + 50`, so it wins
+against any real content regardless of what occupies that row. Lesson: for
+overlay/marker UI meant to always be visible on top, don't rely on draw
+layer alone when siblings can be full child frames - frame level order
+trumps draw layer between different frames.
