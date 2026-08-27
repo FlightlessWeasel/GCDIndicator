@@ -125,9 +125,8 @@ kept alongside the new mechanism.
   `AuraContainer`/CDM handling). Scoped to that entry point rather than
   every tab refresh, since a collapse toggle or checkbox click only
   reaches `refresh_*_tab` while the panel is already open.
-- If `build_button_section` exists (see the local-variable refactor
-  plan), consistent hover/pressed styling across Settings/Developer
-  buttons falls out for free from its data-table shape.
+- Consistent hover/pressed styling across Settings/Developer buttons
+  falls out for free from `build_button_section`'s data-table shape.
 
 ## Known gaps (flagged, not fixed here)
 
