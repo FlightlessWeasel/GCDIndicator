@@ -123,6 +123,13 @@ local RESOURCE_COLORS = {
 	stagger = { 0.35, 0.90, 0.55 },   -- Brewmaster stagger vs max health
 }
 
+local RESOURCE_NAMES = {
+	"health", "mana", "rage", "energy", "focus", "runicPower", "runes",
+	"comboPoints", "soulShards", "holyPower", "chi", "arcaneCharges",
+	"insanity", "maelstrom", "fury", "pain", "astralPower", "essence",
+	"stagger",
+}
+
 local WHITE_TEXTURE = "Interface\\Buttons\\WHITE8X8"
 local function init_status_bar_texture(bar) bar:SetStatusBarTexture(WHITE_TEXTURE) local tex = bar:GetStatusBarTexture() if tex and tex.SetHorizTile then tex:SetHorizTile(false) end end
 local GCDI_PREFIX = "|cff00ff00GCDIndicator:|r "
@@ -188,9 +195,8 @@ end
 
 GCDI.FORM_COLORS = FORM_COLORS
 
-local reposition_all, rebuild_spell_bars, rebuild_item_bars, rebuild_buff_bars
 
--- Layout bounds (updated by reposition_all, used by preview mode)
+-- Layout bounds (updated by GCDI.reposition_all, used by preview mode)
 local layoutBounds = { width = 200, height = 100 }
 
 -- ═══════════════════════════════════════════════════════════════════════════
@@ -279,11 +285,10 @@ local function gcdi_rebuild_action_slot_map()
 	end
 end
 
-local function gcdi_invalidate_action_slot_map()
+function GCDI.invalidate_action_slot_map()
 	actionSlotMapDirty = true
 end
 
-GCDI.invalidate_action_slot_map = gcdi_invalidate_action_slot_map
 
 function GCDI.get_action_slot_for_spell(spellID)
 	if actionSlotMapDirty then
@@ -338,9 +343,9 @@ function GCDI.load_profile(name)
 			print(GCDI_PREFIX .. "Disabled resource bars this profile had enabled for another class. |cffffcc00Resave this profile|r to make the fix permanent.")
 		end
 		if GCDI.set_profile_dirty then GCDI.set_profile_dirty(false) end
-		rebuild_spell_bars() -- also rebuilds item bars
-		rebuild_buff_bars()
-		reposition_all()
+		GCDI.rebuild_spell_bars() -- also rebuilds item bars
+		GCDI.rebuild_buff_bars()
+		GCDI.reposition_all()
 		if GCDI.refresh_options_frame then GCDI.refresh_options_frame() end
 		print(GCDI_PREFIX .. "Profile '" .. name .. "' loaded!")
 	end
@@ -390,7 +395,7 @@ local function init_catalog_managers()
 		setOrderKey = function(order) if settings then settings.spellOrder = order end end,
 		isEnabled = GCDI.is_spell_enabled,
 		onReorder = function() 
-			rebuild_spell_bars()
+			GCDI.rebuild_spell_bars()
 			print(GCDI_PREFIX .. "Spell bars rebuilt")
 		end,
 	})
@@ -403,8 +408,8 @@ local function init_catalog_managers()
 		setOrderKey = function(order) if settings then settings.itemOrder = order end end,
 		isEnabled = GCDI.is_item_enabled,
 		onReorder = function() 
-			rebuild_item_bars()
-			reposition_all()
+			GCDI.rebuild_item_bars()
+			GCDI.reposition_all()
 			print(GCDI_PREFIX .. "Item bars rebuilt")
 		end,
 	})
@@ -417,8 +422,8 @@ local function init_catalog_managers()
 		setOrderKey = function(order) if settings then settings.buffOrder = order end end,
 		isEnabled = GCDI.is_buff_enabled,
 		onReorder = function() 
-			rebuild_buff_bars()
-			reposition_all()
+			GCDI.rebuild_buff_bars()
+			GCDI.reposition_all()
 			print(GCDI_PREFIX .. "Buff bars rebuilt")
 		end,
 	})
@@ -524,7 +529,7 @@ local function update_all_spell_bars()
 	end
 end
 
-local function should_track_spell_icon(spellID)
+function GCDI.should_track_spell_icon(spellID)
 	if not settings then return false end
 	local spellSettings = settings.spellSettings[spellID]
 	if spellSettings and spellSettings.trackIcon == true then
@@ -533,15 +538,14 @@ local function should_track_spell_icon(spellID)
 	return false
 end
 
-GCDI.should_track_spell_icon = should_track_spell_icon
 
 -- Off-GCD is rare (most spells trigger the GCD), so this defaults false
 -- (on-GCD) unless the user explicitly flags a spell otherwise. Metadata
 -- only - doesn't affect the addon's own cooldown-swipe display (that's
 -- already GCD-agnostic); exists so the companion-script config export
--- (export_companion_config) can generate an accurate hasGCD field instead of
+-- (GCDI.export_companion_config) can generate an accurate hasGCD field instead of
 -- leaving it manual.
-local function is_spell_off_gcd(spellID)
+function GCDI.is_spell_off_gcd(spellID)
 	if not settings then return false end
 	local spellSettings = settings.spellSettings[spellID]
 	if spellSettings and spellSettings.offGCD == true then
@@ -550,9 +554,8 @@ local function is_spell_off_gcd(spellID)
 	return false
 end
 
-GCDI.is_spell_off_gcd = is_spell_off_gcd
 
-local function is_item_off_gcd(itemKey)
+function GCDI.is_item_off_gcd(itemKey)
 	if not settings then return false end
 	local itemSettings = settings.itemSettings[itemKey]
 	if itemSettings and itemSettings.offGCD == true then
@@ -561,7 +564,6 @@ local function is_item_off_gcd(itemKey)
 	return false
 end
 
-GCDI.is_item_off_gcd = is_item_off_gcd
 
 local function is_spell_self_cast(spellID)
 	if not settings then return false end
@@ -575,7 +577,7 @@ end
 local function update_spell_icons()
 	if previewMode then return end
 	for spellID, data in pairs(trackedSpells) do
-		if data.icon and GCDI.is_spell_enabled(spellID) and should_track_spell_icon(spellID) then
+		if data.icon and GCDI.is_spell_enabled(spellID) and GCDI.should_track_spell_icon(spellID) then
 			local newTexture = C_Spell.GetSpellTexture(spellID)
 			if newTexture then
 				if newTexture ~= data.currentTexture then
@@ -734,11 +736,10 @@ end
 local chargeSpellIDList = {}
 local chargeSpellIDListDirty = true
 
-local function gcdi_invalidate_charge_spell_list()
+function GCDI.invalidate_charge_spell_list()
 	chargeSpellIDListDirty = true
 end
 
-GCDI.invalidate_charge_spell_list = gcdi_invalidate_charge_spell_list
 
 local function gcdi_charge_spell_id_list()
 	if chargeSpellIDListDirty then
@@ -782,9 +783,7 @@ end
 -- Attached directly to GCDI (not a top-level `local function`) to avoid
 -- spending one of the main chunk's 200 local-variable slots - see the
 -- existing `function GCDI.foo()` helpers throughout this file for the same
--- pattern; only genuinely hot per-tick functions get a forward-declared
--- top-level local (reposition_all, rebuild_spell_bars, etc. near the top
--- of the file).
+-- pattern.
 function GCDI.effective_bar_geometry()
 	if configs.ultraCompactMode then
 		return configs.ultraBarSize, configs.ultraPad, configs.ultraSpacing
@@ -864,7 +863,7 @@ local function create_spell_bar(spellID, spellName, texture, actionSlot)
 
 	local showChargeIndicators = maxCharges > 1
 
-	local trackIcon = should_track_spell_icon(spellID)
+	local trackIcon = GCDI.should_track_spell_icon(spellID)
 
 	local isSelfCast = is_spell_self_cast(spellID)
 
@@ -949,7 +948,7 @@ local function create_spell_bar(spellID, spellName, texture, actionSlot)
 		iconChangeIndicator = iconChangeIndicator,
 	}
 	spellBars[barIndex] = spellID
-	gcdi_invalidate_charge_spell_list()
+	GCDI.invalidate_charge_spell_list()
 end
 
 local function clear_spell_bars()
@@ -961,7 +960,7 @@ local function clear_spell_bars()
 	end
 	wipe(trackedSpells)
 	wipe(spellBars)
-	gcdi_invalidate_charge_spell_list()
+	GCDI.invalidate_charge_spell_list()
 end
 
 -- ═══════════════════════════════════════════════════════════════════════════
@@ -1462,7 +1461,7 @@ local function gcdi_install_cdm_stack_hooks()
 			-- CDM's itemFramePool reassigns the same frame object to different cooldownIDs
 			-- as buffs come and go, and RefreshData is what (re)binds a pooled frame to its
 			-- current cooldownID. Keep our map in sync here so it self-heals instead of only
-			-- refreshing on the next full scan_cdm_buff_frames() (login/profile-load/manual).
+			-- refreshing on the next full GCDI.scan_cdm_buff_frames() (login/profile-load/manual).
 			cdmBuffFrames[cdID] = self
 			if not trackedBuffs[cdID] then return end
 			C_Timer.After(0, function()
@@ -1534,7 +1533,7 @@ local function gcdi_ensure_dispel_overlay_container()
 	return c
 end
 
-local function gcdi_setup_dispel_overlay()
+function GCDI.setup_dispel_overlay()
 	if dispelOverlayBound then return end
 	if not (main_frame and main_frame.dispelbar) then return end
 	local container = gcdi_ensure_dispel_overlay_container()
@@ -1587,7 +1586,6 @@ local function gcdi_setup_dispel_overlay()
 	end
 end
 
-GCDI.setup_dispel_overlay = gcdi_setup_dispel_overlay
 
 local function create_buff_bar(buffKey, spellName, texture, tooltipSpellID)
 	local barIndex = #buffBars + 1
@@ -1747,11 +1745,10 @@ local function detect_native_range_for_spells()
 	LibRange:DetectNativeRangeForSpells()
 end
 
-local function update_range_indicators()
+function GCDI.UpdateRangeIndicators()
 	LibRange:UpdateRangeIndicators()
 end
 
-GCDI.UpdateRangeIndicators = update_range_indicators
 
 local function create_resource_bar(name, color)
 	local barSize = configs.barHeight
@@ -2082,19 +2079,18 @@ local RESOURCE_UPDATERS = {
 	{ "stagger", update_stagger_bar },
 }
 
-local function gcdi_is_resource_enabled(key)
+function GCDI.is_resource_enabled(key)
 	if not settings or not settings.resourceSettings then return true end
 	local enabled = settings.resourceSettings[key]
 	if enabled == nil then return true end
 	return enabled and true or false
 end
 
-GCDI.is_resource_enabled = gcdi_is_resource_enabled
 
 local function update_all_resources()
 	for i = 1, #RESOURCE_UPDATERS do
 		local entry = RESOURCE_UPDATERS[i]
-		if gcdi_is_resource_enabled(entry[1]) then
+		if GCDI.is_resource_enabled(entry[1]) then
 			entry[2]()
 		end
 	end
@@ -2233,7 +2229,42 @@ local function update_mob_count_indicator()
 	end
 end
 
-reposition_all = function()
+local function layout_three_columns(count, splitPoint1, splitPoint2, startY, col2X, col3X, spellBarHeight, spacing, container_at)
+	local col1Y, col2Y, col3Y = startY, startY, startY
+	for i = 1, count do
+		local container = container_at(i)
+		if container then
+			container:ClearAllPoints()
+			if i <= splitPoint1 then
+				container:SetPoint("TOPLEFT", main_frame.anchor, "TOPLEFT", 0, col1Y)
+				col1Y = col1Y - spellBarHeight - spacing
+			elseif i <= splitPoint2 then
+				container:SetPoint("TOPLEFT", main_frame.anchor, "TOPLEFT", col2X, col2Y)
+				col2Y = col2Y - spellBarHeight - spacing
+			else
+				container:SetPoint("TOPLEFT", main_frame.anchor, "TOPLEFT", col3X, col3Y)
+				col3Y = col3Y - spellBarHeight - spacing
+			end
+			container:Show()
+		end
+	end
+	return col1Y, col2Y, col3Y
+end
+
+local function column_max_width(count, splitPoint1, splitPoint2, col2X, col3X, columnWidth, maxWidth)
+	if count > 0 then
+		if count > splitPoint2 then
+			maxWidth = math.max(maxWidth, col3X + columnWidth)
+		elseif count > splitPoint1 then
+			maxWidth = math.max(maxWidth, col2X + columnWidth)
+		else
+			maxWidth = math.max(maxWidth, columnWidth)
+		end
+	end
+	return maxWidth
+end
+
+function GCDI.reposition_all()
 	-- Resource bars always use the base geometry - Ultra-Compact Mode never
 	-- shrinks them, only the status row and spell/item/buff bars below.
 	local resourceBarSize, resourcePad = configs.barHeight, configs.bgPadding
@@ -2251,7 +2282,7 @@ reposition_all = function()
 	
 	local yOffset = 0
 	
-	local isResourceEnabled = gcdi_is_resource_enabled
+	local isResourceEnabled = GCDI.is_resource_enabled
 
 	local gcdSettings = settings.gcdSettings or {}
 	if gcdSettings.showGcdRow ~= false then
@@ -2382,27 +2413,12 @@ reposition_all = function()
 		local itemsPerColumn = math.ceil(totalCount / 3)
 		local splitPoint1 = itemsPerColumn
 		local splitPoint2 = itemsPerColumn * 2
-
-		local col1Y = yOffset
-		local col2Y = yOffset
-		local col3Y = yOffset
 		local col2X = columnWidth + columnGap
 		local col3X = (columnWidth + columnGap) * 2
 
-		for i, entry in ipairs(allSpellsAndItems) do
-			entry.container:ClearAllPoints()
-			if i <= splitPoint1 then
-				entry.container:SetPoint("TOPLEFT", main_frame.anchor, "TOPLEFT", 0, col1Y)
-				col1Y = col1Y - spellBarHeight - spacing
-			elseif i <= splitPoint2 then
-				entry.container:SetPoint("TOPLEFT", main_frame.anchor, "TOPLEFT", col2X, col2Y)
-				col2Y = col2Y - spellBarHeight - spacing
-			else
-				entry.container:SetPoint("TOPLEFT", main_frame.anchor, "TOPLEFT", col3X, col3Y)
-				col3Y = col3Y - spellBarHeight - spacing
-			end
-			entry.container:Show()
-		end
+		local col1Y, col2Y, col3Y = layout_three_columns(totalCount, splitPoint1, splitPoint2, yOffset, col2X, col3X, spellBarHeight, spacing, function(i)
+			return allSpellsAndItems[i].container
+		end)
 
 		columnsEndY = math.min(col1Y, col2Y, col3Y)
 
@@ -2412,49 +2428,15 @@ reposition_all = function()
 		local buffSplit1 = buffsPerColumn
 		local buffSplit2 = buffsPerColumn * 2
 
-		local buffCol1Y = columnsEndY
-		local buffCol2Y = columnsEndY
-		local buffCol3Y = columnsEndY
-
-		for i, spellID in ipairs(orderedBuffs) do
-			local data = trackedBuffs[spellID]
-			if data and data.container then
-				data.container:ClearAllPoints()
-				if i <= buffSplit1 then
-					data.container:SetPoint("TOPLEFT", main_frame.anchor, "TOPLEFT", 0, buffCol1Y)
-					buffCol1Y = buffCol1Y - spellBarHeight - spacing
-				elseif i <= buffSplit2 then
-					data.container:SetPoint("TOPLEFT", main_frame.anchor, "TOPLEFT", col2X, buffCol2Y)
-					buffCol2Y = buffCol2Y - spellBarHeight - spacing
-				else
-					data.container:SetPoint("TOPLEFT", main_frame.anchor, "TOPLEFT", col3X, buffCol3Y)
-					buffCol3Y = buffCol3Y - spellBarHeight - spacing
-				end
-				data.container:Show()
-			end
-		end
+		local buffCol1Y, buffCol2Y, buffCol3Y = layout_three_columns(buffCount, buffSplit1, buffSplit2, columnsEndY, col2X, col3X, spellBarHeight, spacing, function(i)
+			local data = trackedBuffs[orderedBuffs[i]]
+			return data and data.container
+		end)
 
 		finalY = math.min(buffCol1Y, buffCol2Y, buffCol3Y)
 
-		if totalCount > 0 then
-			if totalCount > splitPoint2 then
-				maxWidth = math.max(maxWidth, col3X + columnWidth)
-			elseif totalCount > splitPoint1 then
-				maxWidth = math.max(maxWidth, col2X + columnWidth)
-			else
-				maxWidth = math.max(maxWidth, columnWidth)
-			end
-		end
-
-		if buffCount > 0 then
-			if buffCount > buffSplit2 then
-				maxWidth = math.max(maxWidth, col3X + columnWidth)
-			elseif buffCount > buffSplit1 then
-				maxWidth = math.max(maxWidth, col2X + columnWidth)
-			else
-				maxWidth = math.max(maxWidth, columnWidth)
-			end
-		end
+		maxWidth = column_max_width(totalCount, splitPoint1, splitPoint2, col2X, col3X, columnWidth, maxWidth)
+		maxWidth = column_max_width(buffCount, buffSplit1, buffSplit2, col2X, col3X, columnWidth, maxWidth)
 	end
 
 	-- Store bounds (height is positive, representing total vertical space used)
@@ -2465,15 +2447,14 @@ reposition_all = function()
 	update_stance_indicator()
 end
 
-GCDI.reposition_all = reposition_all
 
 -- Debug/cross-check export: dumps every currently-shown bar's position
--- (relative to main_frame.anchor, same coordinate space reposition_all()
+-- (relative to main_frame.anchor, same coordinate space GCDI.reposition_all()
 -- positions everything in) and size, so it can be diffed against what the
 -- companion script computes for the same spell/item/buff list. Not for
 -- general use - purely a diagnostic added to track down compact-mode
 -- companion-script/addon drift.
-local function export_bar_positions()
+function GCDI.export_bar_positions()
 	local lines = {}
 	table.insert(lines, "GCDIndicator bar position export")
 	table.insert(lines, string.format(
@@ -2539,7 +2520,6 @@ local function export_bar_positions()
 
 	return table.concat(lines, "\n")
 end
-GCDI.export_bar_positions = export_bar_positions
 
 local function companion_string_escape(s)
 	return (tostring(s or ""):gsub('"', '\\"'))
@@ -2592,7 +2572,7 @@ local GCDI_RESOURCE_IS_CHARGES = {
 	runes = true, comboPoints = true, soulShards = true, holyPower = true,
 	chi = true, arcaneCharges = true, essence = true,
 }
--- Same fixed display order reposition_all() uses (health first, then this list).
+-- Same fixed display order GCDI.reposition_all() uses (health first, then this list).
 local GCDI_RESOURCE_ORDER = {
 	"mana", "rage", "energy", "focus", "runicPower", "runes",
 	"comboPoints", "soulShards", "holyPower", "chi", "arcaneCharges",
@@ -2606,7 +2586,7 @@ local GCDI_RESOURCE_ORDER = {
 -- sync instead of hand-editing every time spells, items, buffs, resources,
 -- or their order change. Order matches get_ordered_spells()/
 -- GCDI.get_ordered_items()/get_ordered_buffs() - the same order
--- reposition_all() uses, avoiding order-mismatch bugs.
+-- GCDI.reposition_all() uses, avoiding order-mismatch bugs.
 --
 -- What this CANNOT derive (the addon has no concept of these - fill in by
 -- hand after pasting):
@@ -2631,10 +2611,10 @@ local GCDI_RESOURCE_ORDER = {
 -- so this is game-knowledge you flag by hand once, not something
 -- auto-detected.
 -- What this infers, not confirms (the mapping between
--- should_track_spell_icon()/should_show_duration_bar() and the companion
+-- GCDI.should_track_spell_icon()/should_show_duration_bar() and the companion
 -- script's hasProc/hasPandemic fields is a structural guess based on box
 -- ordering, not verified in-game):
---   - hasProc (spells): from should_track_spell_icon(spellID).
+--   - hasProc (spells): from GCDI.should_track_spell_icon(spellID).
 --   - hasPandemic (buffs): from GCDI.should_show_duration_bar(buffKey).
 -- What's a live snapshot, not a stable config value: resource max/charge
 -- counts below reflect UnitPowerMax() at the moment you export - some (rage
@@ -2646,7 +2626,7 @@ local GCDI_RESOURCE_ORDER = {
 -- script's squished-CamelCase convention, and buffs get a "Buff" suffix
 -- (if not already present) so a buff never collides with a same-named
 -- spell's entry (e.g. "IronfurBuff" vs. the "Ironfur" spell).
-local function export_companion_config()
+function GCDI.export_companion_config()
 	local lines = {}
 	table.insert(lines, "; Generated by GCDIndicator /gcdopt exportrotation - paste over GetSpellList()/GetBuffList()/GetResourceConfig() in your companion script.")
 	table.insert(lines, "; key/chargeColor/chargeBlackThreshold are NOT derived from the addon - fill them in by hand.")
@@ -2665,7 +2645,7 @@ local function export_companion_config()
 			local chargeInfo = gcdi_get_spell_charge_info(spellID, actionSlot)
 			local maxCharges = gcdi_effective_max_charge_pips(spellID, chargeInfo)
 			local isSelfCast = is_spell_self_cast(spellID)
-			local trackIcon = should_track_spell_icon(spellID)
+			local trackIcon = GCDI.should_track_spell_icon(spellID)
 
 			local parts = {
 				string.format('name: "%s"', companion_string_escape(companion_normalize_name(catalogEntry.name, false))),
@@ -2679,7 +2659,7 @@ local function export_companion_config()
 			if trackIcon then
 				table.insert(parts, "hasProc: true")
 			end
-			if is_spell_off_gcd(spellID) then
+			if GCDI.is_spell_off_gcd(spellID) then
 				table.insert(parts, "hasGCD: false")
 			end
 			table.insert(lines, "\t\t{ " .. table.concat(parts, ", ") .. " },")
@@ -2699,7 +2679,7 @@ local function export_companion_config()
 				table.insert(parts, "hasCharges: true")
 				table.insert(parts, "maxCharges: 1")
 			end
-			if is_item_off_gcd(itemKey) then
+			if GCDI.is_item_off_gcd(itemKey) then
 				table.insert(parts, "hasGCD: false")
 			end
 			table.insert(lines, "\t\t{ " .. table.concat(parts, ", ") .. " },")
@@ -2736,11 +2716,11 @@ local function export_companion_config()
 	table.insert(lines, "GetResourceConfig() {")
 	table.insert(lines, "\treturn [")
 
-	if gcdi_is_resource_enabled("health") then
+	if GCDI.is_resource_enabled("health") then
 		table.insert(lines, '\t\t{ name: "health", min: 0, max: 100 },')
 	end
 	for _, name in ipairs(GCDI_RESOURCE_ORDER) do
-		if gcdi_is_resource_enabled(name) then
+		if GCDI.is_resource_enabled(name) then
 			if name == "stagger" then
 				-- No power type - computed as a % of max health, not exportable as min/max/charges.
 				table.insert(lines, string.format('\t\t{ name: "%s" },  ; TODO stagger has no power type, fill in manually', name))
@@ -2763,7 +2743,6 @@ local function export_companion_config()
 
 	return table.concat(lines, "\n")
 end
-GCDI.export_companion_config = export_companion_config
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- SCANNING
@@ -2955,7 +2934,7 @@ end
 --    This gives all 5 (or N) buffs even when only some have visible frames.
 -- 2) From BuffIconCooldownViewer's itemFramePool: only frames that are currently active.
 --    We use these for frame references (auraInstanceID, etc.); pool may have fewer than selected.
-local function scan_cdm_buff_frames()
+function GCDI.scan_cdm_buff_frames()
 	gcdi_install_cdm_stack_hooks()
 	-- Don't wipe - update in place to preserve references
 	local foundThisScan = {}
@@ -3118,12 +3097,11 @@ local function scan_buffs()
 		end
 	end
 
-	scan_cdm_buff_frames()
+	GCDI.scan_cdm_buff_frames()
 end
 
-GCDI.scan_cdm_buff_frames = scan_cdm_buff_frames
 
-rebuild_buff_bars = function()
+function GCDI.rebuild_buff_bars()
 	clear_buff_bars()
 	
 	local orderedBuffs = GCDI.get_ordered_buffs()
@@ -3137,10 +3115,9 @@ rebuild_buff_bars = function()
 	end
 
 	update_all_buff_bars()
-	reposition_all()
+	GCDI.reposition_all()
 end
 
-GCDI.rebuild_buff_bars = rebuild_buff_bars
 
 function GCDI.add_buff_to_catalog(spellID)
 	if not spellID or spellID <= 0 then return false end
@@ -3179,7 +3156,7 @@ function GCDI.remove_buff_from_catalog(spellID)
 		if settings and settings.buffSettings then
 			settings.buffSettings[spellID] = nil
 		end
-		rebuild_buff_bars()
+		GCDI.rebuild_buff_bars()
 		return true
 	end
 	return false
@@ -3251,13 +3228,13 @@ local function scan_items()
 			end
 		end
 		if needsRebuild then
-			rebuild_item_bars()
-			reposition_all()
+			GCDI.rebuild_item_bars()
+			GCDI.reposition_all()
 		end
 	end)
 end
 
-rebuild_item_bars = function()
+function GCDI.rebuild_item_bars()
 	clear_item_bars()
 	
 	local orderedItems = GCDI.get_ordered_items()
@@ -3270,13 +3247,12 @@ rebuild_item_bars = function()
 	end
 end
 
-GCDI.rebuild_item_bars = rebuild_item_bars
 
 -- Status row (GCD/Combat/Aggro/Channeling/Dispel/AOE/stance) has a fixed
 -- structure - Ultra-Compact Mode never adds/removes a box, only shrinks
 -- them - so this resizes the existing frames in place rather than
 -- destroying and recreating them. That matters: the native dispel overlay
--- (gcdi_setup_dispel_overlay) anchors itself to the exact main_frame.dispelbar
+-- (GCDI.setup_dispel_overlay) anchors itself to the exact main_frame.dispelbar
 -- frame object it saw at bind time and never re-anchors (no teardown/rebind
 -- path exists - see docs/dispel-indicator.md). Destroying and recreating
 -- dispelbar would silently orphan that overlay's anchor. Resizing the same
@@ -3319,7 +3295,7 @@ function GCDI.resize_status_row()
 	end
 end
 
-rebuild_spell_bars = function()
+function GCDI.rebuild_spell_bars()
 	clear_spell_bars()
 	
 	local orderedSpells = get_ordered_spells()
@@ -3339,33 +3315,31 @@ rebuild_spell_bars = function()
 		end
 	end
 	
-	rebuild_item_bars()
+	GCDI.rebuild_item_bars()
 	update_all_spell_bars()
 	update_all_charge_indicators()
-	update_range_indicators()
-	reposition_all()
+	GCDI.UpdateRangeIndicators()
+	GCDI.reposition_all()
 end
 
-GCDI.rebuild_spell_bars = rebuild_spell_bars
 
--- rebuild_spell_bars already rebuilds item bars, so it is not repeated here.
-local function scan_action_bars()
-	rebuild_spell_bars()
-	rebuild_buff_bars()
+-- GCDI.rebuild_spell_bars already rebuilds item bars, so it is not repeated here.
+function GCDI.scan_action_bars()
+	GCDI.rebuild_spell_bars()
+	GCDI.rebuild_buff_bars()
 end
 
-GCDI.scan_action_bars = scan_action_bars
 GCDI.scan_spells = function()
 	scan_spellbook()
-	rebuild_spell_bars()
+	GCDI.rebuild_spell_bars()
 end
 GCDI.scan_items = function()
 	scan_items()
-	rebuild_item_bars()
+	GCDI.rebuild_item_bars()
 end
 GCDI.scan_buffs = function()
 	scan_buffs()
-	rebuild_buff_bars()
+	GCDI.rebuild_buff_bars()
 end
 
 -- ═══════════════════════════════════════════════════════════════════════════
@@ -3459,17 +3433,17 @@ local function on_event(self, event, arg1, arg2, ...)
 		C_Timer.After(0.5, function()
 			if previewMode or InCombatLockdown() then return end
 			if gcdi_needs_charge_layout_rebuild() then
-				rebuild_spell_bars()
+				GCDI.rebuild_spell_bars()
 			end
 			-- Dispel overlay container creation is combat-lockdown gated; retry
 			-- any buffs left unbound because combat started before it could bind.
-			gcdi_setup_dispel_overlay()
+			GCDI.setup_dispel_overlay()
 		end)
 		
 	elseif event == "PLAYER_ENTERING_WORLD" then
 		main_frame.combatbar:SetStatusBarColor(gcdi_safe_unit_affecting_combat("player") and 1 or 0, 0, 0)
 		update_aggro_indicator()
-		gcdi_setup_dispel_overlay()
+		GCDI.setup_dispel_overlay()
 		update_all_resources()
 		update_gcd()
 		-- Try to detect native range after a delay (in case player has a target)
@@ -3478,22 +3452,22 @@ local function on_event(self, event, arg1, arg2, ...)
 	elseif event == "UPDATE_SHAPESHIFT_FORM" or event == "UPDATE_BONUS_ACTIONBAR" then
 		update_stance_indicator()
 		-- Bonus bar swaps repoint action slots.
-		gcdi_invalidate_action_slot_map()
+		GCDI.invalidate_action_slot_map()
 		
 	elseif event == "RUNE_POWER_UPDATE" then
 		update_runes_bar()
 
 	elseif event == "ACTIONBAR_SLOT_CHANGED" or event == "UPDATE_MACROS" then
 		-- Cached spellID -> action slot map is now stale.
-		gcdi_invalidate_action_slot_map()
+		GCDI.invalidate_action_slot_map()
 
 	elseif event == "SPELLS_CHANGED" then
-		gcdi_invalidate_action_slot_map()
+		GCDI.invalidate_action_slot_map()
 		LibRange:InvalidateSpellRangeCache()
 
 	elseif event == "PLAYER_SPECIALIZATION_CHANGED" then
 		-- Removed auto-scan: use /gcdopt scan to manually rescan
-		gcdi_invalidate_action_slot_map()
+		GCDI.invalidate_action_slot_map()
 		LibRange:InvalidateSpellRangeCache()
 		gcdi_refresh_stagger_spec()
 
@@ -3502,7 +3476,7 @@ local function on_event(self, event, arg1, arg2, ...)
 		-- LibGCDI-Range.lua's ResetIndicatorState/cachedFallbackInRange) shown
 		-- as green/red until a fresh sample happens to overwrite it.
 		LibRange:ResetIndicatorState()
-		update_range_indicators()
+		GCDI.UpdateRangeIndicators()
 		detect_native_range_for_spells()
 		update_aggro_indicator()
 		-- Refresh target-debuff bars so a new target doesn't show stale data
@@ -3731,7 +3705,7 @@ local function init()
 	-- All 6 row separators (sep1 + one per indicator below) are kept on
 	-- main_frame.gcdRowSeps so resize_status_row can resize every one of
 	-- them, not just the last (gcdRowSep6, kept separately since
-	-- reposition_all already reads it by that name to gate dispel visibility).
+	-- GCDI.reposition_all already reads it by that name to gate dispel visibility).
 	local rowSeps = { sep1 }
 	local prevAnchor = gcdClip
 	local lastSep
@@ -3762,26 +3736,10 @@ local function init()
 	end
 	
 	local barSize = configs.barHeight
-	resourceBars.health = create_resource_bar("health", RESOURCE_COLORS.health)
+	for _, name in ipairs(RESOURCE_NAMES) do
+		resourceBars[name] = create_resource_bar(name, RESOURCE_COLORS[name])
+	end
 	setup_health_heal_absorb_bar(resourceBars.health)
-	resourceBars.mana = create_resource_bar("mana", RESOURCE_COLORS.mana)
-	resourceBars.rage = create_resource_bar("rage", RESOURCE_COLORS.rage)
-	resourceBars.energy = create_resource_bar("energy", RESOURCE_COLORS.energy)
-	resourceBars.focus = create_resource_bar("focus", RESOURCE_COLORS.focus)
-	resourceBars.runicPower = create_resource_bar("runicPower", RESOURCE_COLORS.runicPower)
-	resourceBars.runes = create_resource_bar("runes", RESOURCE_COLORS.runes)
-	resourceBars.comboPoints = create_resource_bar("comboPoints", RESOURCE_COLORS.comboPoints)
-	resourceBars.soulShards = create_resource_bar("soulShards", RESOURCE_COLORS.soulShards)
-	resourceBars.holyPower = create_resource_bar("holyPower", RESOURCE_COLORS.holyPower)
-	resourceBars.chi = create_resource_bar("chi", RESOURCE_COLORS.chi)
-	resourceBars.arcaneCharges = create_resource_bar("arcaneCharges", RESOURCE_COLORS.arcaneCharges)
-	resourceBars.insanity = create_resource_bar("insanity", RESOURCE_COLORS.insanity)
-	resourceBars.maelstrom = create_resource_bar("maelstrom", RESOURCE_COLORS.maelstrom)
-	resourceBars.fury = create_resource_bar("fury", RESOURCE_COLORS.fury)
-	resourceBars.pain = create_resource_bar("pain", RESOURCE_COLORS.pain)
-	resourceBars.astralPower = create_resource_bar("astralPower", RESOURCE_COLORS.astralPower)
-	resourceBars.essence = create_resource_bar("essence", RESOURCE_COLORS.essence)
-	resourceBars.stagger = create_resource_bar("stagger", RESOURCE_COLORS.stagger)
 	
 	-- Helper function to add separators to charge-based resource bars
 	local function add_separators(resourceData, maxSeparators)
@@ -3887,13 +3845,13 @@ local function init()
 			end
 			if GCDI.set_profile_dirty then GCDI.set_profile_dirty(false) end
 
-			rebuild_spell_bars()
-			rebuild_buff_bars()
+			GCDI.rebuild_spell_bars()
+			GCDI.rebuild_buff_bars()
 			
 			-- Scan CDM frames AFTER profile load to get live frame references
 			-- This populates cdmBuffFrames and spellIDToCooldownID mappings
 			C_Timer.After(1.0, function()
-				scan_cdm_buff_frames()
+				GCDI.scan_cdm_buff_frames()
 			end)
 			
 			print(GCDI_PREFIX .. "Profile '" .. settings.currentProfile .. "' loaded")
@@ -3917,7 +3875,7 @@ local function init()
 
 		-- Every 2 ticks (10 Hz): range colors, stagger
 		if tickCount % 2 == 0 then
-			update_range_indicators()
+			GCDI.UpdateRangeIndicators()
 			update_stagger_bar()
 		end
 
@@ -4162,7 +4120,7 @@ function GCDI.toggle_preview_mode()
 			resourceBars.stagger.staggerParked = nil
 		end
 		main_frame.mobCountState = nil
-		gcdi_invalidate_charge_spell_list()
+		GCDI.invalidate_charge_spell_list()
 
 		-- Force update all bars to restore real values
 		-- Call individual update functions to properly restore each resource bar
@@ -4188,7 +4146,7 @@ function GCDI.toggle_preview_mode()
 		update_aggro_indicator()
 		update_mob_count_indicator()
 		-- Restore the idle-grey background; the native overlay (see
-		-- gcdi_setup_dispel_overlay) owns repainting it purple, this only
+		-- GCDI.setup_dispel_overlay) owns repainting it purple, this only
 		-- undoes preview mode's "Sample: dispel-active purple" override.
 		if main_frame.dispelbar then
 			main_frame.dispelbar:SetStatusBarColor(0.28, 0.28, 0.32)
@@ -4196,7 +4154,7 @@ function GCDI.toggle_preview_mode()
 
 		-- Force update all tracked elements
 		update_all_spell_bars()
-		update_range_indicators()
+		GCDI.UpdateRangeIndicators()
 		update_all_charge_indicators()
 		update_all_item_bars()
 		update_item_charge_indicators()
@@ -4204,7 +4162,7 @@ function GCDI.toggle_preview_mode()
 		update_spell_icons()
 		
 		-- Reposition to restore proper layout based on settings
-		reposition_all()
+		GCDI.reposition_all()
 		
 		print(GCDI_PREFIX .. "Preview mode |cffff0000OFF|r - Normal display restored")
 	end
@@ -4353,7 +4311,7 @@ end
 -- buttons, so both entry points run identical logic.
 -- ═══════════════════════════════════════════════════════════════════════════
 
-local function print_item_catalog()
+function GCDI.print_item_catalog()
 	print(GCDI_PREFIX .. "--- Item Catalog ---")
 	local count = 0
 	for key, data in pairs(GCDI.itemCatalog) do
@@ -4362,9 +4320,8 @@ local function print_item_catalog()
 	end
 	print(GCDI_PREFIX .. count .. " items in catalog")
 end
-GCDI.print_item_catalog = print_item_catalog
 
-local function print_buff_status()
+function GCDI.print_buff_status()
 	-- List tracked buffs and their status
 	print(GCDI_PREFIX .. "--- Tracked Buffs Status ---")
 	print("|cff888888Note: Buff spell IDs are secret. Get IDs from Wowhead or tooltip addons.|r")
@@ -4381,9 +4338,8 @@ local function print_buff_status()
 		print("  No buffs being tracked. Add buffs in /gcdopt -> Buffs tab")
 	end
 end
-GCDI.print_buff_status = print_buff_status
 
-local function print_buff_settings_debug()
+function GCDI.print_buff_settings_debug()
 	-- Debug: show what's saved in settings.buffSettings
 	print(GCDI_PREFIX .. "--- Buff Settings Debug ---")
 	if settings and settings.buffSettings then
@@ -4410,20 +4366,17 @@ local function print_buff_settings_debug()
 	end
 	print(GCDI_PREFIX .. catCount .. " entries in buffCatalog")
 end
-GCDI.print_buff_settings_debug = print_buff_settings_debug
-
-local function import_buffs_from_cdm()
+function GCDI.import_buffs_from_cdm()
 	-- Force import from CDM
 	print(GCDI_PREFIX .. "Importing buffs from Cooldown Manager...")
-	local newBuffs = scan_cdm_buff_frames()
-	rebuild_buff_bars()
+	local newBuffs = GCDI.scan_cdm_buff_frames()
+	GCDI.rebuild_buff_bars()
 	local totalBuffs = 0
 	for _ in pairs(GCDI.buffCatalog) do totalBuffs = totalBuffs + 1 end
 	print(GCDI_PREFIX .. "Imported " .. newBuffs .. " new buffs (" .. totalBuffs .. " total)")
 end
-GCDI.import_buffs_from_cdm = import_buffs_from_cdm
 
-local function print_range_debug()
+function GCDI.print_range_debug()
 	-- Debug range detection for all tracked spells
 	print(GCDI_PREFIX .. "--- Range Detection Debug ---")
 	local globalYards = settings.globalRangeFallbackYards or 5
@@ -4478,9 +4431,7 @@ local function print_range_debug()
 		print("|cffffcc00Tip: Target an enemy to see range check results|r")
 	end
 end
-GCDI.print_range_debug = print_range_debug
-
-local function test_range_indicators()
+function GCDI.test_range_indicators()
 	-- Force all range indicators to bright colors for visibility testing
 	print(GCDI_PREFIX .. "Testing range indicator visibility...")
 	local count = 0
@@ -4509,9 +4460,7 @@ local function test_range_indicators()
 	print(GCDI_PREFIX .. "Set " .. count .. " range overlays to bright colors")
 	print("|cffffcc00Note: Colors will reset on next target change or update tick|r")
 end
-GCDI.test_range_indicators = test_range_indicators
-
-local function scan_cooldown_manager()
+function GCDI.scan_cooldown_manager()
 	-- Scan Blizzard's Cooldown Manager for buff frames
 	print(GCDI_PREFIX .. "--- Scanning Cooldown Manager ---")
 	local viewer = _G["BuffIconCooldownViewer"]
@@ -4577,7 +4526,6 @@ local function scan_cooldown_manager()
 
 	print(GCDI_PREFIX .. frameCount .. " frames, " .. activeCount .. " active")
 end
-GCDI.scan_cooldown_manager = scan_cooldown_manager
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- SLASH COMMANDS
@@ -4588,7 +4536,7 @@ SLASH_GCDOPT2 = "/gcdiopt"
 SLASH_GCDOPT3 = "/gcdioptions"
 SlashCmdList["GCDOPT"] = function(msg)
 	if msg == "scan" then
-		scan_action_bars()
+		GCDI.scan_action_bars()
 	elseif msg == "debug" then
 		configs.debugMode = not configs.debugMode
 		settings.debugMode = configs.debugMode  -- persist (SavedVariablesPerCharacter)
@@ -4599,8 +4547,8 @@ SlashCmdList["GCDOPT"] = function(msg)
 		print(GCDI_PREFIX .. "Compact mode " .. (configs.compactMode and "ON" or "OFF"))
 		-- Box layout (icon square present/absent) is baked in at creation
 		-- time, not just position, so toggling needs a full rebuild.
-		rebuild_spell_bars()  -- also rebuilds item bars
-		rebuild_buff_bars()
+		GCDI.rebuild_spell_bars()  -- also rebuilds item bars
+		GCDI.rebuild_buff_bars()
 	elseif msg == "ultracompact" then
 		configs.ultraCompactMode = not configs.ultraCompactMode
 		settings.ultraCompactMode = configs.ultraCompactMode  -- persist (SavedVariablesPerCharacter)
@@ -4609,14 +4557,14 @@ SlashCmdList["GCDOPT"] = function(msg)
 		-- same as "compact" above, so those still need a full rebuild. The
 		-- status row's structure never changes (only its box size), so it
 		-- resizes in place - see resize_status_row's comment for why.
-		rebuild_spell_bars()  -- also rebuilds item bars
-		rebuild_buff_bars()
+		GCDI.rebuild_spell_bars()  -- also rebuilds item bars
+		GCDI.rebuild_buff_bars()
 		GCDI.resize_status_row()
 	elseif msg == "exportbars" then
 		-- Diagnostic dump of every visible bar's position/size, for
 		-- cross-checking against what the companion script computes. See
-		-- export_bar_positions() above reposition_all().
-		local text = export_bar_positions()
+		-- GCDI.export_bar_positions() above GCDI.reposition_all().
+		local text = GCDI.export_bar_positions()
 		if GCDI.show_export_import_popup then
 			GCDI.show_export_import_popup("export", text, "Bar Position Export")
 		else
@@ -4625,32 +4573,32 @@ SlashCmdList["GCDOPT"] = function(msg)
 	elseif msg == "exportrotation" then
 		-- Companion-script config export: generates SpellList/BuffList
 		-- array text from the live catalog/settings state. See
-		-- export_companion_config() above reposition_all().
-		local text = export_companion_config()
+		-- GCDI.export_companion_config() above GCDI.reposition_all().
+		local text = GCDI.export_companion_config()
 		if GCDI.show_export_import_popup then
 			GCDI.show_export_import_popup("export", text, "Rotation Config Export")
 		else
 			print(GCDI_PREFIX .. text)
 		end
 	elseif msg == "items" then
-		print_item_catalog()
+		GCDI.print_item_catalog()
 	elseif msg == "buffs" then
-		print_buff_status()
+		GCDI.print_buff_status()
 	elseif msg == "buffdebug" then
-		print_buff_settings_debug()
+		GCDI.print_buff_settings_debug()
 	elseif msg == "cdmimport" then
-		import_buffs_from_cdm()
+		GCDI.import_buffs_from_cdm()
 	elseif msg == "range" then
-		print_range_debug()
+		GCDI.print_range_debug()
 	elseif msg == "rangetest" then
-		test_range_indicators()
+		GCDI.test_range_indicators()
 	elseif msg == "minimap" then
 		-- Toggle minimap button visibility
 		GCDI.ToggleMinimapButton()
 		local hidden = settings.minimap and settings.minimap.hide
 		print(GCDI_PREFIX .. "Minimap button " .. (hidden and "hidden" or "shown"))
 	elseif msg == "testbuffs" or msg == "cdm" then
-		scan_cooldown_manager()
+		GCDI.scan_cooldown_manager()
 	elseif msg == "calibrate" then
 		GCDI.toggle_calibration_mode()
 	else

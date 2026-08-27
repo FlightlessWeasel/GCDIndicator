@@ -45,3 +45,4 @@ from a deliberate design decision with alternatives that were weighed.
 | [0006](0006-options-drag-to-reorder.md) | Drag-to-reorder rows in the Options UI | Accepted |
 | [0007](0007-hand-rolled-test-harness.md) | Hand-rolled Lua 5.1 test harness instead of busted | Accepted |
 | [0008](0008-ultra-compact-mode.md) | Ultra-Compact Mode: machine-only minimum-footprint layout | Accepted |
+| [0009](0009-options-ui-native-collapsible-sections.md) | Options UI: native collapsible sections instead of adopting AceGUI | Accepted |

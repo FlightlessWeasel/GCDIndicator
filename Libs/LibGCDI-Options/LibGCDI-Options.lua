@@ -19,6 +19,8 @@ local gcdTabElements = {}
 local resourcesTabElements = {}
 local itemsTabElements = {}
 local buffsTabElements = {}
+local settingsTabElements = {}
+local developerTabElements = {}
 local currentTab = "gcd"
 
 local GCDI_PREFIX = "|cff00ff00GCDIndicator:|r "
@@ -490,7 +492,11 @@ local SECTION_GAP_TITLE_TO_ROW = 25  -- used when there is no description
 -- Draws the header starting at yOffset and returns the yOffset for the first
 -- control below it. Pass showSep = false for a tab's very first section
 -- (nothing above it to separate from).
-local function add_section_header(frame, yOffset, title, desc, width, showSep)
+-- `collapsible`/`sectionKey` add a clickable +/- toggle in front of the
+-- title that flips settings.optionsUiCollapsedSections[sectionKey] and
+-- re-runs the owning tab's refresh, letting build_button_section skip that
+-- section's rows next rebuild.
+local function add_section_header(frame, yOffset, title, desc, width, showSep, collapsible, sectionKey)
 	if showSep ~= false then
 		local sep = acquire_texture(frame, "ARTWORK")
 		sep:SetColorTexture(0.4, 0.4, 0.4, 1)
@@ -499,9 +505,32 @@ local function add_section_header(frame, yOffset, title, desc, width, showSep)
 		yOffset = yOffset - SECTION_GAP_SEP_TO_TITLE
 	end
 
+	local collapsed = false
+	local titleX = 5
+	if collapsible then
+		settings.optionsUiCollapsedSections = settings.optionsUiCollapsedSections or {}
+		collapsed = settings.optionsUiCollapsedSections[sectionKey] == true
+		titleX = 18
+	end
+
 	local titleFS = acquire_fontstring(frame, "OVERLAY", "GameFontNormalLarge")
-	titleFS:SetPoint("TOPLEFT", 5, yOffset)
+	titleFS:SetPoint("TOPLEFT", titleX, yOffset)
 	titleFS:SetText(title)
+
+	if collapsible then
+		local chevronFS = acquire_fontstring(frame, "OVERLAY", "GameFontNormalLarge")
+		chevronFS:SetPoint("TOPLEFT", 4, yOffset)
+		chevronFS:SetText(collapsed and "+" or "-")
+
+		local toggleBtn = acquire_frame("Button", frame)
+		toggleBtn:SetPoint("TOPLEFT", 0, yOffset + 4)
+		toggleBtn:SetSize(titleX + titleFS:GetStringWidth() + 10, 20)
+		toggleBtn:SetHighlightTexture("Interface\\Buttons\\ButtonHilight-Square", "ADD")
+		toggleBtn:SetScript("OnClick", function()
+			settings.optionsUiCollapsedSections[sectionKey] = not collapsed
+			GCDI.refresh_options_frame()
+		end)
+	end
 
 	if desc then
 		yOffset = yOffset - SECTION_GAP_TITLE_TO_DESC
@@ -514,7 +543,7 @@ local function add_section_header(frame, yOffset, title, desc, width, showSep)
 		yOffset = yOffset - SECTION_GAP_TITLE_TO_ROW
 	end
 
-	return yOffset
+	return yOffset, collapsed
 end
 
 -- ═══════════════════════════════════════════════════════════════════════════
@@ -585,6 +614,19 @@ local function create_tab_button(parent, def, prevButton)
 
 	tabButtons[def.key] = btn
 	return btn
+end
+
+local function create_tab_scroll_frame(optionsFrame, name, width, height)
+	local scrollFrame = CreateFrame("ScrollFrame", nil, optionsFrame, "UIPanelScrollFrameTemplate")
+	scrollFrame:SetPoint("TOPLEFT", 10, -60)
+	scrollFrame:SetPoint("BOTTOMRIGHT", -30, 40)
+	scrollFrame:Hide()
+	optionsFrame[name .. "ScrollFrame"] = scrollFrame
+	local scrollChild = CreateFrame("Frame", nil, scrollFrame)
+	scrollChild:SetSize(width, height)
+	scrollFrame:SetScrollChild(scrollChild)
+	optionsFrame[name .. "ScrollChild"] = scrollChild
+	return scrollFrame, scrollChild
 end
 
 -- Marks whether live settings have diverged from the saved profile; drives
@@ -2895,6 +2937,85 @@ end
 GCDI.refresh_options_frame = refresh_options_frame
 
 -- ═══════════════════════════════════════════════════════════════════════════
+-- BUTTON/CHECKBOX SECTION BUILDER
+-- ═══════════════════════════════════════════════════════════════════════════
+
+local SETTINGS_BUTTON_HEIGHT = 28
+local SETTINGS_BUTTON_GAP = 10
+local SETTINGS_BLOCK_GAP = 20
+
+local function create_settings_button(parent, yOffset, width, text, tooltipTitle, tooltipLines, onClick)
+	local btn = acquire_frame("Button", parent, "UIPanelButtonTemplate")
+	btn:SetSize(width, SETTINGS_BUTTON_HEIGHT)
+	btn:SetPoint("TOPLEFT", 10, yOffset)
+	btn:SetText(text)
+	btn:SetScript("OnClick", onClick)
+	btn:SetScript("OnEnter", function(self)
+		GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+		GameTooltip:SetText(tooltipTitle)
+		for _, line in ipairs(tooltipLines) do
+			GameTooltip:AddLine(line[1], line[2], line[3], line[4], true)
+		end
+		GameTooltip:Show()
+	end)
+	btn:SetScript("OnLeave", function() GameTooltip:Hide() end)
+	return btn
+end
+
+-- sameLine anchors a button LEFT to the previous button's RIGHT (10px gap)
+-- instead of advancing yOffset.
+-- A collapsed section's rows are skipped entirely (not created, not just
+-- hidden) - callers rebuild via reset_track_list + this function on every
+-- toggle, so nothing is left dangling in the pool.
+local function build_button_section(parent, yOffset, defs)
+	local widgets = {}
+	local prevButton = nil
+	local sectionCollapsed = false
+	for _, def in ipairs(defs) do
+		if def.kind == "header" then
+			yOffset, sectionCollapsed = add_section_header(parent, yOffset, def.title, def.desc, def.width, def.showSep, def.collapsible, def.sectionKey)
+		elseif sectionCollapsed then
+			-- skip: this row belongs to a collapsed section
+		elseif def.kind == "button" then
+			local btn = create_settings_button(parent, yOffset, def.width, def.text, def.tooltipTitle, def.tooltipLines, def.onClick)
+			if def.sameLine then
+				btn:ClearAllPoints()
+				btn:SetPoint("LEFT", prevButton, "RIGHT", 10, 0)
+			else
+				yOffset = yOffset - SETTINGS_BUTTON_HEIGHT - def.gap
+			end
+			prevButton = btn
+			if def.resultKey then
+				widgets[def.resultKey] = btn
+			end
+		elseif def.kind == "checkbox" then
+			local checkbox = acquire_frame("CheckButton", parent, "UICheckButtonTemplate")
+			checkbox:SetSize(24, 24)
+			checkbox:SetPoint("TOPLEFT", 0, yOffset)
+			checkbox:SetChecked(def.checked)
+			checkbox:SetScript("OnClick", def.onClick)
+			local label = acquire_fontstring(parent, "OVERLAY", "GameFontNormal")
+			label:SetPoint("LEFT", checkbox, "RIGHT", 5, 0)
+			label:SetText(def.label)
+			if def.help then
+				local help = acquire_fontstring(parent, "OVERLAY", "GameFontHighlightSmall")
+				help:SetPoint("TOPLEFT", label, "BOTTOMLEFT", 0, -4)
+				help:SetWidth(440)
+				help:SetJustifyH("LEFT")
+				help:SetText(def.help)
+				help:SetTextColor(0.55, 0.55, 0.55)
+			end
+			yOffset = yOffset - def.gap
+			prevButton = checkbox
+			if def.resultKey then
+				widgets[def.resultKey] = checkbox
+			end
+		end
+	end
+	return yOffset, widgets
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
 -- CREATE OPTIONS FRAME
 -- ═══════════════════════════════════════════════════════════════════════════
 
@@ -2926,19 +3047,6 @@ local function create_options_frame()
 		prevTabBtn = create_tab_button(optionsFrame, def, prevTabBtn)
 	end
 
-	local function create_tab_scroll_frame(name, width, height)
-		local scrollFrame = CreateFrame("ScrollFrame", nil, optionsFrame, "UIPanelScrollFrameTemplate")
-		scrollFrame:SetPoint("TOPLEFT", 10, -60)
-		scrollFrame:SetPoint("BOTTOMRIGHT", -30, 40)
-		scrollFrame:Hide()
-		optionsFrame[name .. "ScrollFrame"] = scrollFrame
-		local scrollChild = CreateFrame("Frame", nil, scrollFrame)
-		scrollChild:SetSize(width, height)
-		scrollFrame:SetScrollChild(scrollChild)
-		optionsFrame[name .. "ScrollChild"] = scrollChild
-		return scrollFrame, scrollChild
-	end
-
 	local TAB_SCROLL_DEFS = {
 		{ name = "gcd", width = 450, height = 600 },
 		{ name = "resources", width = 450, height = 400 },
@@ -2949,187 +3057,127 @@ local function create_options_frame()
 		{ name = "developer", width = 500, height = 650 },
 	}
 	for _, def in ipairs(TAB_SCROLL_DEFS) do
-		create_tab_scroll_frame(def.name, def.width, def.height)
+		create_tab_scroll_frame(optionsFrame, def.name, def.width, def.height)
 	end
 	local settingsFrame = optionsFrame.settingsScrollChild
+	local developerFrame = optionsFrame.developerScrollChild
 
-	local SETTINGS_BUTTON_HEIGHT = 28
-	local SETTINGS_BUTTON_GAP = 10
-	local SETTINGS_BLOCK_GAP = 20
-
-	local function create_settings_button(parent, yOffset, width, text, tooltipTitle, tooltipLines, onClick)
-		local btn = CreateFrame("Button", nil, parent, "UIPanelButtonTemplate")
-		btn:SetSize(width, SETTINGS_BUTTON_HEIGHT)
-		btn:SetPoint("TOPLEFT", 10, yOffset)
-		btn:SetText(text)
-		btn:SetScript("OnClick", onClick)
-		btn:SetScript("OnEnter", function(self)
-			GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-			GameTooltip:SetText(tooltipTitle)
-			for _, line in ipairs(tooltipLines) do
-				GameTooltip:AddLine(line[1], line[2], line[3], line[4], true)
-			end
-			GameTooltip:Show()
-		end)
-		btn:SetScript("OnLeave", function() GameTooltip:Hide() end)
-		return btn
-	end
-
-	local sYOffset = -10
-
-	sYOffset = add_section_header(settingsFrame, sYOffset, "Frame Position",
-		"Use these buttons to move or reset the GCD indicator bars.", 500, false)
-
-	create_settings_button(settingsFrame, sYOffset, 150, "Move Frame", "Move Frame", {
-		{ "Click to enable move mode.", 1, 1, 1 },
-		{ "Drag the frame to reposition it.", 0.7, 0.7, 0.7 },
-		{ "Click again or use /gcdi to lock.", 0.7, 0.7, 0.7 },
-	}, function()
-		if GCDI.toggle_move_mode then
-			GCDI.toggle_move_mode()
-			optionsFrame:Hide()
-		end
-	end)
-	sYOffset = sYOffset - (SETTINGS_BUTTON_HEIGHT + SETTINGS_BUTTON_GAP)
-
-	create_settings_button(settingsFrame, sYOffset, 150, "Reset Position", "Reset Position", {
-		{ "Reset the frame to the default center position.", 1, 1, 1 },
-	}, function()
-		if GCDI.reset_position then
-			GCDI.reset_position()
-			print(GCDI_PREFIX .. "Frame position reset to center")
-		end
-	end)
-	sYOffset = sYOffset - (SETTINGS_BUTTON_HEIGHT + SETTINGS_BLOCK_GAP)
-
-	sYOffset = add_section_header(settingsFrame, sYOffset, "Minimap Button", nil, 500)
-
-	create_settings_button(settingsFrame, sYOffset, 150, "Toggle Minimap Icon", "Toggle Minimap Icon", {
-		{ "Show or hide the minimap button.", 1, 1, 1 },
-	}, function()
-		if GCDI.ToggleMinimapButton then
-			GCDI.ToggleMinimapButton()
-			local hidden = settings.minimap and settings.minimap.hide
-			print(GCDI_PREFIX .. "Minimap button " .. (hidden and "hidden" or "shown"))
-		end
-	end)
-	sYOffset = sYOffset - (SETTINGS_BUTTON_HEIGHT + SETTINGS_BLOCK_GAP)
-
-	sYOffset = add_section_header(settingsFrame, sYOffset, "Preview Mode",
-		"Show all bars filled with visible colors for positioning.", 500)
-
-	create_settings_button(settingsFrame, sYOffset, 150, "Toggle Preview", "Toggle Preview Mode", {
-		{ "Fill all bars and show indicators.", 1, 1, 1 },
-		{ "Useful for positioning the frame.", 0.7, 0.7, 0.7 },
-	}, function()
-		if GCDI.toggle_preview_mode then
-			GCDI.toggle_preview_mode()
-		end
-	end)
-	sYOffset = sYOffset - (SETTINGS_BUTTON_HEIGHT + SETTINGS_BLOCK_GAP)
-
-	sYOffset = add_section_header(settingsFrame, sYOffset, "Layout & Export", nil, 500)
-
-	local compactModeCheckbox = CreateFrame("CheckButton", nil, settingsFrame, "UICheckButtonTemplate")
-	compactModeCheckbox:SetSize(24, 24)
-	compactModeCheckbox:SetPoint("TOPLEFT", 0, sYOffset)
-	compactModeCheckbox:SetChecked(configs.compactMode == true)
-	optionsFrame.compactModeCheckbox = compactModeCheckbox
-	compactModeCheckbox:SetScript("OnClick", function(self)
-		configs.compactMode = self:GetChecked() and true or false
-		if settings then
-			settings.compactMode = configs.compactMode  -- persist (SavedVariablesPerCharacter)
-		end
-		print(GCDI_PREFIX .. "Compact mode " .. (configs.compactMode and "ON" or "OFF"))
-		-- Box layout (icon square present/absent) is baked in at creation
-		-- time, not just position, so toggling needs a full rebuild.
-		if GCDI.rebuild_spell_bars then
-			GCDI.rebuild_spell_bars()  -- also rebuilds item bars
-		end
-		if GCDI.rebuild_buff_bars then
-			GCDI.rebuild_buff_bars()
-		end
-	end)
-	local compactModeLabel = settingsFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-	compactModeLabel:SetPoint("LEFT", compactModeCheckbox, "RIGHT", 5, 0)
-	compactModeLabel:SetText("Compact layout (flow spells/items and buffs left-to-right)")
-	local compactModeHelp = settingsFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-	compactModeHelp:SetPoint("TOPLEFT", compactModeLabel, "BOTTOMLEFT", 0, -4)
-	compactModeHelp:SetWidth(440)
-	compactModeHelp:SetJustifyH("LEFT")
-	compactModeHelp:SetText("Packs spell, item, and buff boxes into one continuous left-to-right flow with a 2px gap, wrapping to a new row instead of using 3 fixed columns. Icon squares are dropped to save space. Also update your companion script's compact mode toggle to match, or pixel reads will desync.")
-	compactModeHelp:SetTextColor(0.55, 0.55, 0.55)
-	sYOffset = sYOffset - (SETTINGS_BUTTON_HEIGHT + 24 + SETTINGS_BLOCK_GAP)
-
-	local ultraCompactModeCheckbox = CreateFrame("CheckButton", nil, settingsFrame, "UICheckButtonTemplate")
-	ultraCompactModeCheckbox:SetSize(24, 24)
-	ultraCompactModeCheckbox:SetPoint("TOPLEFT", 0, sYOffset)
-	ultraCompactModeCheckbox:SetChecked(configs.ultraCompactMode == true)
-	optionsFrame.ultraCompactModeCheckbox = ultraCompactModeCheckbox
-	ultraCompactModeCheckbox:SetScript("OnClick", function(self)
-		configs.ultraCompactMode = self:GetChecked() and true or false
-		if settings then
-			settings.ultraCompactMode = configs.ultraCompactMode  -- persist (SavedVariablesPerCharacter)
-		end
-		print(GCDI_PREFIX .. "Ultra-Compact mode " .. (configs.ultraCompactMode and "ON" or "OFF"))
-		if GCDI.rebuild_spell_bars then
-			GCDI.rebuild_spell_bars()  -- also rebuilds item bars
-		end
-		if GCDI.rebuild_buff_bars then
-			GCDI.rebuild_buff_bars()
-		end
-		if GCDI.resize_status_row then
-			GCDI.resize_status_row()
-		end
-	end)
-	local ultraCompactModeLabel = settingsFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-	ultraCompactModeLabel:SetPoint("LEFT", ultraCompactModeCheckbox, "RIGHT", 5, 0)
-	ultraCompactModeLabel:SetText("Ultra-Compact mode (smallest possible size, not meant to be human-readable)")
-	local ultraCompactModeHelp = settingsFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-	ultraCompactModeHelp:SetPoint("TOPLEFT", ultraCompactModeLabel, "BOTTOMLEFT", 0, -4)
-	ultraCompactModeHelp:SetWidth(440)
-	ultraCompactModeHelp:SetJustifyH("LEFT")
-	ultraCompactModeHelp:SetText("Shrinks the status row and spell/item/buff boxes to their smallest footprint, purely so a companion script has less screen area to sample - not meant to be readable at a glance. Resource bars are unaffected. Also update your companion script's ultra-compact toggle to match, or pixel reads will desync.")
-	ultraCompactModeHelp:SetTextColor(0.55, 0.55, 0.55)
-	sYOffset = sYOffset - (SETTINGS_BUTTON_HEIGHT + 24 + SETTINGS_BLOCK_GAP)
-
-	local exportBarsBtn = create_settings_button(settingsFrame, sYOffset, 180, "Export Bar Positions", "Export Bar Positions", {
-		{ "Dumps every visible bar's position/size for cross-checking against your companion script.", 1, 1, 1 },
-	}, function()
-		if GCDI.export_bar_positions then
-			show_export_import_popup("export", GCDI.export_bar_positions(), "Bar Position Export")
-		end
-	end)
-	exportBarsBtn:SetPoint("TOPLEFT", 0, sYOffset)
-
-	-- Export rotation config (generates spell/item/buff/resource array text
-	-- from the live catalog/settings state, to paste into a companion
-	-- rotation script instead of hand-maintaining it - see
-	-- export_companion_config() in GCDIndicator.lua)
-	local exportAhkBtn = create_settings_button(settingsFrame, sYOffset, 180, "Export Rotation Config", "Export Rotation Config", {
-		{ "Generates spell/item/buff array text from your current spells/items/buffs and their order.", 1, 1, 1 },
-		{ "key/hasGCD fields still need to be filled in by hand - the addon has no concept of rotation keybinds.", 0.8, 0.6, 0.2 },
-	}, function()
-		if GCDI.export_companion_config and GCDI.show_export_import_popup then
-			GCDI.show_export_import_popup("export", GCDI.export_companion_config(), "Rotation Config Export")
-		end
-	end)
-	exportAhkBtn:ClearAllPoints()
-	exportAhkBtn:SetPoint("LEFT", exportBarsBtn, "RIGHT", 10, 0)
-
-	-- Re-syncs the Settings tab's checkbox states from current configs. The
-	-- tab's widgets are built once here (not pooled/rebuilt per refresh like
-	-- the other tabs), so without this, flipping configs.compactMode via slash
-	-- command while the panel is open left the checkbox visually stale until
-	-- the panel was closed and reopened - switch_tab/refresh_options_frame
-	-- now call this like every other tab's refresh function.
 	refresh_settings_tab = function()
-		if optionsFrame.compactModeCheckbox then
-			optionsFrame.compactModeCheckbox:SetChecked(configs.compactMode == true)
+		reset_track_list(settingsTabElements)
+
+		local SETTINGS_SECTION_DEFS = {
+			{ kind = "header", title = "Frame Position",
+				desc = "Use these buttons to move or reset the GCD indicator bars.", width = 500, showSep = false,
+				collapsible = true, sectionKey = "frame_position" },
+			{ kind = "button", width = 150, text = "Move Frame", tooltipTitle = "Move Frame", tooltipLines = {
+				{ "Click to enable move mode.", 1, 1, 1 },
+				{ "Drag the frame to reposition it.", 0.7, 0.7, 0.7 },
+				{ "Click again or use /gcdi to lock.", 0.7, 0.7, 0.7 },
+			}, onClick = function()
+				if GCDI.toggle_move_mode then
+					GCDI.toggle_move_mode()
+					optionsFrame:Hide()
+				end
+			end, gap = SETTINGS_BUTTON_GAP },
+			{ kind = "button", width = 150, text = "Reset Position", tooltipTitle = "Reset Position", tooltipLines = {
+				{ "Reset the frame to the default center position.", 1, 1, 1 },
+			}, onClick = function()
+				if GCDI.reset_position then
+					GCDI.reset_position()
+					print(GCDI_PREFIX .. "Frame position reset to center")
+				end
+			end, gap = SETTINGS_BLOCK_GAP },
+			{ kind = "header", title = "Minimap Button", width = 500,
+				collapsible = true, sectionKey = "minimap" },
+			{ kind = "button", width = 150, text = "Toggle Minimap Icon", tooltipTitle = "Toggle Minimap Icon", tooltipLines = {
+				{ "Show or hide the minimap button.", 1, 1, 1 },
+			}, onClick = function()
+				if GCDI.ToggleMinimapButton then
+					GCDI.ToggleMinimapButton()
+					local hidden = settings.minimap and settings.minimap.hide
+					print(GCDI_PREFIX .. "Minimap button " .. (hidden and "hidden" or "shown"))
+				end
+			end, gap = SETTINGS_BLOCK_GAP },
+			{ kind = "header", title = "Preview Mode",
+				desc = "Show all bars filled with visible colors for positioning.", width = 500,
+				collapsible = true, sectionKey = "preview_mode" },
+			{ kind = "button", width = 150, text = "Toggle Preview", tooltipTitle = "Toggle Preview Mode", tooltipLines = {
+				{ "Fill all bars and show indicators.", 1, 1, 1 },
+				{ "Useful for positioning the frame.", 0.7, 0.7, 0.7 },
+			}, onClick = function()
+				if GCDI.toggle_preview_mode then
+					GCDI.toggle_preview_mode()
+				end
+			end, gap = SETTINGS_BLOCK_GAP },
+			{ kind = "header", title = "Layout & Export", width = 500,
+				collapsible = true, sectionKey = "layout_export" },
+			{ kind = "checkbox", checked = configs.compactMode == true,
+				label = "Compact layout (flow spells/items and buffs left-to-right)",
+				help = "Packs spell, item, and buff boxes into one continuous left-to-right flow with a 2px gap, wrapping to a new row instead of using 3 fixed columns. Icon squares are dropped to save space. Also update your companion script's compact mode toggle to match, or pixel reads will desync.",
+				onClick = function(self)
+					configs.compactMode = self:GetChecked() and true or false
+					if settings then
+						settings.compactMode = configs.compactMode  -- persist (SavedVariablesPerCharacter)
+					end
+					print(GCDI_PREFIX .. "Compact mode " .. (configs.compactMode and "ON" or "OFF"))
+					-- Box layout (icon square present/absent) is baked in at creation
+					-- time, not just position, so toggling needs a full rebuild.
+					if GCDI.rebuild_spell_bars then
+						GCDI.rebuild_spell_bars()  -- also rebuilds item bars
+					end
+					if GCDI.rebuild_buff_bars then
+						GCDI.rebuild_buff_bars()
+					end
+				end,
+				resultKey = "compactModeCheckbox", gap = SETTINGS_BUTTON_HEIGHT + 24 + SETTINGS_BLOCK_GAP },
+			{ kind = "checkbox", checked = configs.ultraCompactMode == true,
+				label = "Ultra-Compact mode (smallest possible size, not meant to be human-readable)",
+				help = "Shrinks the status row and spell/item/buff boxes to their smallest footprint, purely so a companion script has less screen area to sample - not meant to be readable at a glance. Resource bars are unaffected. Also update your companion script's ultra-compact toggle to match, or pixel reads will desync.",
+				onClick = function(self)
+					configs.ultraCompactMode = self:GetChecked() and true or false
+					if settings then
+						settings.ultraCompactMode = configs.ultraCompactMode  -- persist (SavedVariablesPerCharacter)
+					end
+					print(GCDI_PREFIX .. "Ultra-Compact mode " .. (configs.ultraCompactMode and "ON" or "OFF"))
+					if GCDI.rebuild_spell_bars then
+						GCDI.rebuild_spell_bars()  -- also rebuilds item bars
+					end
+					if GCDI.rebuild_buff_bars then
+						GCDI.rebuild_buff_bars()
+					end
+					if GCDI.resize_status_row then
+						GCDI.resize_status_row()
+					end
+				end,
+				resultKey = "ultraCompactModeCheckbox", gap = SETTINGS_BUTTON_HEIGHT + 24 + SETTINGS_BLOCK_GAP },
+			{ kind = "button", width = 180, text = "Export Bar Positions",
+				tooltipTitle = "Export Bar Positions", tooltipLines = {
+					{ "Dumps every visible bar's position/size for cross-checking against your companion script.", 1, 1, 1 },
+				}, onClick = function()
+					if GCDI.export_bar_positions then
+						show_export_import_popup("export", GCDI.export_bar_positions(), "Bar Position Export")
+					end
+				end, gap = SETTINGS_BLOCK_GAP },
+			-- Export rotation config (generates spell/item/buff/resource array text
+			-- from the live catalog/settings state, to paste into a companion
+			-- rotation script instead of hand-maintaining it - see
+			-- export_companion_config() in GCDIndicator.lua)
+			{ kind = "button", width = 180, text = "Export Rotation Config", sameLine = true,
+				tooltipTitle = "Export Rotation Config", tooltipLines = {
+					{ "Generates spell/item/buff array text from your current spells/items/buffs and their order.", 1, 1, 1 },
+					{ "key/hasGCD fields still need to be filled in by hand - the addon has no concept of rotation keybinds.", 0.8, 0.6, 0.2 },
+				}, onClick = function()
+					if GCDI.export_companion_config and GCDI.show_export_import_popup then
+						GCDI.show_export_import_popup("export", GCDI.export_companion_config(), "Rotation Config Export")
+					end
+				end },
+		}
+		local sYOffset, settingsWidgets = build_button_section(settingsFrame, -10, SETTINGS_SECTION_DEFS)
+		for key, widget in pairs(settingsWidgets) do
+			optionsFrame[key] = widget
 		end
-		if optionsFrame.ultraCompactModeCheckbox then
-			optionsFrame.ultraCompactModeCheckbox:SetChecked(configs.ultraCompactMode == true)
-		end
+
+		settingsFrame:SetHeight(math.abs(sYOffset) + 20)
 	end
 
 	-- DEVELOPER TAB
@@ -3137,113 +3185,88 @@ local function create_options_frame()
 	-- already surfaced elsewhere (compact/minimap/export live on Settings).
 	-- Buttons call the same GCDI.* functions the slash commands call, so
 	-- there is one implementation per command.
-	local developerFrame = optionsFrame.developerScrollChild
-
-	local dYOffset = -10
-
-	dYOffset = add_section_header(developerFrame, dYOffset, "Debug", nil, 500, false)
-
-	local debugModeCheckbox = CreateFrame("CheckButton", nil, developerFrame, "UICheckButtonTemplate")
-	debugModeCheckbox:SetSize(24, 24)
-	debugModeCheckbox:SetPoint("TOPLEFT", 0, dYOffset)
-	debugModeCheckbox:SetChecked(configs.debugMode == true)
-	optionsFrame.debugModeCheckbox = debugModeCheckbox
-	debugModeCheckbox:SetScript("OnClick", function(self)
-		configs.debugMode = self:GetChecked() and true or false
-		if settings then
-			settings.debugMode = configs.debugMode  -- persist (SavedVariablesPerCharacter)
-		end
-		print(GCDI_PREFIX .. "Debug mode " .. (configs.debugMode and "ON" or "OFF"))
-	end)
-	local debugModeLabel = developerFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-	debugModeLabel:SetPoint("LEFT", debugModeCheckbox, "RIGHT", 5, 0)
-	debugModeLabel:SetText("Debug mode (verbose diagnostic chat output)")
-	dYOffset = dYOffset - (SETTINGS_BUTTON_HEIGHT + SETTINGS_BUTTON_GAP)
-
-	local scanBtn = create_settings_button(developerFrame, dYOffset, 180, "Scan Action Bars", "Scan Action Bars", {
-		{ "Re-scans your action bars for tracked spells/items and rebuilds their action-slot mapping.", 1, 1, 1 },
-	}, function()
-		if GCDI.scan_action_bars then
-			GCDI.scan_action_bars()
-		end
-	end)
-	dYOffset = dYOffset - (SETTINGS_BUTTON_HEIGHT + SETTINGS_BLOCK_GAP)
-
-	dYOffset = add_section_header(developerFrame, dYOffset, "Diagnostics",
-		"Dump internal state to chat for troubleshooting.", 500)
-
-	local itemsBtn = create_settings_button(developerFrame, dYOffset, 180, "Item Catalog", "Item Catalog", {
-		{ "Lists every item in the item catalog and its item ID.", 1, 1, 1 },
-	}, function()
-		if GCDI.print_item_catalog then GCDI.print_item_catalog() end
-	end)
-	dYOffset = dYOffset - (SETTINGS_BUTTON_HEIGHT + SETTINGS_BUTTON_GAP)
-
-	local buffsBtn = create_settings_button(developerFrame, dYOffset, 180, "Tracked Buffs Status", "Tracked Buffs Status", {
-		{ "Lists every tracked buff and whether it's currently active on you.", 1, 1, 1 },
-	}, function()
-		if GCDI.print_buff_status then GCDI.print_buff_status() end
-	end)
-	dYOffset = dYOffset - (SETTINGS_BUTTON_HEIGHT + SETTINGS_BUTTON_GAP)
-
-	local buffDebugBtn = create_settings_button(developerFrame, dYOffset, 180, "Buff Settings Debug", "Buff Settings Debug", {
-		{ "Dumps saved buffSettings entries and buffCatalog detectability.", 1, 1, 1 },
-	}, function()
-		if GCDI.print_buff_settings_debug then GCDI.print_buff_settings_debug() end
-	end)
-	dYOffset = dYOffset - (SETTINGS_BUTTON_HEIGHT + SETTINGS_BUTTON_GAP)
-
-	local rangeDebugBtn = create_settings_button(developerFrame, dYOffset, 180, "Range Detection Debug", "Range Detection Debug", {
-		{ "Shows the range-check method and result for every tracked spell against your current target.", 1, 1, 1 },
-	}, function()
-		if GCDI.print_range_debug then GCDI.print_range_debug() end
-	end)
-	dYOffset = dYOffset - (SETTINGS_BUTTON_HEIGHT + SETTINGS_BUTTON_GAP)
-
-	local cdmScanBtn = create_settings_button(developerFrame, dYOffset, 180, "Cooldown Manager Scan", "Cooldown Manager Scan", {
-		{ "Scans Blizzard's Cooldown Manager buff frames and prints what it finds.", 1, 1, 1 },
-	}, function()
-		if GCDI.scan_cooldown_manager then GCDI.scan_cooldown_manager() end
-	end)
-	dYOffset = dYOffset - (SETTINGS_BUTTON_HEIGHT + SETTINGS_BLOCK_GAP)
-
-	dYOffset = add_section_header(developerFrame, dYOffset, "Actions", nil, 500)
-
-	local cdmImportBtn = create_settings_button(developerFrame, dYOffset, 220, "Import Buffs from Cooldown Manager", "Import Buffs from Cooldown Manager", {
-		{ "Forces an import of buffs from the Cooldown Manager and rebuilds buff bars.", 1, 1, 1 },
-	}, function()
-		if GCDI.import_buffs_from_cdm then GCDI.import_buffs_from_cdm() end
-	end)
-	dYOffset = dYOffset - (SETTINGS_BUTTON_HEIGHT + SETTINGS_BUTTON_GAP)
-
-	local rangeTestBtn = create_settings_button(developerFrame, dYOffset, 220, "Test Range Indicator Colors", "Test Range Indicator Colors", {
-		{ "Forces all range indicators to bright cycling colors for visibility testing.", 1, 1, 1 },
-		{ "Colors reset on the next target change or update tick.", 0.8, 0.6, 0.2 },
-	}, function()
-		if GCDI.test_range_indicators then GCDI.test_range_indicators() end
-	end)
-	dYOffset = dYOffset - (SETTINGS_BUTTON_HEIGHT + SETTINGS_BLOCK_GAP)
-
-	dYOffset = add_section_header(developerFrame, dYOffset, "Companion Script",
-		"Shows a marker the companion script can scan the screen for to detect this frame's position automatically.", 500)
-
-	local calibrateBtn = create_settings_button(developerFrame, dYOffset, 180, "Calibrate Position", "Calibrate Position", {
-		{ "Shows a small color marker to the right of the global bar.", 1, 1, 1 },
-		{ "Run \"Detect Position\" in the companion script's Launcher while it's visible.", 0.7, 0.7, 0.7 },
-		{ "Click again to hide it.", 0.7, 0.7, 0.7 },
-	}, function()
-		if GCDI.toggle_calibration_mode then
-			GCDI.toggle_calibration_mode()
-		end
-	end)
-	dYOffset = dYOffset - (SETTINGS_BUTTON_HEIGHT + SETTINGS_BLOCK_GAP)
-
-	developerFrame:SetHeight(math.abs(dYOffset) + 20)
-
 	refresh_developer_tab = function()
-		if optionsFrame.debugModeCheckbox then
-			optionsFrame.debugModeCheckbox:SetChecked(configs.debugMode == true)
+		reset_track_list(developerTabElements)
+
+		local DEVELOPER_SECTION_DEFS = {
+			{ kind = "header", title = "Debug", width = 500, showSep = false,
+				collapsible = true, sectionKey = "debug" },
+			{ kind = "checkbox", checked = configs.debugMode == true,
+				label = "Debug mode (verbose diagnostic chat output)",
+				onClick = function(self)
+					configs.debugMode = self:GetChecked() and true or false
+					if settings then
+						settings.debugMode = configs.debugMode  -- persist (SavedVariablesPerCharacter)
+					end
+					print(GCDI_PREFIX .. "Debug mode " .. (configs.debugMode and "ON" or "OFF"))
+				end,
+				resultKey = "debugModeCheckbox", gap = SETTINGS_BUTTON_HEIGHT + SETTINGS_BUTTON_GAP },
+			{ kind = "button", width = 180, text = "Scan Action Bars", tooltipTitle = "Scan Action Bars", tooltipLines = {
+				{ "Re-scans your action bars for tracked spells/items and rebuilds their action-slot mapping.", 1, 1, 1 },
+			}, onClick = function()
+				if GCDI.scan_action_bars then
+					GCDI.scan_action_bars()
+				end
+			end, gap = SETTINGS_BLOCK_GAP },
+			{ kind = "header", title = "Diagnostics", desc = "Dump internal state to chat for troubleshooting.", width = 500,
+				collapsible = true, sectionKey = "diagnostics" },
+			{ kind = "button", width = 180, text = "Item Catalog", tooltipTitle = "Item Catalog", tooltipLines = {
+				{ "Lists every item in the item catalog and its item ID.", 1, 1, 1 },
+			}, onClick = function()
+				if GCDI.print_item_catalog then GCDI.print_item_catalog() end
+			end, gap = SETTINGS_BUTTON_GAP },
+			{ kind = "button", width = 180, text = "Tracked Buffs Status", tooltipTitle = "Tracked Buffs Status", tooltipLines = {
+				{ "Lists every tracked buff and whether it's currently active on you.", 1, 1, 1 },
+			}, onClick = function()
+				if GCDI.print_buff_status then GCDI.print_buff_status() end
+			end, gap = SETTINGS_BUTTON_GAP },
+			{ kind = "button", width = 180, text = "Buff Settings Debug", tooltipTitle = "Buff Settings Debug", tooltipLines = {
+				{ "Dumps saved buffSettings entries and buffCatalog detectability.", 1, 1, 1 },
+			}, onClick = function()
+				if GCDI.print_buff_settings_debug then GCDI.print_buff_settings_debug() end
+			end, gap = SETTINGS_BUTTON_GAP },
+			{ kind = "button", width = 180, text = "Range Detection Debug", tooltipTitle = "Range Detection Debug", tooltipLines = {
+				{ "Shows the range-check method and result for every tracked spell against your current target.", 1, 1, 1 },
+			}, onClick = function()
+				if GCDI.print_range_debug then GCDI.print_range_debug() end
+			end, gap = SETTINGS_BUTTON_GAP },
+			{ kind = "button", width = 180, text = "Cooldown Manager Scan", tooltipTitle = "Cooldown Manager Scan", tooltipLines = {
+				{ "Scans Blizzard's Cooldown Manager buff frames and prints what it finds.", 1, 1, 1 },
+			}, onClick = function()
+				if GCDI.scan_cooldown_manager then GCDI.scan_cooldown_manager() end
+			end, gap = SETTINGS_BLOCK_GAP },
+			{ kind = "header", title = "Actions", width = 500,
+				collapsible = true, sectionKey = "actions" },
+			{ kind = "button", width = 220, text = "Import Buffs from Cooldown Manager", tooltipTitle = "Import Buffs from Cooldown Manager", tooltipLines = {
+				{ "Forces an import of buffs from the Cooldown Manager and rebuilds buff bars.", 1, 1, 1 },
+			}, onClick = function()
+				if GCDI.import_buffs_from_cdm then GCDI.import_buffs_from_cdm() end
+			end, gap = SETTINGS_BUTTON_GAP },
+			{ kind = "button", width = 220, text = "Test Range Indicator Colors", tooltipTitle = "Test Range Indicator Colors", tooltipLines = {
+				{ "Forces all range indicators to bright cycling colors for visibility testing.", 1, 1, 1 },
+				{ "Colors reset on the next target change or update tick.", 0.8, 0.6, 0.2 },
+			}, onClick = function()
+				if GCDI.test_range_indicators then GCDI.test_range_indicators() end
+			end, gap = SETTINGS_BLOCK_GAP },
+			{ kind = "header", title = "Companion Script",
+				desc = "Shows a marker the companion script can scan the screen for to detect this frame's position automatically.", width = 500,
+				collapsible = true, sectionKey = "companion_script" },
+			{ kind = "button", width = 180, text = "Calibrate Position", tooltipTitle = "Calibrate Position", tooltipLines = {
+				{ "Shows a small color marker to the right of the global bar.", 1, 1, 1 },
+				{ "Run \"Detect Position\" in the companion script's Launcher while it's visible.", 0.7, 0.7, 0.7 },
+				{ "Click again to hide it.", 0.7, 0.7, 0.7 },
+			}, onClick = function()
+				if GCDI.toggle_calibration_mode then
+					GCDI.toggle_calibration_mode()
+				end
+			end, gap = SETTINGS_BLOCK_GAP },
+		}
+		local dYOffset, developerWidgets = build_button_section(developerFrame, -10, DEVELOPER_SECTION_DEFS)
+		for key, widget in pairs(developerWidgets) do
+			optionsFrame[key] = widget
 		end
+
+		developerFrame:SetHeight(math.abs(dYOffset) + 20)
 	end
 
 	-- PROFILES FRAME
