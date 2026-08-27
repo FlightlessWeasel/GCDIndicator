@@ -2962,14 +2962,11 @@ local function create_settings_button(parent, yOffset, width, text, tooltipTitle
 	return btn
 end
 
--- sameLine anchors a button LEFT to the previous button's RIGHT (10px gap)
--- instead of advancing yOffset.
 -- A collapsed section's rows are skipped entirely (not created, not just
 -- hidden) - callers rebuild via reset_track_list + this function on every
 -- toggle, so nothing is left dangling in the pool.
 local function build_button_section(parent, yOffset, defs)
 	local widgets = {}
-	local prevButton = nil
 	local sectionCollapsed = false
 	for _, def in ipairs(defs) do
 		if def.kind == "header" then
@@ -2978,13 +2975,7 @@ local function build_button_section(parent, yOffset, defs)
 			-- skip: this row belongs to a collapsed section
 		elseif def.kind == "button" then
 			local btn = create_settings_button(parent, yOffset, def.width, def.text, def.tooltipTitle, def.tooltipLines, def.onClick)
-			if def.sameLine then
-				btn:ClearAllPoints()
-				btn:SetPoint("LEFT", prevButton, "RIGHT", 10, 0)
-			else
-				yOffset = yOffset - SETTINGS_BUTTON_HEIGHT - def.gap
-			end
-			prevButton = btn
+			yOffset = yOffset - SETTINGS_BUTTON_HEIGHT - def.gap
 			if def.resultKey then
 				widgets[def.resultKey] = btn
 			end
@@ -3006,7 +2997,6 @@ local function build_button_section(parent, yOffset, defs)
 				help:SetTextColor(0.55, 0.55, 0.55)
 			end
 			yOffset = yOffset - def.gap
-			prevButton = checkbox
 			if def.resultKey then
 				widgets[def.resultKey] = checkbox
 			end
@@ -3020,14 +3010,19 @@ end
 -- ═══════════════════════════════════════════════════════════════════════════
 
 local function create_options_frame()
+	if InCombatLockdown() then
+		print(GCDI_PREFIX .. "Options panel can't be opened while in combat.")
+		return
+	end
+
 	settings = GCDI.settings
-	
+
 	if optionsFrame then
 		optionsFrame:Show()
 		refresh_options_frame()
 		return
 	end
-	
+
 	optionsFrame = CreateFrame("Frame", "GCDIndicatorOptions", UIParent, "BasicFrameTemplateWithInset")
 	optionsFrame:SetSize(670, 500)
 	optionsFrame:SetPoint("CENTER")
@@ -3157,25 +3152,27 @@ local function create_options_frame()
 					if GCDI.export_bar_positions then
 						show_export_import_popup("export", GCDI.export_bar_positions(), "Bar Position Export")
 					end
-				end, gap = SETTINGS_BLOCK_GAP },
-			-- Export rotation config (generates spell/item/buff/resource array text
-			-- from the live catalog/settings state, to paste into a companion
-			-- rotation script instead of hand-maintaining it - see
-			-- export_companion_config() in GCDIndicator.lua)
-			{ kind = "button", width = 180, text = "Export Rotation Config", sameLine = true,
-				tooltipTitle = "Export Rotation Config", tooltipLines = {
-					{ "Generates spell/item/buff array text from your current spells/items/buffs and their order.", 1, 1, 1 },
-					{ "key/hasGCD fields still need to be filled in by hand - the addon has no concept of rotation keybinds.", 0.8, 0.6, 0.2 },
-				}, onClick = function()
-					if GCDI.export_companion_config and GCDI.show_export_import_popup then
-						GCDI.show_export_import_popup("export", GCDI.export_companion_config(), "Rotation Config Export")
-					end
-				end },
+				end, gap = SETTINGS_BLOCK_GAP, resultKey = "exportBarPositionsBtn" },
 		}
 		local sYOffset, settingsWidgets = build_button_section(settingsFrame, -10, SETTINGS_SECTION_DEFS)
 		for key, widget in pairs(settingsWidgets) do
 			optionsFrame[key] = widget
 		end
+
+		-- Anchored beside Export Bar Positions rather than folded into the
+		-- defs table - the only same-line button pair in either tab, not
+		-- worth a generic "anchor to sibling" field for one case.
+		local exportRotationBtn = create_settings_button(settingsFrame, sYOffset, 180, "Export Rotation Config",
+			"Export Rotation Config", {
+				{ "Generates spell/item/buff array text from your current spells/items/buffs and their order.", 1, 1, 1 },
+				{ "key/hasGCD fields still need to be filled in by hand - the addon has no concept of rotation keybinds.", 0.8, 0.6, 0.2 },
+			}, function()
+				if GCDI.export_companion_config and GCDI.show_export_import_popup then
+					GCDI.show_export_import_popup("export", GCDI.export_companion_config(), "Rotation Config Export")
+				end
+			end)
+		exportRotationBtn:ClearAllPoints()
+		exportRotationBtn:SetPoint("LEFT", settingsWidgets.exportBarPositionsBtn, "RIGHT", 10, 0)
 
 		settingsFrame:SetHeight(math.abs(sYOffset) + 20)
 	end

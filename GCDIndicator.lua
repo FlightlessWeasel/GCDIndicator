@@ -123,6 +123,10 @@ local RESOURCE_COLORS = {
 	stagger = { 0.35, 0.90, 0.55 },   -- Brewmaster stagger vs max health
 }
 
+-- Bar-creation order, not just a key list - deliberately excludes
+-- RESOURCE_COLORS' "lunar"/"solar" entries (Balance Druid astralPower
+-- recolors, not separate bars) and must stay in sync with the
+-- otherResources list in GCDI.reposition_all().
 local RESOURCE_NAMES = {
 	"health", "mana", "rage", "energy", "focus", "runicPower", "runes",
 	"comboPoints", "soulShards", "holyPower", "chi", "arcaneCharges",
@@ -2229,7 +2233,7 @@ local function update_mob_count_indicator()
 	end
 end
 
-local function layout_three_columns(count, splitPoint1, splitPoint2, startY, col2X, col3X, spellBarHeight, spacing, container_at)
+local function layout_three_columns(count, splitPoint1, splitPoint2, startY, columnGeometry, spellBarHeight, spacing, container_at)
 	local col1Y, col2Y, col3Y = startY, startY, startY
 	for i = 1, count do
 		local container = container_at(i)
@@ -2239,10 +2243,10 @@ local function layout_three_columns(count, splitPoint1, splitPoint2, startY, col
 				container:SetPoint("TOPLEFT", main_frame.anchor, "TOPLEFT", 0, col1Y)
 				col1Y = col1Y - spellBarHeight - spacing
 			elseif i <= splitPoint2 then
-				container:SetPoint("TOPLEFT", main_frame.anchor, "TOPLEFT", col2X, col2Y)
+				container:SetPoint("TOPLEFT", main_frame.anchor, "TOPLEFT", columnGeometry.x2, col2Y)
 				col2Y = col2Y - spellBarHeight - spacing
 			else
-				container:SetPoint("TOPLEFT", main_frame.anchor, "TOPLEFT", col3X, col3Y)
+				container:SetPoint("TOPLEFT", main_frame.anchor, "TOPLEFT", columnGeometry.x3, col3Y)
 				col3Y = col3Y - spellBarHeight - spacing
 			end
 			container:Show()
@@ -2251,14 +2255,14 @@ local function layout_three_columns(count, splitPoint1, splitPoint2, startY, col
 	return col1Y, col2Y, col3Y
 end
 
-local function column_max_width(count, splitPoint1, splitPoint2, col2X, col3X, columnWidth, maxWidth)
+local function column_max_width(count, splitPoint1, splitPoint2, columnGeometry, maxWidth)
 	if count > 0 then
 		if count > splitPoint2 then
-			maxWidth = math.max(maxWidth, col3X + columnWidth)
+			maxWidth = math.max(maxWidth, columnGeometry.x3 + columnGeometry.width)
 		elseif count > splitPoint1 then
-			maxWidth = math.max(maxWidth, col2X + columnWidth)
+			maxWidth = math.max(maxWidth, columnGeometry.x2 + columnGeometry.width)
 		else
-			maxWidth = math.max(maxWidth, columnWidth)
+			maxWidth = math.max(maxWidth, columnGeometry.width)
 		end
 	end
 	return maxWidth
@@ -2413,10 +2417,9 @@ function GCDI.reposition_all()
 		local itemsPerColumn = math.ceil(totalCount / 3)
 		local splitPoint1 = itemsPerColumn
 		local splitPoint2 = itemsPerColumn * 2
-		local col2X = columnWidth + columnGap
-		local col3X = (columnWidth + columnGap) * 2
+		local columnGeometry = { x2 = columnWidth + columnGap, x3 = (columnWidth + columnGap) * 2, width = columnWidth }
 
-		local col1Y, col2Y, col3Y = layout_three_columns(totalCount, splitPoint1, splitPoint2, yOffset, col2X, col3X, spellBarHeight, spacing, function(i)
+		local col1Y, col2Y, col3Y = layout_three_columns(totalCount, splitPoint1, splitPoint2, yOffset, columnGeometry, spellBarHeight, spacing, function(i)
 			return allSpellsAndItems[i].container
 		end)
 
@@ -2428,15 +2431,15 @@ function GCDI.reposition_all()
 		local buffSplit1 = buffsPerColumn
 		local buffSplit2 = buffsPerColumn * 2
 
-		local buffCol1Y, buffCol2Y, buffCol3Y = layout_three_columns(buffCount, buffSplit1, buffSplit2, columnsEndY, col2X, col3X, spellBarHeight, spacing, function(i)
+		local buffCol1Y, buffCol2Y, buffCol3Y = layout_three_columns(buffCount, buffSplit1, buffSplit2, columnsEndY, columnGeometry, spellBarHeight, spacing, function(i)
 			local data = trackedBuffs[orderedBuffs[i]]
 			return data and data.container
 		end)
 
 		finalY = math.min(buffCol1Y, buffCol2Y, buffCol3Y)
 
-		maxWidth = column_max_width(totalCount, splitPoint1, splitPoint2, col2X, col3X, columnWidth, maxWidth)
-		maxWidth = column_max_width(buffCount, buffSplit1, buffSplit2, col2X, col3X, columnWidth, maxWidth)
+		maxWidth = column_max_width(totalCount, splitPoint1, splitPoint2, columnGeometry, maxWidth)
+		maxWidth = column_max_width(buffCount, buffSplit1, buffSplit2, columnGeometry, maxWidth)
 	end
 
 	-- Store bounds (height is positive, representing total vertical space used)

@@ -43,8 +43,9 @@ add_section_header(frame, yOffset, title, desc, width, showSep, collapsible, sec
   globally unique.
 
 On click, the header toggles
-`settings.optionsUiCollapsedSections[sectionKey]` and calls the owning
-tab's existing `refresh_*_tab` function (`refresh_settings_tab`,
+`settings.optionsUiCollapsedSections[sectionKey]` and calls
+`GCDI.refresh_options_frame()`, which dispatches to whichever
+`refresh_*_tab` function owns the currently-shown tab (`refresh_settings_tab`,
 `refresh_developer_tab`, etc.) — no new reflow mechanism, since every tab
 already recomputes `yOffset` top-to-bottom on refresh.
 
@@ -118,9 +119,12 @@ kept alongside the new mechanism.
 
 ## Other low-risk native polish noted alongside this feature
 
-- Defensive `InCombatLockdown()` guard before rebuilding the options
-  panel, consistent with existing guidance elsewhere in the codebase for
-  other frame-creation paths (e.g. `AuraContainer`/CDM handling).
+- Defensive `InCombatLockdown()` guard on `create_options_frame` (the
+  single open/reopen entry point), consistent with existing guidance
+  elsewhere in the codebase for other frame-creation paths (e.g.
+  `AuraContainer`/CDM handling). Scoped to that entry point rather than
+  every tab refresh, since a collapse toggle or checkbox click only
+  reaches `refresh_*_tab` while the panel is already open.
 - If `build_button_section` exists (see the local-variable refactor
   plan), consistent hover/pressed styling across Settings/Developer
   buttons falls out for free from its data-table shape.

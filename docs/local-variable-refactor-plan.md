@@ -1,5 +1,12 @@
 # Local-variable refactor plan
 
+**Status**: steps 1-3 below landed together in the collapsible-sections
+commit (see `docs/options-collapsible-sections.md`), verified via
+`check.js`/`scope.js` + the manual `SetPoint`-sequence trace described
+under Verification. No live-client confirmation yet. Step 4 (GCDI-table
+namespacing sweep) was added during that same pass, beyond this plan's
+original scope — see its own section below.
+
 Preventive maintenance, not a live bug: Lua enforces a hard compile-time
 limit of 200 locals in scope within a single function. Both large files in
 this repo compile clean today (`luajit -e "loadfile(...)"`), but several
@@ -23,7 +30,7 @@ Safest/most isolated first:
    calibrates the workflow.
 2. `create_options_frame` (LibGCDI-Options.lua:2901-3266) — no AHK risk,
    most locals to reclaim (~32 → ~6), safe to be aggressive.
-3. `reposition_all` (GCDIndicator.lua:2236-2466) — done last, only real
+3. `reposition_all` (GCDIndicator.lua:2236-2466) — last, only real
    AHK-desync risk, needs the strictest verification.
 
 ## 1. `init()` (GCDIndicator.lua:3764-3784)
@@ -101,7 +108,34 @@ Most conservative treatment of the three:
   and after, confirm byte-identical — `check.js`/`scope.js` passing is
   necessary but not sufficient here given the AHK pixel-read dependency.
 
-## Verification (all three)
+## 4. GCDI-table namespacing sweep (GCDIndicator.lua, whole file)
+
+Beyond the three functions above, every remaining top-level
+`local function foo() ... end` that GCDIndicator.lua also exposed for
+cross-file use via a separate `GCDI.foo = foo` line (`should_track_spell_icon`,
+`is_spell_off_gcd`, `is_item_off_gcd`, `rebuild_spell_bars`/
+`rebuild_item_bars`/`rebuild_buff_bars`, `scan_cdm_buff_frames`,
+`export_bar_positions`, `export_companion_config`, `scan_action_bars`,
+and the various `print_*`/`test_*`/`import_*` debug commands, among
+others) was collapsed to a single `function GCDI.foo()` declaration,
+dropping the separate assignment line and the forward-declared
+chunk-level local it required. This is the same pattern
+`GCDI.effective_bar_geometry`'s comment already documented as this
+file's convention before this refactor — applying it to the remaining
+holdouts frees main-chunk locals the same way step 1-3's extractions
+free per-function locals, just at chunk scope instead of function scope.
+
+`reposition_all`/`rebuild_spell_bars`/`rebuild_item_bars`/
+`rebuild_buff_bars` were previously the sole exception, kept as
+forward-declared locals under a comment calling them out as "genuinely
+hot per-tick functions." They aren't: every call site is a discrete
+UI/profile event (profile load, drag-reorder callback, settings toggle,
+preview-mode exit) — none of them fire from a `ticker`/`OnUpdate` per
+displayed frame. That comment was already stale, so this sweep folds
+those four in too instead of carving out an exception the codebase
+doesn't actually need.
+
+## Verification (all four)
 
 - `check.js` (syntax) + `scope.js` (unresolved-globals diff must be
   unchanged) after every extraction.

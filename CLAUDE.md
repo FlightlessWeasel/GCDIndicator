@@ -134,6 +134,16 @@ no code comments, no user-visible text (chat, tooltips, labels). Call it
 - Spells/Items/Buffs tab row reordering uses drag-and-drop
   (`add_row_drag_handle`), not per-row buttons — read `docs/options-drag-reorder.md`
   before touching row layout there or extending drag-and-drop to another tab.
+- Options UI sections can be made collapsible via `add_section_header`'s
+  `collapsible`/`sectionKey` params (Settings/Developer tabs so far) — read
+  `docs/options-collapsible-sections.md` (see ADR 0009) before adding a new
+  collapsible section or extending the pattern to another tab.
+- `GCDIndicator.lua`/`LibGCDI-Options.lua` are approaching Lua's 200-local
+  per-function-scope limit in a few large functions — read
+  `docs/local-variable-refactor-plan.md` before adding to
+  `create_options_frame`/`reposition_all`/`init()`'s resource-bar block, or
+  before adding a new top-level `local function` (prefer `function
+  GCDI.foo()` instead, per that doc's step 4).
 - Log mistakes in `MISTAKES.md` (repo root) whenever a change turns out
   wrong: what broke, root cause, fix — a few tight sentences each, not
   headers/prose. Create the file on first use.
