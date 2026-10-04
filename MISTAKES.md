@@ -22,7 +22,7 @@ overlay, which doesn't gate on secrecy at all.
 ## PLAYER_ENTERING_WORLD CDM rescan tainted Blizzard's CooldownViewer (2026-08-21)
 Added a synchronous `scan_cdm_buff_frames()` call to the `PLAYER_ENTERING_WORLD`
 handler to fix a stale `cdmBuffFrames` cache after zone transitions (CDM's
-`itemFramePool` reassigns frame objects across cooldownIDs - see `CLAUDE.md`).
+`itemFramePool` reassigns frame objects across cooldownIDs - see `AGENTS.md`).
 Caused `"attempt to perform boolean test on ... secret boolean value, while
 execution tainted by 'GCDIndicator'"` errors inside Blizzard's own
 `CooldownViewerItemData.lua`/`CooldownViewer.lua` (`RefreshTotemData`,

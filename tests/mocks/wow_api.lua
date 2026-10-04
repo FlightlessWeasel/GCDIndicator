@@ -3,7 +3,7 @@
 --
 -- CONTRACT: every stub here must reflect real WoW API behavior (signature,
 -- return values, nil semantics), verified against https://warcraft.wiki.gg or
--- the wow-addon-architect agent (.claude/agents/wow-addon-architect.md) —
+-- the wow-addon-architect agent (.codex/agents/wow-addon-architect.toml) —
 -- never guessed. If a test needs behavior this file doesn't cover yet, verify
 -- the real API first, then extend the stub. Code must be corrected to fit an
 -- accurate mock; never loosen a mock to fit a shortcut in the addon code.

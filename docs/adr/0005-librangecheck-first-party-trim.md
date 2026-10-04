@@ -20,7 +20,7 @@ zero-caller helpers.
 
 Fork it as `Libs/LibGCDI-RangeCheck/LibGCDI-RangeCheck.lua`, a first-party
 file where normal editing rules apply (unlike the genuinely third-party libs
-in `CLAUDE.md` — LibStub, CallbackHandler-1.0, LibDataBroker-1.1, etc.,
+in `AGENTS.md` — LibStub, CallbackHandler-1.0, LibDataBroker-1.1, etc.,
 which stay untouched). Removed everything not in the real call graph,
 verified via `codebase-memory` graph tracing (`trace_path` outbound from the
 3 real entry points) cross-checked against `grep` by hand, since the graph
@@ -54,5 +54,5 @@ changed, from `"LibRangeCheck-3.0"` to `"LibGCDI-RangeCheck"`.
 - **Strip it down in place without renaming the `LibStub` key.** Would avoid
   updating the one call site in `LibGCDI-Range.lua`, but blurs the line
   between "third-party, don't touch" and "first-party, edit freely" that
-  `CLAUDE.md`'s critical-constraints section otherwise draws clearly for
+  `AGENTS.md`'s critical-constraints section otherwise draws clearly for
   every other vendored lib.

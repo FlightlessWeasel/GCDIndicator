@@ -44,7 +44,7 @@ reasoning and in-game testing.
   ADR 0002 and Secret Value behavior from ADR 0001) is a substantially
   larger undertaking than the four `Libs/*` modules, and an inaccurate mock
   that addon code gets bent to satisfy would actively work against
-  `CLAUDE.md`'s "mocks are the contract" rule. This is a known, accepted
+  `AGENTS.md`'s "mocks are the contract" rule. This is a known, accepted
   gap, not an oversight — extending coverage there is its own future
   decision requiring a deliberately planned mock surface.
 

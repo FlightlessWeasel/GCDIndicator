@@ -64,7 +64,8 @@ no code comments, no user-visible text (chat, tooltips, labels). Call it
 ## Development directives
 
 - **Evidence over memory.** Verify WoW APIs (existence/signature/return
-  shape) via `wow-addon-architect` agent, `warcraft.wiki.gg`, or existing
+  shape) via the project `wow-addon-architect` agent, the `wow` MCP server,
+  `warcraft.wiki.gg`, or existing
   codebase patterns before depending on them — never from training-data
   recall. Secret Values make wrong assumptions fail silently, not loudly.
 - **Test-first for `tests/`-covered code** (`LibGCDI-Catalog`,
@@ -75,8 +76,7 @@ no code comments, no user-visible text (chat, tooltips, labels). Call it
 - **Mocks are the contract.** `tests/mocks/wow_api.lua` must reflect verified
   real API behavior. If addon code and mock disagree, fix the addon code —
   never loosen the mock to pass.
-- **Document architecture changes in `docs/`** (not `.claude/rules/`, which
-  auto-loads into every session) for any structural refactor/new subsystem/
+- **Document architecture changes in `docs/`** for any structural refactor/new subsystem/
   non-obvious pattern (what/why/how + API contracts), and add a one-line
   pointer to it from the relevant section here. In addition to
   `MISTAKES.md`.
@@ -134,6 +134,40 @@ no code comments, no user-visible text (chat, tooltips, labels). Call it
 - Spells/Items/Buffs tab row reordering uses drag-and-drop
   (`add_row_drag_handle`), not per-row buttons — read `docs/options-drag-reorder.md`
   before touching row layout there or extending drag-and-drop to another tab.
+- Options UI sections can be made collapsible via `add_section_header`'s
+  `collapsible`/`sectionKey` params (Settings/Developer tabs so far) — read
+  `docs/options-collapsible-sections.md` (see ADR 0009) before adding a new
+  collapsible section or extending the pattern to another tab.
 - Log mistakes in `MISTAKES.md` (repo root) whenever a change turns out
   wrong: what broke, root cause, fix — a few tight sentences each, not
   headers/prose. Create the file on first use.
+
+<!-- BEGIN init-wow-addon managed block -->
+## WoW addon instructions
+
+- Addon: `GCDIndicator`
+- Author: `jason`
+- WoW target: `mainline`
+- TOC interface values: `120000, 120001, 120005, 120007, 120100, 120200`
+- Verified install/test path: `D:\Battle.net\World of Warcraft\_retail_\Interface\AddOns`
+- Repo-local MCP config: `<addon>/.codex/config.toml`
+
+### Sources and correctness
+
+- Use Context7 and the connected Hated WoW MCP for relevant work. Use the available web search tools to search wowhead.com for item, NPC, spell, quest, news, and live-event data.
+- Use Context7 MCP for Lua language, standard-library, and library information.
+- Use the connected Hated WoW MCP for WoW API information, events, frames, TOC/interface correctness, and client-specific behavior. Report a missing connection instead of guessing.
+- Treat comma-separated interface values and recognized flavor-specific TOCs as a family; validate each flavor with Hated WoW MCP.
+- Remove interface values only through an explicit, Hated-validated prune; an older value may still load.
+- Revalidate the cached install/test path before copying or deploying the addon.
+
+### User interface
+
+- Slash commands may exist, but every option and work path must also have an in-game UI option.
+
+### Debug output
+
+- Keep debug data structured and bounded; do not dump millions of variables.
+- Copyable debug information must include a concise prompt for the agent together with the debug data.
+- Present copyable debug data in a window with Select All and Close buttons. Exclude credentials and unrelated addon data.
+<!-- END init-wow-addon managed block -->

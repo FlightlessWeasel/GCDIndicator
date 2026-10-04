@@ -27,7 +27,7 @@ not just a missed optimization.
 
 The native path sidesteps the problem instead of working around it: rather
 than reading a dispellable-or-not boolean back into Lua (closed off by the
-12.1 Secret Value system — see `CLAUDE.md`'s "Secret Value system" section),
+12.1 Secret Value system — see `AGENTS.md`'s "Secret Value system" section),
 bind a single `AddAuraSlot` filtered to dispellable harmful auras directly
 over the indicator's own StatusBar, and let the engine perform the
 N-auras -> 1-bit reduction by showing/hiding the bound button. GCDI never
@@ -137,7 +137,7 @@ this overlay follows the same shape:
   `<SECRET>` with no error — confirmed in-game for the sibling stack-binding
   experiment. This is why `gcdi_setup_dispel_overlay`'s `initializeFrame`
   never reads state back off `button`/`container`; it only ever reports what
-  it told the engine to be (a static debug string), per `CLAUDE.md`'s Secret
+  it told the engine to be (a static debug string), per `AGENTS.md`'s Secret
   Value rules.
 - `CustomAuraContainerTemplate` is a genuine Blizzard stock template (used by
   other addons, e.g. Plater; documented on Warcraft Wiki), not something

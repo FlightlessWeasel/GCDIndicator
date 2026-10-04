@@ -1,0 +1,21 @@
+{
+  "api_key_env": "PARSE_API_KEY",
+  "canonical_scraper_id": "93b56483-7fc6-48da-bd9f-1310e3bca1c3",
+  "endpoint_names": [
+    "search",
+    "get_item",
+    "get_npc",
+    "get_spell",
+    "get_quest",
+    "get_database_list",
+    "get_news",
+    "get_news_article",
+    "get_today_in_wow"
+  ],
+  "marketplace_id": "dcf24c30-539c-47c6-ad80-e754dfb7e99e",
+  "marketplace_url": "https://parse.bot/marketplace/dcf24c30-539c-47c6-ad80-e754dfb7e99e/wowhead-com-api",
+  "mcp_server_url": "https://api.parse.bot/mcp",
+  "name": "Wowhead API",
+  "note": "Parse provides an independent, maintained wrapper over public Wowhead data; it is not an official Wowhead API.",
+  "provider": "Parse"
+}

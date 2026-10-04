@@ -11,7 +11,7 @@ backing on Blizzard's own Cooldown Manager (CDM) rather than scanning
 unreliable in combat). CDM's `BuffIconCooldownViewer.itemFramePool` reuses a
 fixed pool of frame objects, reassigning any given frame object to a
 different `cooldownID` (a stable per-slot identifier, not a per-aura-
-instance one) as buffs come and go — documented in `CLAUDE.md`'s "CDM frame
+instance one) as buffs come and go — documented in `AGENTS.md`'s "CDM frame
 pool is stateful/reused" constraint.
 
 `cdmBuffFrames[cooldownID] -> frame` is GCDIndicator's own cache of that
