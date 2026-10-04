@@ -97,7 +97,7 @@ save + `GCDI.auto_save_to_profile()` + `onReorder()` once. Test-covered in
 `tests/spec/catalog_spec.lua` ("CommitOrder" and "reorder side effects"
 `describe` blocks) — this is the one piece of this feature that runs under
 the real Lua 5.1 test harness; the drag gesture itself (frame/cursor-driven)
-is not testable there, see `.claude/rules/test-harness.md`.
+is not testable there, see `docs/test-harness.md`.
 
 ## Verified WoW API assumptions (12.x, not recalled from training data)
 
@@ -123,7 +123,7 @@ is not testable there, see `.claude/rules/test-harness.md`.
 ## Known gaps (flagged, not fixed here)
 
 - **No live in-game verification.** No WoW client is available in this dev
-  environment (see `CLAUDE.md`'s "Critical constraints"). Verified here via
+  environment (see `AGENTS.md`'s "Critical constraints"). Verified here via
   `check.js`/`scope.js` static syntax/scope checks only. Cursor/scale math,
   drag feel, and scroll-frame interaction while dragging need real in-game
   testing (out of combat first) before this is considered done.
@@ -134,6 +134,6 @@ is not testable there, see `.claude/rules/test-harness.md`.
   bar order is still the hardcoded `GCDI_RESOURCE_ORDER` in
   `GCDIndicator.lua`. Explicitly declined when this feature was scoped: making
   it configurable would add new persisted state and risks desyncing the
-  companion script's pixel reads (see `CLAUDE.md`'s companion-project
+  companion script's pixel reads (see `AGENTS.md`'s companion-project
   section) — would need its own `CatalogManager` instance and a separate,
   deliberate decision to do so.

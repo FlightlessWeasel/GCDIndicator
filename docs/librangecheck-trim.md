@@ -6,7 +6,7 @@
 `Libs/LibRangeCheck-3.0/LibRangeCheck-3.0.lua` (upstream MIT, mitch0/WoWUIDev
 Community, rev 34). It is a first-party fork, not a vendored dependency —
 normal editing rules apply, unlike the remaining third-party libs listed in
-`CLAUDE.md`.
+`AGENTS.md`.
 
 ## Why
 

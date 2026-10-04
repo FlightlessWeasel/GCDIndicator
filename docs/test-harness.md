@@ -77,18 +77,18 @@ not touched by this harness. Both are built almost entirely around
 `CreateFrame`, the update ticker, and Blizzard event/API calls
 (`C_CooldownViewer`, `C_Spell`, `UNIT_AURA`, native `AuraContainer` bindings).
 Mocking that surface faithfully — especially the CDM frame-pool reuse
-semantics and Secret Value behavior documented in `CLAUDE.md`'s "Critical
+semantics and Secret Value behavior documented in `AGENTS.md`'s "Critical
 constraints" — is a much larger undertaking than the four `Libs/*` modules
 above, and doing it badly (an inaccurate mock that addon code gets bent to
 satisfy) would actively work against the "mocks are the contract" rule in
-`CLAUDE.md`. These files are still checked only via `check.js`/`scope.js` plus
+`AGENTS.md`. These files are still checked only via `check.js`/`scope.js` plus
 manual reasoning and user in-game testing.
 
 ## Extending this
 
 1. New pure-logic function in an already-mocked `Libs/*` file: add an `it()`
    to the existing spec file, following the pattern of writing the test
-   first, confirming it fails, then implementing (per `CLAUDE.md`'s
+   first, confirming it fails, then implementing (per `AGENTS.md`'s
    "Test-first" directive).
 2. New spec file: add it to `tests/runner.lua`'s `SPEC_FILES` list.
 3. Need a WoW API this doesn't stub yet: verify the API's real signature and

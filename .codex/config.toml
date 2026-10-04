@@ -1,0 +1,8 @@
+[mcp_servers.wow]
+command = "cmd"
+args = ["/c", "npx", "-y", "hated-wow-mcp"]
+env = { WOW_DEFAULT_FLAVOR = "mainline" }
+startup_timeout_sec = 30
+[mcp_servers.parse]
+url = "https://api.parse.bot/mcp"
+

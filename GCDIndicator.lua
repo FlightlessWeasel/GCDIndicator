@@ -1503,7 +1503,7 @@ end
 --
 -- Design (dispel-detection-research.md §9c): rather than reading a
 -- dispellable-or-not boolean back into Lua (closed off by the 12.1 Secret
--- Value system - see CLAUDE.md), a single AddAuraSlot filtered to
+-- Value system - see AGENTS.md), a single AddAuraSlot filtered to
 -- "HARMFUL|RAID_PLAYER_DISPELLABLE" is anchored directly over
 -- main_frame.dispelbar. The engine itself performs the N-auras -> 1-bit
 -- reduction by showing/hiding the bound button; GCDI never reads state back
@@ -1570,7 +1570,7 @@ function GCDI.setup_dispel_overlay()
 				-- IsShown, GetMinMaxValues, etc.) - once the engine owns this widget
 				-- those reads can come back as secret/opaque values and poison any
 				-- debug string built from them into "<SECRET>" with no error. Only
-				-- report what WE told it to be, per CLAUDE.md's Secret Value rules.
+				-- report what WE told it to be, per AGENTS.md's Secret Value rules.
 				debug("dispel overlay: bound")
 			end,
 		})
