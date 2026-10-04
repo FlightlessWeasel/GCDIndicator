@@ -6,3 +6,5 @@ startup_timeout_sec = 30
 [mcp_servers.parse]
 url = "https://api.parse.bot/mcp"
 
+[mcp_servers.context7]
+url = "https://mcp.context7.com/mcp"

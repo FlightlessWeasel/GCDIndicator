@@ -3162,17 +3162,19 @@ local function create_options_frame()
 		-- Anchored beside Export Bar Positions rather than folded into the
 		-- defs table - the only same-line button pair in either tab, not
 		-- worth a generic "anchor to sibling" field for one case.
-		local exportRotationBtn = create_settings_button(settingsFrame, sYOffset, 180, "Export Rotation Config",
-			"Export Rotation Config", {
-				{ "Generates spell/item/buff array text from your current spells/items/buffs and their order.", 1, 1, 1 },
-				{ "key/hasGCD fields still need to be filled in by hand - the addon has no concept of rotation keybinds.", 0.8, 0.6, 0.2 },
-			}, function()
-				if GCDI.export_companion_config and GCDI.show_export_import_popup then
-					GCDI.show_export_import_popup("export", GCDI.export_companion_config(), "Rotation Config Export")
-				end
-			end)
-		exportRotationBtn:ClearAllPoints()
-		exportRotationBtn:SetPoint("LEFT", settingsWidgets.exportBarPositionsBtn, "RIGHT", 10, 0)
+		if settingsWidgets.exportBarPositionsBtn then
+			local exportRotationBtn = create_settings_button(settingsFrame, sYOffset, 180, "Export Rotation Config",
+				"Export Rotation Config", {
+					{ "Generates spell/item/buff array text from your current spells/items/buffs and their order.", 1, 1, 1 },
+					{ "key/hasGCD fields still need to be filled in by hand - the addon has no concept of rotation keybinds.", 0.8, 0.6, 0.2 },
+				}, function()
+					if GCDI.export_companion_config and GCDI.show_export_import_popup then
+						GCDI.show_export_import_popup("export", GCDI.export_companion_config(), "Rotation Config Export")
+					end
+				end)
+			exportRotationBtn:ClearAllPoints()
+			exportRotationBtn:SetPoint("LEFT", settingsWidgets.exportBarPositionsBtn, "RIGHT", 10, 0)
+		end
 
 		settingsFrame:SetHeight(math.abs(sYOffset) + 20)
 	end
