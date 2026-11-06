@@ -2233,6 +2233,33 @@ local function update_mob_count_indicator()
 	end
 end
 
+local function update_autoattack_indicator()
+	if previewMode or not main_frame or not main_frame.autoattackbar then return end
+
+	local targetExists = aggro_safe_bool(UnitExists("target"), false)
+	local canAttack = aggro_safe_bool(UnitCanAttack("player", "target"), false)
+	local isAutoAttacking = false
+	if targetExists and canAttack and C_ActionBar and C_ActionBar.FindSpellActionButtons and C_ActionBar.IsAttackAction and C_ActionBar.IsCurrentAction then
+		local ok, slots = pcall(C_ActionBar.FindSpellActionButtons, 6603)
+		if ok and type(slots) == "table" then
+			for _, slot in ipairs(slots) do
+				local attackOk, isAttackAction = pcall(C_ActionBar.IsAttackAction, slot)
+				local actionOk, isCurrentAction = pcall(C_ActionBar.IsCurrentAction, slot)
+				if attackOk and actionOk and aggro_safe_bool(isAttackAction, false) and aggro_safe_bool(isCurrentAction, false) then
+					isAutoAttacking = true
+					break
+				end
+			end
+		end
+	end
+
+	if isAutoAttacking then
+		main_frame.autoattackbar:SetStatusBarColor(0, 1, 0)
+	else
+		main_frame.autoattackbar:SetStatusBarColor(0.15, 0.15, 0.15)
+	end
+end
+
 local function layout_three_columns(count, splitPoint1, splitPoint2, startY, columnGeometry, spellBarHeight, spacing, container_at)
 	local col1Y, col2Y, col3Y = startY, startY, startY
 	for i = 1, count do
@@ -2315,6 +2342,9 @@ function GCDI.reposition_all()
 		end
 		if main_frame.dispelbar then
 			main_frame.dispelbar:SetShown(showDispel)
+		end
+		if main_frame.autoattackbar then
+			main_frame.autoattackbar:Show()
 		end
 		-- Refresh mob count bar so AOE detection is correct as soon as the row is visible
 		update_mob_count_indicator()
@@ -3266,7 +3296,7 @@ function GCDI.resize_status_row()
 
 	local statusSize, statusPad = GCDI.effective_status_geometry()
 	local sepSize = 2
-	local containerWidth = (statusSize * 7) + (sepSize * 6) + (statusPad * 2)
+	local containerWidth = (statusSize * 8) + (sepSize * 7) + (statusPad * 2)
 	container:SetSize(containerWidth, statusSize + statusPad * 2)
 
 	if main_frame.stanceIndicator then
@@ -3291,7 +3321,7 @@ function GCDI.resize_status_row()
 		main_frame.gcdbar:SetSize(10000, statusSize)
 	end
 
-	for _, name in ipairs({ "combatbar", "aggrobar", "castingbar", "mobcountbar", "dispelbar" }) do
+	for _, name in ipairs({ "combatbar", "aggrobar", "castingbar", "mobcountbar", "dispelbar", "autoattackbar" }) do
 		if main_frame[name] then
 			main_frame[name]:SetSize(statusSize, statusSize)
 		end
@@ -3446,6 +3476,7 @@ local function on_event(self, event, arg1, arg2, ...)
 	elseif event == "PLAYER_ENTERING_WORLD" then
 		main_frame.combatbar:SetStatusBarColor(gcdi_safe_unit_affecting_combat("player") and 1 or 0, 0, 0)
 		update_aggro_indicator()
+		update_autoattack_indicator()
 		GCDI.setup_dispel_overlay()
 		update_all_resources()
 		update_gcd()
@@ -3482,12 +3513,16 @@ local function on_event(self, event, arg1, arg2, ...)
 		GCDI.UpdateRangeIndicators()
 		detect_native_range_for_spells()
 		update_aggro_indicator()
+		update_autoattack_indicator()
 		-- Refresh target-debuff bars so a new target doesn't show stale data
 		-- left over from the previous one; deferred like the UNIT_AURA path.
 		schedule_update_all_buff_bars_after_aura()
 
 	elseif event == "UNIT_THREAT_SITUATION_UPDATE" then
 		update_aggro_indicator()
+
+	elseif event == "ACTIONBAR_UPDATE_STATE" or event == "PLAYER_ENTER_COMBAT" or event == "PLAYER_LEAVE_COMBAT" then
+		update_autoattack_indicator()
 		
 	elseif event == "UNIT_TARGET" then
 		if arg1 == "target" then
@@ -3654,7 +3689,7 @@ local function init()
 	
 	local statusSize, statusPad = GCDI.effective_status_geometry()
 	local sepSize = 2
-	local containerWidth = (statusSize * 7) + (sepSize * 6) + (statusPad * 2)
+	local containerWidth = (statusSize * 8) + (sepSize * 7) + (statusPad * 2)
 	local gcdCombatContainer = CreateFrame("Frame", nil, main_frame)
 	gcdCombatContainer:SetSize(containerWidth, statusSize + statusPad * 2)
 	main_frame.gcdcontainer = gcdCombatContainer
@@ -3704,21 +3739,24 @@ local function init()
 		{"castingbar", {0, 0, 0}},
 		{"mobcountbar", {0, 0, 0}},
 		{"dispelbar", {0.28, 0.28, 0.32}},
+		{"autoattackbar", {0.15, 0.15, 0.15}},
 	}
-	-- All 6 row separators (sep1 + one per indicator below) are kept on
+	-- All 7 row separators (sep1 + one per indicator below) are kept on
 	-- main_frame.gcdRowSeps so resize_status_row can resize every one of
-	-- them, not just the last (gcdRowSep6, kept separately since
-	-- GCDI.reposition_all already reads it by that name to gate dispel visibility).
+	-- them, not just the last (the separators around Dispel and Auto Attack
+	-- are retained separately for visibility updates in GCDI.reposition_all).
 	local rowSeps = { sep1 }
 	local prevAnchor = gcdClip
-	local lastSep
+	local dispelSep
+	local autoAttackSep
 	for _, def in ipairs(gcdIndicatorDefs) do
 		local name, color = def[1], def[2]
 		local sep = gcdCombatContainer:CreateTexture(nil, "ARTWORK")
 		sep:SetSize(sepSize, statusSize)
 		sep:SetPoint("LEFT", prevAnchor, "RIGHT", 0, 0)
 		sep:SetColorTexture(0, 0, 0, 1)
-		lastSep = sep
+		if name == "dispelbar" then dispelSep = sep end
+		if name == "autoattackbar" then autoAttackSep = sep end
 		rowSeps[#rowSeps + 1] = sep
 		local bar = CreateFrame("StatusBar", nil, gcdCombatContainer)
 		init_status_bar_texture(bar)
@@ -3731,7 +3769,8 @@ local function init()
 		prevAnchor = bar
 	end
 	main_frame.gcdRowSeps = rowSeps
-	main_frame.gcdRowSep6 = lastSep
+	main_frame.gcdRowSep6 = dispelSep
+	main_frame.gcdRowSep7 = autoAttackSep
 	GCDIndicator_Positions = GCDIndicator_Positions or {}
 	local libGCDI = LibStub and LibStub:GetLibrary("LibGCDI", true)
 	if libGCDI then
@@ -3779,6 +3818,7 @@ local function init()
 	update_all_resources()
 	update_stance_indicator()
 	update_aggro_indicator()
+	update_autoattack_indicator()
 
 	local events = {
 		"SPELL_UPDATE_COOLDOWN",
@@ -3796,6 +3836,9 @@ local function init()
 		"UPDATE_BONUS_ACTIONBAR",
 		"RUNE_POWER_UPDATE",
 		"PLAYER_TARGET_CHANGED",
+		"ACTIONBAR_UPDATE_STATE",
+		"PLAYER_ENTER_COMBAT",
+		"PLAYER_LEAVE_COMBAT",
 		"UNIT_THREAT_SITUATION_UPDATE",
 		"NAME_PLATE_UNIT_ADDED",
 		"NAME_PLATE_UNIT_REMOVED",
@@ -3886,6 +3929,7 @@ local function init()
 		-- Also driven by NAME_PLATE_UNIT_ADDED/REMOVED and UNIT_AURA respectively.
 		if tickCount % 4 == 0 then
 			pcall(update_mob_count_indicator)
+			pcall(update_autoattack_indicator)
 			update_spell_icons()
 		end
 
