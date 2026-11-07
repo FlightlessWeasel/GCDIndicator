@@ -148,8 +148,10 @@ no code comments, no user-visible text (chat, tooltips, labels). Call it
 - Addon: `GCDIndicator`
 - Author: `jason`
 - WoW target: `mainline`
-- TOC interface values: `120000, 120001, 120005, 120007, 120100, 120200`
-- Verified install/test path: `D:\Battle.net\World of Warcraft\_retail_\Interface\AddOns`
+- TOC interface values: `120000, 120001, 120005, 120007, 120100, 120200, 16001`
+- Verified install/test paths:
+  - Retail: `D:\Battle.net\World of Warcraft\_retail_\Interface\AddOns`
+  - Classic Forever: `D:\Battle.net\World of Warcraft\_forever_\Interface\AddOns`
 - Repo-local MCP config: `<addon>/.codex/config.toml`
 
 ### Sources and correctness
@@ -159,7 +161,7 @@ no code comments, no user-visible text (chat, tooltips, labels). Call it
 - Use the connected Hated WoW MCP for WoW API information, events, frames, TOC/interface correctness, and client-specific behavior. Report a missing connection instead of guessing.
 - Treat comma-separated interface values and recognized flavor-specific TOCs as a family; validate each flavor with Hated WoW MCP.
 - Remove interface values only through an explicit, Hated-validated prune; an older value may still load.
-- Revalidate the cached install/test path before copying or deploying the addon.
+- Revalidate the selected install/test path before copying or deploying the addon.
 
 ### User interface
 
