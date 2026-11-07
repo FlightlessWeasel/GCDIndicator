@@ -2233,22 +2233,32 @@ local function update_mob_count_indicator()
 	end
 end
 
+local autoAttackActionSlots = {}
+
+local function rebuild_autoattack_action_slots()
+	wipe(autoAttackActionSlots)
+	if not C_ActionBar or not C_ActionBar.IsAttackAction then return end
+
+	for slot = 1, 180 do
+		local ok, isAttackAction = pcall(C_ActionBar.IsAttackAction, slot)
+		if ok and aggro_safe_bool(isAttackAction, false) then
+			autoAttackActionSlots[#autoAttackActionSlots + 1] = slot
+		end
+	end
+end
+
 local function update_autoattack_indicator()
 	if previewMode or not main_frame or not main_frame.autoattackbar then return end
 
 	local targetExists = aggro_safe_bool(UnitExists("target"), false)
 	local canAttack = aggro_safe_bool(UnitCanAttack("player", "target"), false)
 	local isAutoAttacking = false
-	if targetExists and canAttack and C_ActionBar and C_ActionBar.FindSpellActionButtons and C_ActionBar.IsAttackAction and C_ActionBar.IsCurrentAction then
-		local ok, slots = pcall(C_ActionBar.FindSpellActionButtons, 6603)
-		if ok and type(slots) == "table" then
-			for _, slot in ipairs(slots) do
-				local attackOk, isAttackAction = pcall(C_ActionBar.IsAttackAction, slot)
-				local actionOk, isCurrentAction = pcall(C_ActionBar.IsCurrentAction, slot)
-				if attackOk and actionOk and aggro_safe_bool(isAttackAction, false) and aggro_safe_bool(isCurrentAction, false) then
-					isAutoAttacking = true
-					break
-				end
+	if targetExists and canAttack and C_ActionBar and C_ActionBar.IsCurrentAction then
+		for _, slot in ipairs(autoAttackActionSlots) do
+			local ok, isCurrentAction = pcall(C_ActionBar.IsCurrentAction, slot)
+			if ok and aggro_safe_bool(isCurrentAction, false) then
+				isAutoAttacking = true
+				break
 			end
 		end
 	end
@@ -3475,6 +3485,7 @@ local function on_event(self, event, arg1, arg2, ...)
 		
 	elseif event == "PLAYER_ENTERING_WORLD" then
 		main_frame.combatbar:SetStatusBarColor(gcdi_safe_unit_affecting_combat("player") and 1 or 0, 0, 0)
+		rebuild_autoattack_action_slots()
 		update_aggro_indicator()
 		update_autoattack_indicator()
 		GCDI.setup_dispel_overlay()
@@ -3485,23 +3496,28 @@ local function on_event(self, event, arg1, arg2, ...)
 		
 	elseif event == "UPDATE_SHAPESHIFT_FORM" or event == "UPDATE_BONUS_ACTIONBAR" then
 		update_stance_indicator()
+		rebuild_autoattack_action_slots()
 		-- Bonus bar swaps repoint action slots.
 		GCDI.invalidate_action_slot_map()
 		
 	elseif event == "RUNE_POWER_UPDATE" then
 		update_runes_bar()
 
-	elseif event == "ACTIONBAR_SLOT_CHANGED" or event == "UPDATE_MACROS" then
+	elseif event == "ACTIONBAR_SLOT_CHANGED" or event == "ACTIONBAR_PAGE_CHANGED" or event == "UPDATE_MACROS" then
 		-- Cached spellID -> action slot map is now stale.
 		GCDI.invalidate_action_slot_map()
+		rebuild_autoattack_action_slots()
+		update_autoattack_indicator()
 
 	elseif event == "SPELLS_CHANGED" then
 		GCDI.invalidate_action_slot_map()
+		rebuild_autoattack_action_slots()
 		LibRange:InvalidateSpellRangeCache()
 
 	elseif event == "PLAYER_SPECIALIZATION_CHANGED" then
 		-- Removed auto-scan: use /gcdopt scan to manually rescan
 		GCDI.invalidate_action_slot_map()
+		rebuild_autoattack_action_slots()
 		LibRange:InvalidateSpellRangeCache()
 		gcdi_refresh_stagger_spec()
 
@@ -3818,6 +3834,7 @@ local function init()
 	update_all_resources()
 	update_stance_indicator()
 	update_aggro_indicator()
+	rebuild_autoattack_action_slots()
 	update_autoattack_indicator()
 
 	local events = {
@@ -3827,6 +3844,7 @@ local function init()
 		"PLAYER_REGEN_ENABLED", 
 		"PLAYER_ENTERING_WORLD",
 		"ACTIONBAR_SLOT_CHANGED",
+		"ACTIONBAR_PAGE_CHANGED",
 		"UPDATE_MACROS",
 		"BAG_UPDATE",
 		"PLAYER_EQUIPMENT_CHANGED",
