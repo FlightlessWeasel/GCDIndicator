@@ -2270,6 +2270,58 @@ local function update_autoattack_indicator()
 	end
 end
 
+local function get_autoattack_debug_report()
+	rebuild_autoattack_action_slots()
+
+	local function safe_bool_text(value)
+		return value and "yes" or "no"
+	end
+	local targetExistsOk, targetExistsValue = pcall(UnitExists, "target")
+	local canAttackOk, canAttackValue = pcall(UnitCanAttack, "player", "target")
+	local targetExists = targetExistsOk and aggro_safe_bool(targetExistsValue, false)
+	local canAttack = canAttackOk and aggro_safe_bool(canAttackValue, false)
+	local lines = {
+		"Please paste this report back to the agent so it can diagnose the Auto Attack indicator.",
+		"Auto Attack indicator diagnostics:",
+		"target_exists_call_ok=" .. safe_bool_text(targetExistsOk),
+		"target_exists=" .. safe_bool_text(targetExists),
+		"target_can_attack_call_ok=" .. safe_bool_text(canAttackOk),
+		"target_can_attack=" .. safe_bool_text(canAttack),
+		"attack_action_slot_count=" .. #autoAttackActionSlots,
+		"action_api_available=" .. safe_bool_text(C_ActionBar and C_ActionBar.IsAttackAction and C_ActionBar.IsCurrentAction),
+	}
+
+	local currentCount = 0
+	local slotLimit = math.min(#autoAttackActionSlots, 8)
+	for index = 1, slotLimit do
+		local slot = autoAttackActionSlots[index]
+		local attackOk, isAttackAction = pcall(C_ActionBar.IsAttackAction, slot)
+		local currentOk, isCurrentAction = pcall(C_ActionBar.IsCurrentAction, slot)
+		local attackActive = attackOk and aggro_safe_bool(isAttackAction, false)
+		local current = currentOk and aggro_safe_bool(isCurrentAction, false)
+		if current then currentCount = currentCount + 1 end
+		lines[#lines + 1] = string.format(
+			"slot_%d: attack_call_ok=%s attack_action=%s current_call_ok=%s current=%s",
+			slot,
+			safe_bool_text(attackOk),
+			safe_bool_text(attackActive),
+			safe_bool_text(currentOk),
+			safe_bool_text(current)
+		)
+	end
+	lines[#lines + 1] = "current_action_slot_count=" .. currentCount
+	if #autoAttackActionSlots > slotLimit then
+		lines[#lines + 1] = "additional_attack_action_slots_omitted=" .. (#autoAttackActionSlots - slotLimit)
+	end
+	return table.concat(lines, "\n"), string.format(
+		"Auto Attack debug: target=%s, attackable=%s, slots=%d, current=%d",
+		safe_bool_text(targetExists),
+		safe_bool_text(canAttack),
+		#autoAttackActionSlots,
+		currentCount
+	)
+end
+
 local function layout_three_columns(count, splitPoint1, splitPoint2, startY, columnGeometry, spellBarHeight, spacing, container_at)
 	local col1Y, col2Y, col3Y = startY, startY, startY
 	for i = 1, count do
@@ -4644,6 +4696,13 @@ SlashCmdList["GCDOPT"] = function(msg)
 			GCDI.show_export_import_popup("export", text, "Rotation Config Export")
 		else
 			print(GCDI_PREFIX .. text)
+		end
+	elseif msg == "autoattackdebug" then
+		local report, summary = get_autoattack_debug_report()
+		if GCDI.show_export_import_popup then
+			GCDI.show_export_import_popup("export", report, "Auto Attack Debug")
+		else
+			print(GCDI_PREFIX .. summary)
 		end
 	elseif msg == "items" then
 		GCDI.print_item_catalog()
