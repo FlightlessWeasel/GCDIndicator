@@ -2234,13 +2234,14 @@ local function update_mob_count_indicator()
 end
 
 local autoAttackEngaged = false
+local autoRepeatEngaged = false
 
 local function update_autoattack_indicator()
 	if previewMode or not main_frame or not main_frame.autoattackbar then return end
 
 	local targetExists = aggro_safe_bool(UnitExists("target"), false)
 	local canAttack = aggro_safe_bool(UnitCanAttack("player", "target"), false)
-	local isAutoAttacking = autoAttackEngaged and targetExists and canAttack
+	local isAutoAttacking = (autoAttackEngaged or autoRepeatEngaged) and targetExists and canAttack
 
 	if isAutoAttacking then
 		main_frame.autoattackbar:SetStatusBarColor(0, 1, 0)
@@ -3519,6 +3520,14 @@ local function on_event(self, event, arg1, arg2, ...)
 		autoAttackEngaged = false
 		update_autoattack_indicator()
 
+	elseif event == "START_AUTOREPEAT_SPELL" then
+		autoRepeatEngaged = true
+		update_autoattack_indicator()
+
+	elseif event == "STOP_AUTOREPEAT_SPELL" then
+		autoRepeatEngaged = false
+		update_autoattack_indicator()
+
 	elseif event == "ACTIONBAR_UPDATE_STATE" then
 		update_autoattack_indicator()
 		
@@ -3837,6 +3846,8 @@ local function init()
 		"ACTIONBAR_UPDATE_STATE",
 		"PLAYER_ENTER_COMBAT",
 		"PLAYER_LEAVE_COMBAT",
+		"START_AUTOREPEAT_SPELL",
+		"STOP_AUTOREPEAT_SPELL",
 		"UNIT_THREAT_SITUATION_UPDATE",
 		"NAME_PLATE_UNIT_ADDED",
 		"NAME_PLATE_UNIT_REMOVED",
@@ -4139,6 +4150,10 @@ function GCDI.toggle_preview_mode()
 			main_frame.dispelbar:SetStatusBarColor(0.6, 0.2, 0.8)  -- Sample: dispel-active purple
 			main_frame.dispelbar:SetValue(100)
 		end
+		if main_frame.autoattackbar then
+			main_frame.autoattackbar:SetStatusBarColor(0, 1, 0)
+			main_frame.autoattackbar:SetValue(100)
+		end
 		if main_frame.stanceIndicator then
 			main_frame.stanceIndicator:SetColorTexture(0.5, 0.3, 0, 1)  -- Bear form color
 		end
@@ -4170,6 +4185,7 @@ function GCDI.toggle_preview_mode()
 		-- Force update all bars to restore real values
 		-- Call individual update functions to properly restore each resource bar
 		update_all_resources()
+		update_autoattack_indicator()
 		
 		-- Reset GCD and combat bars
 		if main_frame.gcdbar then
