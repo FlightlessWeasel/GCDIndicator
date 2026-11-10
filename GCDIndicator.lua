@@ -37,6 +37,7 @@ local configs = GCDI.configs
 local CreateFrame = CreateFrame
 local GetActionInfo = GetActionInfo
 local GetMacroSpell = GetMacroSpell
+local GetTime = GetTime
 local InCombatLockdown = InCombatLockdown
 local UnitAffectingCombat = UnitAffectingCombat
 local UnitHealth = UnitHealth
@@ -66,6 +67,7 @@ GCDI.trackedSpells = {}
 GCDI.spellCatalog = {}
 GCDI.itemCatalog = {}
 local trackedSpells = GCDI.trackedSpells
+local behindErrorUntil = 0
 local spellBars = {}
 local trackedItems = {}
 local itemBars = {}
@@ -887,6 +889,7 @@ local function create_spell_bar(spellID, spellName, texture, actionSlot)
 	
 	local rangeBase = nil
 	local rangeOverlay = nil
+	local behindErrorOverlay = nil
 	local lastElement = clipContainer  -- Track what to anchor next element to
 	
 	if not isSelfCast then
@@ -899,6 +902,11 @@ local function create_spell_bar(spellID, spellName, texture, actionSlot)
 		rangeOverlay:SetSize(barSize, barSize)
 		rangeOverlay:SetPoint("CENTER", rangeBase, "CENTER", 0, 0)
 		rangeOverlay:SetColorTexture(RANGE_COLORS.noTarget[1], RANGE_COLORS.noTarget[2], RANGE_COLORS.noTarget[3], 1)
+		behindErrorOverlay = container:CreateTexture(nil, "OVERLAY", nil, 1)
+		behindErrorOverlay:SetSize(barSize, barSize)
+		behindErrorOverlay:SetPoint("CENTER", rangeBase, "CENTER", 0, 0)
+		behindErrorOverlay:SetColorTexture(RANGE_COLORS.outOfRange[1], RANGE_COLORS.outOfRange[2], RANGE_COLORS.outOfRange[3], 1)
+		behindErrorOverlay:Hide()
 		
 		lastElement = rangeBase
 	end
@@ -942,6 +950,7 @@ local function create_spell_bar(spellID, spellName, texture, actionSlot)
 		actionSlot = actionSlot,
 		rangeBase = rangeBase,
 		rangeOverlay = rangeOverlay,
+		behindErrorOverlay = behindErrorOverlay,
 		chargeStackBar = chargeStackBar,
 		chargeStackMax = chargeStackMax,
 		maxCharges = showChargeIndicators and maxCharges or nil,
@@ -1751,6 +1760,13 @@ end
 
 function GCDI.UpdateRangeIndicators()
 	LibRange:UpdateRangeIndicators()
+	local active = GetTime() < behindErrorUntil and not previewMode
+	for spellID, data in pairs(trackedSpells) do
+		local spellSettings = settings and settings.spellSettings and settings.spellSettings[spellID]
+		if data.behindErrorOverlay then
+			data.behindErrorOverlay:SetShown(active and spellSettings and spellSettings.highlightOnNotBehind == true or false)
+		end
+	end
 end
 
 
@@ -1880,7 +1896,13 @@ local function update_combo_points_bar()
 	local max = actualMax == 0 and 2 or math.max(actualMax, 1)
 	
 	bar:SetMinMaxValues(0, max)
-	bar:SetValue(UnitPower("player", Enum.PowerType.ComboPoints))
+	local currentComboPoints
+	if WOW_PROJECT_ID == WOW_PROJECT_MAINLINE then
+		currentComboPoints = UnitPower("player", Enum.PowerType.ComboPoints)
+	else
+		currentComboPoints = GetComboPoints("player", "target")
+	end
+	bar:SetValue(currentComboPoints)
 
 	if data.lastSeparatorMax == max then return end
 	data.lastSeparatorMax = max
@@ -2107,6 +2129,184 @@ local function update_stance_indicator()
 	local formIndex = GetShapeshiftForm() or 0
 	local color = FORM_COLORS[formIndex] or FORM_COLORS.default
 	main_frame.stanceIndicator:SetColorTexture(color[1], color[2], color[3], 1)
+	return formIndex
+end
+
+local STANCE_DEBUG_CAPTURE_SECONDS = 30
+local STANCE_DEBUG_CAPTURE_MAX_ENTRIES = 120
+local STANCE_DEBUG_EVENTS = {
+	UPDATE_SHAPESHIFT_FORM = true,
+	UPDATE_SHAPESHIFT_FORMS = true,
+	UPDATE_SHAPESHIFT_USABLE = true,
+	UPDATE_SHAPESHIFT_COOLDOWN = true,
+	UPDATE_BONUS_ACTIONBAR = true,
+}
+local stanceDebugCapture
+
+local function stance_capture_form_text(formIndex)
+	if issecretvalue then
+		local ok, secret = pcall(issecretvalue, formIndex)
+		if ok and secret then return "secret" end
+	end
+	if formIndex == "error" then return "error" end
+	if formIndex == nil then return "nil" end
+	if type(formIndex) ~= "number" then return type(formIndex) end
+	return tostring(formIndex)
+end
+
+local function stance_capture_record(eventName, phase, formIndex, useProvidedForm)
+	local capture = stanceDebugCapture
+	if not capture then return end
+
+	if not useProvidedForm then
+		local ok, sampledForm = pcall(GetShapeshiftForm)
+		if ok then
+			formIndex = sampledForm
+		else
+			formIndex = "error"
+		end
+	end
+
+	if #capture.entries >= STANCE_DEBUG_CAPTURE_MAX_ENTRIES then
+		table.remove(capture.entries, 1)
+		capture.dropped = capture.dropped + 1
+	end
+	table.insert(capture.entries, string.format("+%.3fs event=%s phase=%s form=%s",
+		GetTime() - capture.startedAt, eventName, phase, stance_capture_form_text(formIndex)))
+end
+
+local function stance_capture_finish(capture, reason)
+	if stanceDebugCapture ~= capture then return end
+	stance_capture_record("capture", reason)
+	capture.duration = GetTime() - capture.startedAt
+	stanceDebugCapture = nil
+
+	local lines = {
+		"Please paste this trace into the support conversation to diagnose the form/stance indicator.",
+		string.format("Capture duration: %.3f seconds; retained entries: %d; older entries dropped: %d",
+			capture.duration, #capture.entries, capture.dropped),
+	}
+	for i = 1, #capture.entries do
+		lines[#lines + 1] = string.format("%03d %s", i, capture.entries[i])
+	end
+	local report = table.concat(lines, "\n")
+	if GCDI.show_export_import_popup then
+		GCDI.show_export_import_popup("export", report, "Form/Stance Diagnostic")
+	else
+		print(GCDI_PREFIX .. "Capture finished, but the copy window is unavailable. Open Options > Developer and try again.")
+	end
+end
+
+local function stance_capture_request_finish(capture, reason)
+	if stanceDebugCapture ~= capture or capture.stopping then return end
+	capture.stopping = true
+	capture.stopReason = reason
+	if capture.pendingSamples == 0 then
+		stance_capture_finish(capture, reason)
+	end
+end
+
+local function stance_capture_schedule_samples(eventName, capture)
+	capture.pendingSamples = capture.pendingSamples + 2
+	C_Timer.After(0, function()
+		if stanceDebugCapture == capture then
+			stance_capture_record(eventName, "deferred-0s")
+		end
+		capture.pendingSamples = capture.pendingSamples - 1
+		if capture.stopping and capture.pendingSamples == 0 then
+			stance_capture_finish(capture, capture.stopReason)
+		end
+	end)
+	C_Timer.After(0.1, function()
+		if stanceDebugCapture == capture then
+			stance_capture_record(eventName, "deferred-0.1s")
+		end
+		capture.pendingSamples = capture.pendingSamples - 1
+		if capture.stopping and capture.pendingSamples == 0 then
+			stance_capture_finish(capture, capture.stopReason)
+		end
+	end)
+end
+
+local stanceAuraRefreshScheduled = false
+local stanceAuraCapture
+local stanceRefreshTicker
+local stanceRefreshGeneration = 0
+
+local function start_stance_refresh_loop(trigger)
+	if stanceRefreshTicker then
+		stanceRefreshTicker:Cancel()
+		stanceRefreshTicker = nil
+	end
+	stanceRefreshGeneration = stanceRefreshGeneration + 1
+	local generation = stanceRefreshGeneration
+	local formIndex = update_stance_indicator()
+	local capture = stanceDebugCapture
+	if capture and not capture.stopping then
+		stance_capture_record(trigger, "refresh-loop-start", formIndex, true)
+	end
+	local lastFormIndex = formIndex
+	local tickCount = 0
+	stanceRefreshTicker = C_Timer.NewTicker(0.1, function()
+		if generation ~= stanceRefreshGeneration then return end
+		local sampledForm = update_stance_indicator()
+		tickCount = tickCount + 1
+		local activeCapture = stanceDebugCapture
+		if activeCapture and not activeCapture.stopping and sampledForm ~= lastFormIndex then
+			stance_capture_record("stance-refresh-loop", "form-change", sampledForm, true)
+		end
+		lastFormIndex = sampledForm
+		if tickCount >= 30 then
+			local ticker = stanceRefreshTicker
+			stanceRefreshTicker = nil
+			if ticker then ticker:Cancel() end
+			if activeCapture and not activeCapture.stopping then
+				stance_capture_record("stance-refresh-loop", "loop-end", sampledForm, true)
+			end
+		end
+	end, 30)
+	return formIndex
+end
+
+local function schedule_stance_update_after_aura()
+	local capture = stanceDebugCapture
+	if capture and not capture.stopping and stanceAuraCapture ~= capture then
+		capture.pendingSamples = capture.pendingSamples + 1
+		stanceAuraCapture = capture
+	end
+	if stanceAuraRefreshScheduled then return end
+	stanceAuraRefreshScheduled = true
+	C_Timer.After(0, function()
+		stanceAuraRefreshScheduled = false
+		local pendingCapture = stanceAuraCapture
+		stanceAuraCapture = nil
+		local formIndex = start_stance_refresh_loop("UNIT_AURA[player]")
+		if pendingCapture then
+			if stanceDebugCapture == pendingCapture then
+				stance_capture_record("UNIT_AURA[player]", "rendered", formIndex, true)
+				stance_capture_schedule_samples("UNIT_AURA[player]", pendingCapture)
+			end
+			pendingCapture.pendingSamples = pendingCapture.pendingSamples - 1
+			if stanceDebugCapture == pendingCapture and pendingCapture.stopping and pendingCapture.pendingSamples == 0 then
+				stance_capture_finish(pendingCapture, pendingCapture.stopReason)
+			end
+		end
+	end)
+end
+
+function GCDI.toggle_stance_debug_capture()
+	if stanceDebugCapture then
+		stance_capture_request_finish(stanceDebugCapture, "manual-stop")
+		return
+	end
+
+	local capture = { startedAt = GetTime(), entries = {}, dropped = 0, pendingSamples = 0 }
+	stanceDebugCapture = capture
+	stance_capture_record("capture", "start")
+	print(GCDI_PREFIX .. "Capturing form events for 30 seconds. Reproduce the rapid form change; the trace will open automatically.")
+	C_Timer.After(STANCE_DEBUG_CAPTURE_SECONDS, function()
+		stance_capture_request_finish(capture, "timeout")
+	end)
 end
 
 -- Midnight: UnitAffectingCombat may return a secret boolean — do not branch on it raw.
@@ -2234,13 +2434,16 @@ local function update_mob_count_indicator()
 end
 
 local autoAttackEngaged = false
+local autoRepeatEngaged = false
+
 
 local function update_autoattack_indicator()
 	if previewMode or not main_frame or not main_frame.autoattackbar then return end
 
 	local targetExists = aggro_safe_bool(UnitExists("target"), false)
 	local canAttack = aggro_safe_bool(UnitCanAttack("player", "target"), false)
-	local isAutoAttacking = autoAttackEngaged and targetExists and canAttack
+	local isAutoAttacking = (autoAttackEngaged or autoRepeatEngaged) and targetExists and canAttack
+
 
 	if isAutoAttacking then
 		main_frame.autoattackbar:SetStatusBarColor(0, 1, 0)
@@ -2332,8 +2535,12 @@ function GCDI.reposition_all()
 		if main_frame.dispelbar then
 			main_frame.dispelbar:SetShown(showDispel)
 		end
+		local showAutoAttack = gcdSettings.showAutoAttack ~= false
+		if main_frame.gcdRowSep7 then
+			main_frame.gcdRowSep7:SetShown(showAutoAttack)
+		end
 		if main_frame.autoattackbar then
-			main_frame.autoattackbar:Show()
+			main_frame.autoattackbar:SetShown(showAutoAttack)
 		end
 		-- Refresh mob count bar so AOE detection is correct as soon as the row is visible
 		update_mob_count_indicator()
@@ -3369,7 +3576,20 @@ end
 -- ═══════════════════════════════════════════════════════════════════════════
 
 local function on_event(self, event, arg1, arg2, ...)
-	if event == "SPELL_UPDATE_COOLDOWN" then
+	if event == "UI_ERROR_MESSAGE" then
+		local ok, isBehindError = pcall(function()
+			return arg2 == SPELL_FAILED_NOT_BEHIND
+		end)
+		if ok and isBehindError then
+			behindErrorUntil = GetTime() + 1
+			GCDI.UpdateRangeIndicators()
+			C_Timer.After(1, function()
+				if GetTime() >= behindErrorUntil then
+					GCDI.UpdateRangeIndicators()
+				end
+			end)
+		end
+	elseif event == "SPELL_UPDATE_COOLDOWN" then
 		update_gcd()
 		update_all_spell_bars()
 		update_all_charge_indicators()
@@ -3463,6 +3683,11 @@ local function on_event(self, event, arg1, arg2, ...)
 		end)
 		
 	elseif event == "PLAYER_ENTERING_WORLD" then
+		autoAttackEngaged = false
+		if C_Spell and C_Spell.IsCurrentSpell then
+			local ok, isCurrent = pcall(C_Spell.IsCurrentSpell, 6603)
+			autoAttackEngaged = ok and isCurrent == true
+		end
 		main_frame.combatbar:SetStatusBarColor(gcdi_safe_unit_affecting_combat("player") and 1 or 0, 0, 0)
 		update_aggro_indicator()
 		update_autoattack_indicator()
@@ -3472,10 +3697,25 @@ local function on_event(self, event, arg1, arg2, ...)
 		-- Try to detect native range after a delay (in case player has a target)
 		C_Timer.After(3, detect_native_range_for_spells)
 		
-	elseif event == "UPDATE_SHAPESHIFT_FORM" or event == "UPDATE_BONUS_ACTIONBAR" then
-		update_stance_indicator()
-		-- Bonus bar swaps repoint action slots.
-		GCDI.invalidate_action_slot_map()
+	elseif STANCE_DEBUG_EVENTS[event] then
+		local capture = stanceDebugCapture
+		local shouldCapture = capture and not capture.stopping
+		if shouldCapture then
+			stance_capture_record(event, "event")
+		end
+		if event == "UPDATE_SHAPESHIFT_FORM" or event == "UPDATE_SHAPESHIFT_USABLE" or event == "UPDATE_BONUS_ACTIONBAR" then
+			local formIndex = start_stance_refresh_loop(event)
+			if shouldCapture then
+				stance_capture_record(event, "rendered", formIndex, true)
+			end
+		end
+		if event == "UPDATE_BONUS_ACTIONBAR" then
+			-- Bonus bar swaps repoint action slots.
+			GCDI.invalidate_action_slot_map()
+		end
+		if shouldCapture then
+			stance_capture_schedule_samples(event, capture)
+		end
 		
 	elseif event == "RUNE_POWER_UPDATE" then
 		update_runes_bar()
@@ -3496,6 +3736,7 @@ local function on_event(self, event, arg1, arg2, ...)
 		gcdi_refresh_stagger_spec()
 
 	elseif event == "PLAYER_TARGET_CHANGED" then
+		update_combo_points_bar()
 		-- Retargeting can otherwise leave a stale fallback range reading (see
 		-- LibGCDI-Range.lua's ResetIndicatorState/cachedFallbackInRange) shown
 		-- as green/red until a fresh sample happens to overwrite it.
@@ -3519,6 +3760,15 @@ local function on_event(self, event, arg1, arg2, ...)
 		autoAttackEngaged = false
 		update_autoattack_indicator()
 
+	elseif event == "START_AUTOREPEAT_SPELL" then
+		autoRepeatEngaged = true
+		update_autoattack_indicator()
+
+	elseif event == "STOP_AUTOREPEAT_SPELL" then
+		autoRepeatEngaged = false
+		update_autoattack_indicator()
+
+
 	elseif event == "ACTIONBAR_UPDATE_STATE" then
 		update_autoattack_indicator()
 		
@@ -3535,6 +3785,9 @@ local function on_event(self, event, arg1, arg2, ...)
 			-- Defer: see schedule_update_all_buff_bars_after_aura (CooldownViewer taint / secret spellID
 			-- compare) - must not be called synchronously here too.
 			schedule_update_all_buff_bars_after_aura()
+			if arg1 == "player" then
+				schedule_stance_update_after_aura()
+			end
 		end
 
 	elseif event == "UNIT_SPELLCAST_SUCCEEDED" then
@@ -3637,6 +3890,7 @@ local function init()
 			showAggro = true,
 			showMobCount = true,
 			showDispel = true,
+			showAutoAttack = true,
 			mobCountRange = 8,
 			mobCountThreshold = 3,
 		}
@@ -3656,6 +3910,9 @@ local function init()
 	end
 	if settings.gcdSettings.showDispel == nil then
 		settings.gcdSettings.showDispel = true
+	end
+	if settings.gcdSettings.showAutoAttack == nil then
+		settings.gcdSettings.showAutoAttack = true
 	end
 	if settings.gcdSettings.useLibRangeCheck == nil then
 		settings.gcdSettings.useLibRangeCheck = false
@@ -3831,12 +4088,19 @@ local function init()
 		"SPELLS_CHANGED",
 		"PLAYER_SPECIALIZATION_CHANGED",
 		"UPDATE_SHAPESHIFT_FORM",
+		"UPDATE_SHAPESHIFT_FORMS",
+		"UPDATE_SHAPESHIFT_USABLE",
+		"UPDATE_SHAPESHIFT_COOLDOWN",
 		"UPDATE_BONUS_ACTIONBAR",
 		"RUNE_POWER_UPDATE",
 		"PLAYER_TARGET_CHANGED",
 		"ACTIONBAR_UPDATE_STATE",
 		"PLAYER_ENTER_COMBAT",
 		"PLAYER_LEAVE_COMBAT",
+		"START_AUTOREPEAT_SPELL",
+		"STOP_AUTOREPEAT_SPELL",
+		"UI_ERROR_MESSAGE",
+
 		"UNIT_THREAT_SITUATION_UPDATE",
 		"NAME_PLATE_UNIT_ADDED",
 		"NAME_PLATE_UNIT_REMOVED",
@@ -4139,6 +4403,10 @@ function GCDI.toggle_preview_mode()
 			main_frame.dispelbar:SetStatusBarColor(0.6, 0.2, 0.8)  -- Sample: dispel-active purple
 			main_frame.dispelbar:SetValue(100)
 		end
+		if main_frame.autoattackbar then
+			main_frame.autoattackbar:SetStatusBarColor(0, 1, 0)
+			main_frame.autoattackbar:SetValue(100)
+		end
 		if main_frame.stanceIndicator then
 			main_frame.stanceIndicator:SetColorTexture(0.5, 0.3, 0, 1)  -- Bear form color
 		end
@@ -4170,6 +4438,7 @@ function GCDI.toggle_preview_mode()
 		-- Force update all bars to restore real values
 		-- Call individual update functions to properly restore each resource bar
 		update_all_resources()
+		update_autoattack_indicator()
 		
 		-- Reset GCD and combat bars
 		if main_frame.gcdbar then
@@ -4635,6 +4904,8 @@ SlashCmdList["GCDOPT"] = function(msg)
 		GCDI.import_buffs_from_cdm()
 	elseif msg == "range" then
 		GCDI.print_range_debug()
+	elseif msg == "stancedebug" then
+		GCDI.toggle_stance_debug_capture()
 	elseif msg == "rangetest" then
 		GCDI.test_range_indicators()
 	elseif msg == "minimap" then

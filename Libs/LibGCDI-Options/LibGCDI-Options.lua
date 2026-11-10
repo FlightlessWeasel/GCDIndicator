@@ -652,6 +652,7 @@ local GCD_INDICATOR_OPTIONS = {
 	{ key = "showAggro", name = "Show Aggro", desc = "Show the threat/aggro indicator", disabled = true },
 	{ key = "showMobCount", name = "Show Mob Count", desc = "Show the nearby mob count indicator" },
 	{ key = "showDispel", name = "Show Dispel", desc = "Show purple when you have a debuff you can dispel on yourself" },
+	{ key = "showAutoAttack", name = "Show Auto Attack", desc = "Show the auto-attack status indicator" },
 }
 
 local function refresh_gcd_tab()
@@ -691,6 +692,7 @@ local function refresh_gcd_tab()
 			showAggro = true,
 			showMobCount = true,
 			showDispel = true,
+			showAutoAttack = true,
 		}
 	end
 	
@@ -706,6 +708,7 @@ local function refresh_gcd_tab()
 		else
 			checkbox:SetScript("OnClick", function(self)
 				settings.gcdSettings[opt.key] = self:GetChecked()
+				GCDI.auto_save_to_profile()
 				GCDI.reposition_all()
 			end)
 		end
@@ -1350,7 +1353,8 @@ local function refresh_spells_tab()
 		range      = { x = 213, width = 110 },   -- true rendered width 160 (213-373)
 		chargePips = { x = 381, width = 68 },     -- 373 + 8px gap; true rendered width 118 (381-499)
 		gcd        = { x = 507 },                 -- 499 + 8px gap
-		drag       = { x = 539 },                 -- 507+24 (checkbox) + 8px gap
+		behind     = { x = 533 },                 -- compact per-spell behind-error option
+		drag       = { x = 557 },                 -- 533+20 (checkbox) + 4px gap
 	}
 
 	local enabledHeader = track(acquire_fontstring(scrollChild, "OVERLAY", "GameFontNormalSmall"))
@@ -1386,6 +1390,10 @@ local function refresh_spells_tab()
 	local gcdHeader = track(acquire_fontstring(scrollChild, "OVERLAY", "GameFontNormalSmall"))
 	gcdHeader:SetPoint("TOPLEFT", header_x(SPELLS_COLUMNS.gcd), yOffset)
 	gcdHeader:SetText("GCD")
+
+	local behindHeader = track(acquire_fontstring(scrollChild, "OVERLAY", "GameFontNormalSmall"))
+	behindHeader:SetPoint("TOPLEFT", header_x(SPELLS_COLUMNS.behind), yOffset)
+	behindHeader:SetText("Rear")
 
 	local orderHeader = track(acquire_fontstring(scrollChild, "OVERLAY", "GameFontNormalSmall"))
 	orderHeader:SetPoint("TOPLEFT", header_x(SPELLS_COLUMNS.drag), yOffset)
@@ -1428,7 +1436,7 @@ local function refresh_spells_tab()
 		hasNativeRange = hasNativeRange or false
 
 		local row = acquire_frame("Frame", scrollChild)
-		row:SetSize(600, 30)
+		row:SetSize(620, 30)
 		row:SetPoint("TOPLEFT", 10, yOffset)
 
 		local checkbox = acquire_frame("CheckButton", row, "UICheckButtonTemplate")
@@ -1496,6 +1504,24 @@ local function refresh_spells_tab()
 			GameTooltip:Show()
 		end)
 		offGcdCheckbox:SetScript("OnLeave", function() GameTooltip:Hide() end)
+
+		local behindCheckbox = acquire_frame("CheckButton", row, "UICheckButtonTemplate")
+		behindCheckbox:SetSize(20, 20)
+		behindCheckbox:SetPoint("LEFT", SPELLS_COLUMNS.behind.x, 0)
+		behindCheckbox:SetChecked(spellSettings.highlightOnNotBehind == true)
+		behindCheckbox:SetScript("OnClick", function(self)
+			local entry = ensure_settings_entry("spellSettings", spellID)
+			entry.highlightOnNotBehind = self:GetChecked()
+			GCDI.auto_save_to_profile()
+			GCDI.UpdateRangeIndicators()
+		end)
+		behindCheckbox:SetScript("OnEnter", function(self)
+			GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+			GameTooltip:SetText("Highlight behind error")
+			GameTooltip:AddLine("When a 'not behind' error occurs, this spell's range square turns red for one second. All spells with this option enabled flash together.", 1, 1, 1, true)
+			GameTooltip:Show()
+		end)
+		behindCheckbox:SetScript("OnLeave", function() GameTooltip:Hide() end)
 
 		add_icon_with_tooltip(row, texture, function(self)
 			GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
@@ -3228,6 +3254,12 @@ local function create_options_frame()
 				{ "Shows the range-check method and result for every tracked spell against your current target.", 1, 1, 1 },
 			}, onClick = function()
 				if GCDI.print_range_debug then GCDI.print_range_debug() end
+			end, gap = SETTINGS_BUTTON_GAP },
+			{ kind = "button", width = 180, text = "Capture Form Transitions", tooltipTitle = "Capture Form Transitions", tooltipLines = {
+				{ "Captures shapeshift events and sampled form indices for 30 seconds, then opens a copyable trace.", 1, 1, 1 },
+				{ "Reproduce the form/stance indicator issue while capture is active.", 0.8, 0.6, 0.2 },
+			}, onClick = function()
+				if GCDI.toggle_stance_debug_capture then GCDI.toggle_stance_debug_capture() end
 			end, gap = SETTINGS_BUTTON_GAP },
 			{ kind = "button", width = 180, text = "Cooldown Manager Scan", tooltipTitle = "Cooldown Manager Scan", tooltipLines = {
 				{ "Scans Blizzard's Cooldown Manager buff frames and prints what it finds.", 1, 1, 1 },
