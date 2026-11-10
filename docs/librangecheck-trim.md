@@ -4,7 +4,8 @@
 
 `Libs/LibGCDI-RangeCheck/LibGCDI-RangeCheck.lua` replaces the third-party
 `Libs/LibRangeCheck-3.0/LibRangeCheck-3.0.lua` (upstream MIT, mitch0/WoWUIDev
-Community, rev 34). It is a first-party fork, not a vendored dependency —
+Community; originally trimmed from rev 34, with selected compatibility changes
+from upstream rev 39). It is a first-party fork, not a vendored dependency —
 normal editing rules apply, unlike the remaining third-party libs listed in
 `AGENTS.md`.
 
@@ -81,6 +82,12 @@ updated to the new library name; nothing else in the repo references
 users' toggle state for no functional benefit.
 
 ## Re-diffing against upstream
+
+The trimmed fork keeps its own minor version and public API. Selected rev 39
+compatibility updates add Forever detection and Era-style spell/item datasets,
+use `C_Item` existence/cache checks, and fall back to unit tokens whenever a
+GUID is secret. These changes preserve the fork's existing checker lifecycle
+and Retail/Midnight behavior.
 
 If a future GCDIndicator feature needs one of the removed accessors (e.g.
 `GetFriendMinChecker` for an out-of-melee-range check), the original is
