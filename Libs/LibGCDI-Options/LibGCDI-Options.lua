@@ -708,6 +708,7 @@ local function refresh_gcd_tab()
 		else
 			checkbox:SetScript("OnClick", function(self)
 				settings.gcdSettings[opt.key] = self:GetChecked()
+				GCDI.auto_save_to_profile()
 				GCDI.reposition_all()
 			end)
 		end
