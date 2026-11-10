@@ -1896,7 +1896,13 @@ local function update_combo_points_bar()
 	local max = actualMax == 0 and 2 or math.max(actualMax, 1)
 	
 	bar:SetMinMaxValues(0, max)
-	bar:SetValue(GetComboPoints("player", "target"))
+	local currentComboPoints
+	if WOW_PROJECT_ID == WOW_PROJECT_MAINLINE then
+		currentComboPoints = UnitPower("player", Enum.PowerType.ComboPoints)
+	else
+		currentComboPoints = GetComboPoints("player", "target")
+	end
+	bar:SetValue(currentComboPoints)
 
 	if data.lastSeparatorMax == max then return end
 	data.lastSeparatorMax = max
@@ -2529,8 +2535,12 @@ function GCDI.reposition_all()
 		if main_frame.dispelbar then
 			main_frame.dispelbar:SetShown(showDispel)
 		end
+		local showAutoAttack = gcdSettings.showAutoAttack ~= false
+		if main_frame.gcdRowSep7 then
+			main_frame.gcdRowSep7:SetShown(showAutoAttack)
+		end
 		if main_frame.autoattackbar then
-			main_frame.autoattackbar:Show()
+			main_frame.autoattackbar:SetShown(showAutoAttack)
 		end
 		-- Refresh mob count bar so AOE detection is correct as soon as the row is visible
 		update_mob_count_indicator()
@@ -3673,6 +3683,11 @@ local function on_event(self, event, arg1, arg2, ...)
 		end)
 		
 	elseif event == "PLAYER_ENTERING_WORLD" then
+		autoAttackEngaged = false
+		if C_Spell and C_Spell.IsCurrentSpell then
+			local ok, isCurrent = pcall(C_Spell.IsCurrentSpell, 6603)
+			autoAttackEngaged = ok and isCurrent == true
+		end
 		main_frame.combatbar:SetStatusBarColor(gcdi_safe_unit_affecting_combat("player") and 1 or 0, 0, 0)
 		update_aggro_indicator()
 		update_autoattack_indicator()
@@ -3875,6 +3890,7 @@ local function init()
 			showAggro = true,
 			showMobCount = true,
 			showDispel = true,
+			showAutoAttack = true,
 			mobCountRange = 8,
 			mobCountThreshold = 3,
 		}
@@ -3894,6 +3910,9 @@ local function init()
 	end
 	if settings.gcdSettings.showDispel == nil then
 		settings.gcdSettings.showDispel = true
+	end
+	if settings.gcdSettings.showAutoAttack == nil then
+		settings.gcdSettings.showAutoAttack = true
 	end
 	if settings.gcdSettings.useLibRangeCheck == nil then
 		settings.gcdSettings.useLibRangeCheck = false

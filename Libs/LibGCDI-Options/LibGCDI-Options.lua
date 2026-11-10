@@ -652,6 +652,7 @@ local GCD_INDICATOR_OPTIONS = {
 	{ key = "showAggro", name = "Show Aggro", desc = "Show the threat/aggro indicator", disabled = true },
 	{ key = "showMobCount", name = "Show Mob Count", desc = "Show the nearby mob count indicator" },
 	{ key = "showDispel", name = "Show Dispel", desc = "Show purple when you have a debuff you can dispel on yourself" },
+	{ key = "showAutoAttack", name = "Show Auto Attack", desc = "Show the auto-attack status indicator" },
 }
 
 local function refresh_gcd_tab()
@@ -691,6 +692,7 @@ local function refresh_gcd_tab()
 			showAggro = true,
 			showMobCount = true,
 			showDispel = true,
+			showAutoAttack = true,
 		}
 	end
 	
