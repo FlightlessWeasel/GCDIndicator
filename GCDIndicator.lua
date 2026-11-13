@@ -3812,6 +3812,16 @@ local function on_event(self, event, arg1, arg2, ...)
 			end
 		end
 		
+	elseif event == "UNIT_SPELLCAST_START" then
+		if arg1 == "player" and main_frame.castingbar then
+			main_frame.castingbar:SetStatusBarColor(0, 0.82, 1)
+		end
+
+	elseif event == "UNIT_SPELLCAST_STOP" or event == "UNIT_SPELLCAST_FAILED" or event == "UNIT_SPELLCAST_INTERRUPTED" then
+		if arg1 == "player" and main_frame.castingbar then
+			main_frame.castingbar:SetStatusBarColor(0, 0, 0)
+		end
+
 	elseif event == "UNIT_SPELLCAST_CHANNEL_START" then
 		if arg1 == "player" and main_frame.castingbar then
 			main_frame.castingbar:SetStatusBarColor(1, 0.8, 0)
@@ -4117,6 +4127,10 @@ local function init()
 	main_frame:RegisterUnitEvent("UNIT_MAXPOWER", "player")
 	main_frame:RegisterUnitEvent("UNIT_AURA", "player", "target")
 	main_frame:RegisterUnitEvent("UNIT_SPELLCAST_SUCCEEDED", "player")  -- For manual buff tracking
+	main_frame:RegisterUnitEvent("UNIT_SPELLCAST_START", "player")
+	main_frame:RegisterUnitEvent("UNIT_SPELLCAST_STOP", "player")
+	main_frame:RegisterUnitEvent("UNIT_SPELLCAST_FAILED", "player")
+	main_frame:RegisterUnitEvent("UNIT_SPELLCAST_INTERRUPTED", "player")
 	main_frame:RegisterUnitEvent("UNIT_SPELLCAST_CHANNEL_START", "player")  -- Casting bar yellow while channeling
 	main_frame:RegisterUnitEvent("UNIT_SPELLCAST_CHANNEL_STOP", "player")   -- Casting bar black when done
 	main_frame:RegisterUnitEvent("UNIT_TARGET", "target")  -- So aggro indicator updates when target's target changes
