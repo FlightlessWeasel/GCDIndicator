@@ -522,6 +522,14 @@ local function update_spell_bar(spellID)
 	if not GCDI.is_spell_enabled(spellID) then return end
 	local data = trackedSpells[spellID]
 	if not data then return end
+	if C_Spell and C_Spell.IsSpellUsable then
+		local ok, _, insufficientPower = pcall(C_Spell.IsSpellUsable, spellID)
+		if ok and insufficientPower then
+			data.bar:SetMinMaxValues(0, 1)
+			data.bar:SetValue(1)
+			return
+		end
+	end
 	
 	-- Charge and non-charge spells both read the spell's own cooldown duration: a
 	-- charge spell reports GCD while charges remain and the real cooldown otherwise.
@@ -3594,6 +3602,8 @@ local function on_event(self, event, arg1, arg2, ...)
 		update_all_spell_bars()
 		update_all_charge_indicators()
 		update_all_item_bars()
+	elseif event == "SPELL_UPDATE_USABLE" then
+		update_all_spell_bars()
 		
 	elseif event == "SPELL_UPDATE_CHARGES" then
 		-- Fires immediately when charges change - update both charge indicators AND cooldown bars
@@ -3627,6 +3637,7 @@ local function on_event(self, event, arg1, arg2, ...)
 		
 	elseif event == "UNIT_POWER_UPDATE" or event == "UNIT_POWER_FREQUENT" then
 		if arg1 == "player" then
+			update_all_spell_bars()
 			if arg2 == "MANA" then
 				update_mana_bar()
 			elseif arg2 == "RAGE" then
@@ -4087,6 +4098,7 @@ local function init()
 
 	local events = {
 		"SPELL_UPDATE_COOLDOWN",
+		"SPELL_UPDATE_USABLE",
 		"SPELL_UPDATE_CHARGES",
 		"PLAYER_REGEN_DISABLED",
 		"PLAYER_REGEN_ENABLED", 
