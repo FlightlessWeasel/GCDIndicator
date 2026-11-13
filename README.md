@@ -37,7 +37,7 @@ Displays resource bars below the status indicators:
 Tracks spell and item cooldowns with color-coded indicators:
 - **Green**: Ready and in range
 - **Red**: Out of range
-- **Black**: On cooldown
+- **Black**: On cooldown. Tracked spell indicators also turn black when you lack the resources to cast them.
 - **Grey**: Unavailable
 
 ## Buff Tracking
