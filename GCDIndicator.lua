@@ -59,6 +59,11 @@ local LibRange = LibStub("LibGCDI-Range")
 local deepcopy = LibProfiles.deepcopy
 
 local GCD_SPELL_ID = 61304
+GCDI._gcdState = {
+	isForever = select(4, GetBuildInfo()) >= 16000 and select(4, GetBuildInfo()) < 20000,
+	spellID = GCD_SPELL_ID,
+}
+if GCDI._gcdState.isForever then GCDI._gcdState.spellID = nil end
 local INTERPOLATION = Enum.StatusBarInterpolation.ExponentialEaseOut
 local DIRECTION = Enum.StatusBarTimerDirection.RemainingTime
 
@@ -509,11 +514,49 @@ function GCDI.commit_buff_order(orderedBuffKeys)
 	if buffCatalogManager then buffCatalogManager:CommitOrder(orderedBuffKeys) end
 end
 
+GCDI._gcdState.is_stand_in = function(spellID)
+	local ok, cooldownMS, gcdMS = pcall(GetSpellBaseCooldown, spellID)
+	if not ok or (issecretvalue and (issecretvalue(cooldownMS) or issecretvalue(gcdMS))) then
+		return false
+	end
+	return cooldownMS == 0 and gcdMS ~= nil and gcdMS > 0
+end
+
+GCDI._gcdState.find_stand_in = function()
+	local bank = Enum.SpellBookSpellBank.Player
+	for skillIndex = 1, C_SpellBook.GetNumSpellBookSkillLines() do
+		local skillInfo = C_SpellBook.GetSpellBookSkillLineInfo(skillIndex)
+		if skillInfo then
+			local first = skillInfo.itemIndexOffset + 1
+			local last = first + skillInfo.numSpellBookItems - 1
+			for itemIndex = first, last do
+				local item = C_SpellBook.GetSpellBookItemInfo(itemIndex, bank)
+				if item and item.itemType == Enum.SpellBookItemType.Spell and item.spellID
+					and not item.isPassive and not item.isOffSpec
+					and C_SpellBook.IsSpellKnown(item.spellID, bank)
+					and GCDI._gcdState.is_stand_in(item.spellID) then
+					return item.spellID
+				end
+			end
+		end
+	end
+end
+
+GCDI._gcdState.refresh_spell = function()
+	if not GCDI._gcdState.isForever then return end
+	if C_Spell.GetSpellCooldown(GCD_SPELL_ID) then
+		GCDI._gcdState.spellID = GCD_SPELL_ID
+	else
+		GCDI._gcdState.spellID = GCDI._gcdState.find_stand_in()
+	end
+end
+
 local function update_gcd()
 	if previewMode then return end
-	
-	-- Use duration object (safe API for secret values)
-	local durObj = C_Spell.GetSpellCooldownDuration(GCD_SPELL_ID)
+	if GCDI._gcdState.isForever and not GCDI._gcdState.spellID then
+		GCDI._gcdState.refresh_spell()
+	end
+	local durObj = GCDI._gcdState.spellID and C_Spell.GetSpellCooldownDuration(GCDI._gcdState.spellID)
 	applyTimerToBar(main_frame.gcdbar, durObj)
 end
 
@@ -3769,6 +3812,10 @@ local function on_event(self, event, arg1, arg2, ...)
 	elseif event == "SPELLS_CHANGED" then
 		GCDI.invalidate_action_slot_map()
 		LibRange:InvalidateSpellRangeCache()
+		if GCDI._gcdState.isForever then
+			GCDI._gcdState.refresh_spell()
+			update_gcd()
+		end
 
 	elseif event == "PLAYER_SPECIALIZATION_CHANGED" then
 		-- Removed auto-scan: use /gcdopt scan to manually rescan
