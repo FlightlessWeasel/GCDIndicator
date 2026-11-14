@@ -139,8 +139,6 @@ local RESOURCE_NAMES = {
 local WHITE_TEXTURE = "Interface\\Buttons\\WHITE8X8"
 local function init_status_bar_texture(bar) bar:SetStatusBarTexture(WHITE_TEXTURE) local tex = bar:GetStatusBarTexture() if tex and tex.SetHorizTile then tex:SetHorizTile(false) end end
 local GCDI_PREFIX = "|cff00ff00GCDIndicator:|r "
-local _, _, _, clientInterfaceVersion = GetBuildInfo()
-local isItemBasedSoulShardClient = clientInterfaceVersion < 20000
 
 local RANGE_COLORS = LibRange.RANGE_COLORS
 GCDI.RANGE_ITEMS = LibRange.RANGE_ITEMS
@@ -2052,7 +2050,7 @@ local function update_charge_bar(data, powerType, defaultMax, valueOverride, max
 end
 
 local function update_soul_shards_bar()
-	if isItemBasedSoulShardClient then
+	if select(4, GetBuildInfo()) < 20000 then
 		local count = C_Item.GetItemCount(6265, false, false)
 		update_charge_bar(resourceBars.soulShards, nil, 5, math.min(tonumber(count) or 0, 5), 5)
 	else
@@ -3640,7 +3638,7 @@ local function on_event(self, event, arg1, arg2, ...)
 		
 	elseif event == "BAG_UPDATE" or event == "PLAYER_EQUIPMENT_CHANGED" then
 		update_item_charge_indicators()
-		if event == "BAG_UPDATE" and isItemBasedSoulShardClient then
+		if event == "BAG_UPDATE" and select(4, GetBuildInfo()) < 20000 then
 			update_soul_shards_bar()
 		end
 		
