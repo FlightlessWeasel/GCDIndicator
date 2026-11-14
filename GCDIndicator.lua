@@ -3554,7 +3554,7 @@ function GCDI.rebuild_item_bars()
 end
 
 
--- Status row (GCD/Combat/Aggro/Channeling/Dispel/AOE/stance) has a fixed
+-- Status row (GCD/Combat/Aggro/Casting/Dispel/AOE/stance) has a fixed
 -- structure - Ultra-Compact Mode never adds/removes a box, only shrinks
 -- them - so this resizes the existing frames in place rather than
 -- destroying and recreating them. That matters: the native dispel overlay
@@ -3910,16 +3910,6 @@ local function on_event(self, event, arg1, arg2, ...)
 			main_frame.castingbar:SetStatusBarColor(0, 0, 0)
 		end
 
-	elseif event == "UNIT_SPELLCAST_CHANNEL_START" then
-		if arg1 == "player" and main_frame.castingbar then
-			main_frame.castingbar:SetStatusBarColor(1, 0.8, 0)
-		end
-		
-	elseif event == "UNIT_SPELLCAST_CHANNEL_STOP" then
-		if arg1 == "player" and main_frame.castingbar then
-			main_frame.castingbar:SetStatusBarColor(0, 0, 0)
-		end
-		
 	end
 end
 
@@ -4220,8 +4210,6 @@ local function init()
 	main_frame:RegisterUnitEvent("UNIT_SPELLCAST_STOP", "player")
 	main_frame:RegisterUnitEvent("UNIT_SPELLCAST_FAILED", "player")
 	main_frame:RegisterUnitEvent("UNIT_SPELLCAST_INTERRUPTED", "player")
-	main_frame:RegisterUnitEvent("UNIT_SPELLCAST_CHANNEL_START", "player")  -- Casting bar yellow while channeling
-	main_frame:RegisterUnitEvent("UNIT_SPELLCAST_CHANNEL_STOP", "player")   -- Casting bar black when done
 	main_frame:RegisterUnitEvent("UNIT_TARGET", "target")  -- So aggro indicator updates when target's target changes
 	main_frame:SetScript("OnEvent", on_event)
 
@@ -4496,7 +4484,7 @@ function GCDI.toggle_preview_mode()
 			main_frame.aggrobar:SetValue(100)
 		end
 		if main_frame.castingbar then
-			main_frame.castingbar:SetStatusBarColor(1, 0.8, 0)  -- Yellow = channeling
+			main_frame.castingbar:SetStatusBarColor(0, 0.82, 1)  -- Cyan = casting
 			main_frame.castingbar:SetValue(100)
 		end
 		if main_frame.mobcountbar then

@@ -13,7 +13,6 @@ The top row displays 5 status indicators (left to right):
 | **Combat** | Red | Black |
 | **Aggro** | Orange (has aggro) / Grey (no aggro) | White (no target) |
 | **Casting** | Cyan | Black |
-| **Channeling** | Yellow | Black |
 
 ### Form/Stance Colors
 - **Bear Form**: Brown
