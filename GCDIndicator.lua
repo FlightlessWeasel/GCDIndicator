@@ -139,6 +139,8 @@ local RESOURCE_NAMES = {
 local WHITE_TEXTURE = "Interface\\Buttons\\WHITE8X8"
 local function init_status_bar_texture(bar) bar:SetStatusBarTexture(WHITE_TEXTURE) local tex = bar:GetStatusBarTexture() if tex and tex.SetHorizTile then tex:SetHorizTile(false) end end
 local GCDI_PREFIX = "|cff00ff00GCDIndicator:|r "
+local _, _, _, clientInterfaceVersion = GetBuildInfo()
+local isItemBasedSoulShardClient = clientInterfaceVersion < 20000
 
 local RANGE_COLORS = LibRange.RANGE_COLORS
 GCDI.RANGE_ITEMS = LibRange.RANGE_ITEMS
@@ -2006,16 +2008,23 @@ local function update_runes_bar()
 	end
 end
 
-local function update_charge_bar(data, powerType, defaultMax)
+local function update_charge_bar(data, powerType, defaultMax, valueOverride, maxOverride)
 	if previewMode then return end
 	if not data then return end
 	local bar = data.bar
-	local rawMax = UnitPowerMax("player", powerType)
-	local actualMax = tonumber(rawMax) or 0
-	local max = actualMax == 0 and 2 or math.max(actualMax, 1)
+	local max = maxOverride
+	if not max then
+		local rawMax = UnitPowerMax("player", powerType)
+		local actualMax = tonumber(rawMax) or 0
+		max = actualMax == 0 and 2 or math.max(actualMax, 1)
+	end
 	
 	bar:SetMinMaxValues(0, max)
-	bar:SetValue(UnitPower("player", powerType))
+	if valueOverride ~= nil then
+		bar:SetValue(valueOverride)
+	else
+		bar:SetValue(UnitPower("player", powerType))
+	end
 
 	-- Separator geometry depends only on max, which changes rarely (talents/spec).
 	-- Re-anchoring every pip on every power tick was the bulk of this function.
@@ -2043,7 +2052,12 @@ local function update_charge_bar(data, powerType, defaultMax)
 end
 
 local function update_soul_shards_bar()
-	update_charge_bar(resourceBars.soulShards, Enum.PowerType.SoulShards, 5)
+	if isItemBasedSoulShardClient then
+		local count = C_Item.GetItemCount(6265, false, false)
+		update_charge_bar(resourceBars.soulShards, nil, 5, math.min(tonumber(count) or 0, 5), 5)
+	else
+		update_charge_bar(resourceBars.soulShards, Enum.PowerType.SoulShards, 5)
+	end
 end
 
 local function update_holy_power_bar()
@@ -3626,6 +3640,9 @@ local function on_event(self, event, arg1, arg2, ...)
 		
 	elseif event == "BAG_UPDATE" or event == "PLAYER_EQUIPMENT_CHANGED" then
 		update_item_charge_indicators()
+		if event == "BAG_UPDATE" and isItemBasedSoulShardClient then
+			update_soul_shards_bar()
+		end
 		
 	elseif event == "UNIT_HEALTH" then
 		if arg1 == "player" then
