@@ -522,13 +522,17 @@ local function update_spell_bar(spellID)
 	if not GCDI.is_spell_enabled(spellID) then return end
 	local data = trackedSpells[spellID]
 	if not data then return end
+	local insufficientPower
 	if C_Spell and C_Spell.IsSpellUsable then
-		local ok, _, insufficientPower = pcall(C_Spell.IsSpellUsable, spellID)
-		if ok and insufficientPower then
-			data.bar:SetMinMaxValues(0, 1)
-			data.bar:SetValue(1)
-			return
+		local ok, _, lacksPower = pcall(C_Spell.IsSpellUsable, spellID)
+		if ok then
+			insufficientPower = lacksPower
 		end
+	end
+	if insufficientPower == nil then
+		data.usableIndicator:SetColorTexture(0.28, 0.28, 0.32, 1)
+	else
+		data.usableIndicator:SetColorTexture(0, insufficientPower and 0 or 1, 0, 1)
 	end
 	
 	-- Charge and non-charge spells both read the spell's own cooldown duration: a
@@ -884,13 +888,14 @@ local function create_spell_bar(spellID, spellName, texture, actionSlot)
 	local compact = configs.compactMode or configs.ultraCompactMode
 
 	-- Calculate container width based on spell settings
-	-- Layout: [pad][icon?][2?][cooldown][2][range?][2][charge stack?][2][iconChange?][pad]
+	-- Layout: [pad][icon?][2?][cooldown][2][usable][2][range?][2][charge stack?][2][iconChange?][pad]
 	local chargeWidth = showChargeIndicators and (maxCharges * barSize + (maxCharges - 1) * 2) or 0  -- squares + gaps
 	local extraGap = showChargeIndicators and 2 or 0  -- gap before charges section
 	local iconChangeWidth = trackIcon and (barSize + 2) or 0  -- icon change indicator + gap
 	local rangeWidth = isSelfCast and 0 or (barSize + 2)  -- range indicator + gap (or 0 for self-cast)
+	local usableWidth = barSize + 2
 	local iconWidth = compact and 0 or (barSize + 2)  -- icon square + gap before cooldown (0 in compact mode)
-	local containerWidth = barSize + iconWidth + rangeWidth + chargeWidth + extraGap + iconChangeWidth + pad * 2
+	local containerWidth = barSize + iconWidth + usableWidth + rangeWidth + chargeWidth + extraGap + iconChangeWidth + pad * 2
 
 	local container, icon, clipContainer, bar = create_bar_container(main_frame, texture, compact, barSize, pad)
 	container:SetSize(containerWidth, barSize + pad * 2)
@@ -898,12 +903,20 @@ local function create_spell_bar(spellID, spellName, texture, actionSlot)
 	local rangeBase = nil
 	local rangeOverlay = nil
 	local behindErrorOverlay = nil
-	local lastElement = clipContainer  -- Track what to anchor next element to
+	local usableBorder = container:CreateTexture(nil, "ARTWORK")
+	usableBorder:SetSize(barSize, barSize)
+	usableBorder:SetPoint("LEFT", clipContainer, "RIGHT", 2, 0)
+	usableBorder:SetColorTexture(1, 1, 1, 1)
+	local usableCenter = container:CreateTexture(nil, "OVERLAY")
+	usableCenter:SetPoint("TOPLEFT", usableBorder, "TOPLEFT", 1, -1)
+	usableCenter:SetPoint("BOTTOMRIGHT", usableBorder, "BOTTOMRIGHT", -1, 1)
+	usableCenter:SetColorTexture(0.28, 0.28, 0.32, 1)
+	local lastElement = usableBorder
 	
 	if not isSelfCast then
 		rangeBase = container:CreateTexture(nil, "ARTWORK")
 		rangeBase:SetSize(barSize, barSize)
-		rangeBase:SetPoint("LEFT", clipContainer, "RIGHT", 2, 0)
+		rangeBase:SetPoint("LEFT", usableBorder, "RIGHT", 2, 0)
 		rangeBase:SetColorTexture(1, 1, 1, 1)
 		
 		rangeOverlay = container:CreateTexture(nil, "OVERLAY")
@@ -957,6 +970,7 @@ local function create_spell_bar(spellID, spellName, texture, actionSlot)
 		container = container, 
 		actionSlot = actionSlot,
 		rangeBase = rangeBase,
+		usableIndicator = usableCenter,
 		rangeOverlay = rangeOverlay,
 		behindErrorOverlay = behindErrorOverlay,
 		chargeStackBar = chargeStackBar,
@@ -3676,6 +3690,7 @@ local function on_event(self, event, arg1, arg2, ...)
 	elseif event == "UNIT_MAXPOWER" then
 		if arg1 == "player" then
 			update_all_resources()
+			update_all_spell_bars()
 		end
 		
 	elseif event == "PLAYER_REGEN_DISABLED" then
@@ -4369,6 +4384,7 @@ function GCDI.toggle_preview_mode()
 		
 		-- Set all spell bar indicators to visible colors
 		for spellID, data in pairs(trackedSpells) do
+			data.usableIndicator:SetColorTexture(0, 1, 0, 1)
 			if data.rangeOverlay then
 				data.rangeOverlay:SetColorTexture(0, 1, 0, 1)  -- Green = in range
 			end
