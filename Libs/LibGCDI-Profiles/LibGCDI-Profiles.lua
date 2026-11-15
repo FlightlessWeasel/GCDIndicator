@@ -429,9 +429,9 @@ function lib:AutoSave(settings, catalogs)
 end
 
 -- key -> classFileName tokens (UnitClass("player")'s 2nd return) that can use
--- this resource across all of that class's specs/forms; a key absent from
--- this table (health) applies to every class. Mirrors LibGCDI-Options's
--- RESOURCE_NAMES.classTokens, which drives the Resources tab checkbox rows.
+-- this resource across all of that class's specs/forms; keys absent from
+-- this table (health, petHealth, targetHealth) apply to every class. Mirrors
+-- LibGCDI-Options's RESOURCE_NAMES.classTokens, which drives the Resources tab.
 local RESOURCE_CLASS_TOKENS = {
 	mana = { "MAGE", "PRIEST", "WARLOCK", "PALADIN", "DRUID", "SHAMAN", "MONK", "EVOKER" },
 	rage = { "WARRIOR", "DRUID" },
@@ -465,10 +465,10 @@ end
 lib.ResourceAppliesToClass = resource_applies_to_class
 
 -- Fresh resourceSettings table for `classToken`: enabled for health and every
--- resource that class can use, disabled for everything else. Stagger always
--- starts disabled even for Monks, matching the pre-existing standalone default.
+-- resource that class can use, disabled for everything else. Stagger and unit
+-- health bars start disabled.
 function lib:GetClassResourceDefaults(classToken)
-	local defaults = { health = true, stagger = false }
+	local defaults = { health = true, petHealth = false, targetHealth = false, stagger = false }
 	for key in pairs(RESOURCE_CLASS_TOKENS) do
 		if key ~= "stagger" then
 			defaults[key] = resource_applies_to_class(key, classToken)
