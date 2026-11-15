@@ -1949,7 +1949,7 @@ function GCDI.resourceHealth.update(key, unit)
 		data.bar:SetValue(0)
 		return
 	end
-	local success, percent = pcall(UnitHealthPercent, unit, false)
+	local success, percent = pcall(UnitHealthPercent, unit, false, CurveConstants.ScaleTo100)
 	if success then
 		data.bar:SetValue(percent)
 	else

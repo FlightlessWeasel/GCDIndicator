@@ -62,3 +62,6 @@ Pet/target health updater locals pushed `GCDIndicator.lua` past LuaJIT's
 200-local chunk limit. The main chunk had little headroom; five feature locals
 crossed it. Keep feature-specific helpers under an existing addon namespace
 and use WoW APIs directly when their local aliases would exceed that limit.
+`UnitHealthPercent` also returned a normalized 0..1 value to a 0..100 bar,
+making full-health units appear nearly empty. Pass `CurveConstants.ScaleTo100`
+to the API so it scales the opaque value without arithmetic in addon code.
