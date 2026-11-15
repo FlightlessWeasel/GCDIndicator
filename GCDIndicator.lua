@@ -42,8 +42,6 @@ local InCombatLockdown = InCombatLockdown
 local UnitAffectingCombat = UnitAffectingCombat
 local UnitHealth = UnitHealth
 local UnitHealthMax = UnitHealthMax
-local UnitHealthPercent = UnitHealthPercent
-local UnitExists = UnitExists
 local CreateUnitHealPredictionCalculator = CreateUnitHealPredictionCalculator
 local UnitGetDetailedHealPrediction = UnitGetDetailedHealPrediction
 local UnitPower = UnitPower
@@ -1940,7 +1938,9 @@ local function update_health_bar()
 	end
 end
 
-local function update_unit_health_bar(key, unit)
+GCDI.resourceHealth = {}
+
+function GCDI.resourceHealth.update(key, unit)
 	if previewMode then return end
 	if not GCDI.is_resource_enabled(key) then return end
 	local data = resourceBars[key]
@@ -1957,12 +1957,12 @@ local function update_unit_health_bar(key, unit)
 	end
 end
 
-local function update_pet_health_bar()
-	update_unit_health_bar("petHealth", "pet")
+function GCDI.resourceHealth.update_pet()
+	GCDI.resourceHealth.update("petHealth", "pet")
 end
 
-local function update_target_health_bar()
-	update_unit_health_bar("targetHealth", "target")
+function GCDI.resourceHealth.update_target()
+	GCDI.resourceHealth.update("targetHealth", "target")
 end
 
 local function create_simple_resource_updater(key, powerType)
@@ -2191,8 +2191,8 @@ end
 -- of hitting UnitPowerMax/UnitPower and relaying separators for every resource.
 local RESOURCE_UPDATERS = {
 	{ "health", update_health_bar },
-	{ "petHealth", update_pet_health_bar },
-	{ "targetHealth", update_target_health_bar },
+	{ "petHealth", GCDI.resourceHealth.update_pet },
+	{ "targetHealth", GCDI.resourceHealth.update_target },
 	{ "mana", update_mana_bar },
 	{ "rage", update_rage_bar },
 	{ "energy", update_energy_bar },
@@ -3724,9 +3724,9 @@ local function on_event(self, event, arg1, arg2, ...)
 			update_health_bar()
 			update_stagger_bar()
 		elseif arg1 == "pet" then
-			update_pet_health_bar()
+			GCDI.resourceHealth.update_pet()
 		elseif arg1 == "target" then
-			update_target_health_bar()
+			GCDI.resourceHealth.update_target()
 		end
 		
 	elseif event == "UNIT_MAXHEALTH" then
@@ -3734,9 +3734,9 @@ local function on_event(self, event, arg1, arg2, ...)
 			update_health_bar()
 			update_stagger_bar()
 		elseif arg1 == "pet" then
-			update_pet_health_bar()
+			GCDI.resourceHealth.update_pet()
 		elseif arg1 == "target" then
-			update_target_health_bar()
+			GCDI.resourceHealth.update_target()
 		end
 		
 	elseif event == "UNIT_HEAL_ABSORB_AMOUNT_CHANGED" then
@@ -3867,7 +3867,7 @@ local function on_event(self, event, arg1, arg2, ...)
 
 	elseif event == "PLAYER_TARGET_CHANGED" then
 		update_combo_points_bar()
-		update_target_health_bar()
+		GCDI.resourceHealth.update_target()
 		GCDI.reposition_all()
 		-- Retargeting can otherwise leave a stale fallback range reading (see
 		-- LibGCDI-Range.lua's ResetIndicatorState/cachedFallbackInRange) shown
@@ -3883,7 +3883,7 @@ local function on_event(self, event, arg1, arg2, ...)
 
 	elseif event == "UNIT_PET" then
 		if arg1 == "player" then
-			update_pet_health_bar()
+			GCDI.resourceHealth.update_pet()
 			GCDI.reposition_all()
 		end
 

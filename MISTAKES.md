@@ -57,3 +57,8 @@ against any real content regardless of what occupies that row. Lesson: for
 overlay/marker UI meant to always be visible on top, don't rely on draw
 layer alone when siblings can be full child frames - frame level order
 trumps draw layer between different frames.
+
+Pet/target health updater locals pushed `GCDIndicator.lua` past LuaJIT's
+200-local chunk limit. The main chunk had little headroom; five feature locals
+crossed it. Keep feature-specific helpers under an existing addon namespace
+and use WoW APIs directly when their local aliases would exceed that limit.
