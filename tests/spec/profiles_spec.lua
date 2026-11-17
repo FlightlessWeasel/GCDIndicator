@@ -162,9 +162,21 @@ describe("LibGCDI-Profiles class-appropriate resource defaults", function()
 		assertTrue(defaults.health)
 		assertTrue(defaults.energy)
 		assertTrue(defaults.comboPoints)
+		assertEqual(defaults.petHealth, false)
+		assertEqual(defaults.targetHealth, false)
 		assertFalse(defaults.mana)
 		assertFalse(defaults.rage)
 		assertFalse(defaults.holyPower)
+	end)
+
+	it("pet and target health apply to every class while defaulting off", function()
+		for _, classToken in ipairs({ "ROGUE", "HUNTER", "MAGE", "WARRIOR" }) do
+			assertTrue(lib.ResourceAppliesToClass("petHealth", classToken))
+			assertTrue(lib.ResourceAppliesToClass("targetHealth", classToken))
+		end
+		local defaults = lib:GetClassResourceDefaults("HUNTER")
+		assertEqual(defaults.petHealth, false)
+		assertEqual(defaults.targetHealth, false)
 	end)
 
 	it("GetClassResourceDefaults starts stagger disabled even for Monks", function()

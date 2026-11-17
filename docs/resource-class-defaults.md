@@ -22,7 +22,9 @@ from the saved profile.
 unit-testable under plain Lua):
 
 - `lib:GetClassResourceDefaults(classToken)` — fresh `resourceSettings` table
-  with only health + that class's resources enabled, stagger always off.
+  with player health and that class's resources enabled, stagger always off,
+  and pet/target health disabled by default. Pet and target health apply to
+  every class but remain opt-in so existing HUD layouts do not shift.
 - `lib:EnforceClassResources(settings, classToken)` — disables any
   currently-enabled entry the class can't use; returns `true` if it changed
   anything.

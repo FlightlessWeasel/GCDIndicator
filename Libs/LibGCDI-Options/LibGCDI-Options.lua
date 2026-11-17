@@ -1061,6 +1061,8 @@ end
 -- known statically the way class can.
 local RESOURCE_NAMES = {
 	{ key = "health", name = "Health", color = {0, 0.8, 0}, barType = "continuous", powerType = nil, classes = "All", classTokens = nil },
+	{ key = "petHealth", name = "Pet Health", color = {0.25, 0.65, 1}, barType = "continuous", powerType = nil, classes = "All", classTokens = nil, defaultEnabled = false, percentage = true },
+	{ key = "targetHealth", name = "Target Health", color = {1, 0.25, 0.25}, barType = "continuous", powerType = nil, classes = "All", classTokens = nil, defaultEnabled = false, percentage = true },
 	{ key = "mana", name = "Mana", color = {0, 0.5, 1}, barType = "continuous", powerType = Enum.PowerType.Mana, classes = "Mage, Priest, Warlock, Paladin, Druid, Shaman, Monk, Evoker", classTokens = { "MAGE", "PRIEST", "WARLOCK", "PALADIN", "DRUID", "SHAMAN", "MONK", "EVOKER" } },
 	{ key = "rage", name = "Rage", color = {0.8, 0, 0}, barType = "continuous", powerType = Enum.PowerType.Rage, classes = "Warrior, Druid (Bear)", classTokens = { "WARRIOR", "DRUID" } },
 	{ key = "energy", name = "Energy", color = {1, 0.85, 0}, barType = "continuous", powerType = Enum.PowerType.Energy, classes = "Rogue, Druid (Cat), Monk", classTokens = { "ROGUE", "DRUID", "MONK" } },
@@ -1179,7 +1181,7 @@ local function refresh_resources_tab()
 
 			local isEnabled = settings.resourceSettings[resource.key]
 			if isEnabled == nil then
-				isEnabled = (resource.key ~= "stagger")
+				isEnabled = resource.defaultEnabled ~= false and resource.key ~= "stagger"
 				settings.resourceSettings[resource.key] = isEnabled
 			end
 			checkbox:SetChecked(isEnabled)
@@ -1202,7 +1204,9 @@ local function refresh_resources_tab()
 			nameText:SetText(resource.name)
 
 			local maxValue = 0
-			if resource.key == "health" or resource.key == "stagger" then
+			if resource.percentage then
+				maxValue = 100
+			elseif resource.key == "health" or resource.key == "stagger" then
 				local rawMax = UnitHealthMax("player")
 				maxValue = tonumber(rawMax) or 0
 			elseif resource.powerType then
@@ -1215,7 +1219,8 @@ local function refresh_resources_tab()
 			maxText:SetWidth(40)
 			maxText:SetJustifyH("CENTER")
 			if maxValue > 0 then
-				maxText:SetText("|cffffffff" .. formatNumber(maxValue) .. "|r")
+				local suffix = resource.percentage and "%" or ""
+				maxText:SetText("|cffffffff" .. formatNumber(maxValue) .. suffix .. "|r")
 			else
 				maxText:SetText("|cff666666-|r")
 			end

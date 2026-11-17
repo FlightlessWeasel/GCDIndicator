@@ -26,6 +26,8 @@ The top row displays 5 status indicators (left to right):
 
 Displays resource bars below the status indicators:
 - **Health** (green)
+- **Pet Health** (blue) and **Target Health** (red), optional and disabled by
+  default; enabled rows remain empty when their unit is absent
 - **Rage** (red)
 - **Energy** (yellow)
 - **Combo Points** (segmented orange)

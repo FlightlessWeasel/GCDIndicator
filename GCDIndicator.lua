@@ -122,6 +122,8 @@ local actionBarItems = {}
 
 local RESOURCE_COLORS = {
 	health = { 0.0, 0.8, 0.0 },        -- Green
+	petHealth = { 0.25, 0.65, 1.0 },   -- Blue
+	targetHealth = { 1.0, 0.25, 0.25 }, -- Red
 	mana = { 0.0, 0.5, 1.0 },          -- Blue
 	rage = { 0.8, 0.0, 0.0 },          -- Red
 	energy = { 1.0, 0.85, 0.0 },       -- Yellow
@@ -149,7 +151,7 @@ local RESOURCE_COLORS = {
 -- recolors, not separate bars) and must stay in sync with the
 -- otherResources list in GCDI.reposition_all().
 local RESOURCE_NAMES = {
-	"health", "mana", "rage", "energy", "focus", "runicPower", "runes",
+	"health", "petHealth", "targetHealth", "mana", "rage", "energy", "focus", "runicPower", "runes",
 	"comboPoints", "soulShards", "holyPower", "chi", "arcaneCharges",
 	"insanity", "maelstrom", "fury", "pain", "astralPower", "essence",
 	"stagger",
@@ -1950,6 +1952,33 @@ local function update_health_bar()
 	end
 end
 
+GCDI.resourceHealth = {}
+
+function GCDI.resourceHealth.update(key, unit)
+	if previewMode then return end
+	if not GCDI.is_resource_enabled(key) then return end
+	local data = resourceBars[key]
+	if not data then return end
+	if not UnitExists(unit) then
+		data.bar:SetValue(0)
+		return
+	end
+	local success, percent = pcall(UnitHealthPercent, unit, false, CurveConstants.ScaleTo100)
+	if success then
+		data.bar:SetValue(percent)
+	else
+		data.bar:SetValue(0)
+	end
+end
+
+function GCDI.resourceHealth.update_pet()
+	GCDI.resourceHealth.update("petHealth", "pet")
+end
+
+function GCDI.resourceHealth.update_target()
+	GCDI.resourceHealth.update("targetHealth", "target")
+end
+
 local function create_simple_resource_updater(key, powerType)
 	return function()
 		if previewMode then return end
@@ -2173,9 +2202,11 @@ local function update_stagger_bar()
 end
 
 -- Resource key -> updater, so the sweep can skip bars the user has disabled instead
--- of hitting UnitPowerMax/UnitPower and relaying separators for all 19 every time.
+-- of hitting UnitPowerMax/UnitPower and relaying separators for every resource.
 local RESOURCE_UPDATERS = {
 	{ "health", update_health_bar },
+	{ "petHealth", GCDI.resourceHealth.update_pet },
+	{ "targetHealth", GCDI.resourceHealth.update_target },
 	{ "mana", update_mana_bar },
 	{ "rage", update_rage_bar },
 	{ "energy", update_energy_bar },
@@ -2197,12 +2228,13 @@ local RESOURCE_UPDATERS = {
 }
 
 function GCDI.is_resource_enabled(key)
-	if not settings or not settings.resourceSettings then return true end
+	if not settings or not settings.resourceSettings then
+		return key ~= "petHealth" and key ~= "targetHealth"
+	end
 	local enabled = settings.resourceSettings[key]
-	if enabled == nil then return true end
+	if enabled == nil then return key ~= "petHealth" and key ~= "targetHealth" end
 	return enabled and true or false
 end
-
 
 local function update_all_resources()
 	for i = 1, #RESOURCE_UPDATERS do
@@ -2653,7 +2685,7 @@ function GCDI.reposition_all()
 	end
 	
 	local otherResources = { 
-		"mana", "rage", "energy", "focus", "runicPower", "runes",
+		"petHealth", "targetHealth", "mana", "rage", "energy", "focus", "runicPower", "runes",
 		"comboPoints", "soulShards", "holyPower", "chi", "arcaneCharges",
 		"insanity", "maelstrom", "fury", "pain", "astralPower", "essence",
 		"stagger",
@@ -2803,7 +2835,7 @@ function GCDI.export_bar_positions()
 		add_line("resource", "health", resourceBars.health.container)
 	end
 	local otherResources = {
-		"mana", "rage", "energy", "focus", "runicPower", "runes",
+		"petHealth", "targetHealth", "mana", "rage", "energy", "focus", "runicPower", "runes",
 		"comboPoints", "soulShards", "holyPower", "chi", "arcaneCharges",
 		"insanity", "maelstrom", "fury", "pain", "astralPower", "essence",
 		"stagger",
@@ -2894,7 +2926,7 @@ local GCDI_RESOURCE_IS_CHARGES = {
 }
 -- Same fixed display order GCDI.reposition_all() uses (health first, then this list).
 local GCDI_RESOURCE_ORDER = {
-	"mana", "rage", "energy", "focus", "runicPower", "runes",
+	"petHealth", "targetHealth", "mana", "rage", "energy", "focus", "runicPower", "runes",
 	"comboPoints", "soulShards", "holyPower", "chi", "arcaneCharges",
 	"insanity", "maelstrom", "fury", "pain", "astralPower", "essence",
 	"stagger",
@@ -3041,7 +3073,9 @@ function GCDI.export_companion_config()
 	end
 	for _, name in ipairs(GCDI_RESOURCE_ORDER) do
 		if GCDI.is_resource_enabled(name) then
-			if name == "stagger" then
+			if name == "petHealth" or name == "targetHealth" then
+				table.insert(lines, string.format('\t\t{ name: "%s", min: 0, max: 100 },', name))
+			elseif name == "stagger" then
 				-- No power type - computed as a % of max health, not exportable as min/max/charges.
 				table.insert(lines, string.format('\t\t{ name: "%s" },  ; TODO stagger has no power type, fill in manually', name))
 			else
@@ -3703,12 +3737,20 @@ local function on_event(self, event, arg1, arg2, ...)
 		if arg1 == "player" then
 			update_health_bar()
 			update_stagger_bar()
+		elseif arg1 == "pet" then
+			GCDI.resourceHealth.update_pet()
+		elseif arg1 == "target" then
+			GCDI.resourceHealth.update_target()
 		end
 		
 	elseif event == "UNIT_MAXHEALTH" then
 		if arg1 == "player" then
 			update_health_bar()
 			update_stagger_bar()
+		elseif arg1 == "pet" then
+			GCDI.resourceHealth.update_pet()
+		elseif arg1 == "target" then
+			GCDI.resourceHealth.update_target()
 		end
 		
 	elseif event == "UNIT_HEAL_ABSORB_AMOUNT_CHANGED" then
@@ -3839,6 +3881,8 @@ local function on_event(self, event, arg1, arg2, ...)
 
 	elseif event == "PLAYER_TARGET_CHANGED" then
 		update_combo_points_bar()
+		GCDI.resourceHealth.update_target()
+		GCDI.reposition_all()
 		-- Retargeting can otherwise leave a stale fallback range reading (see
 		-- LibGCDI-Range.lua's ResetIndicatorState/cachedFallbackInRange) shown
 		-- as green/red until a fresh sample happens to overwrite it.
@@ -3850,6 +3894,12 @@ local function on_event(self, event, arg1, arg2, ...)
 		-- Refresh target-debuff bars so a new target doesn't show stale data
 		-- left over from the previous one; deferred like the UNIT_AURA path.
 		schedule_update_all_buff_bars_after_aura()
+
+	elseif event == "UNIT_PET" then
+		if arg1 == "player" then
+			GCDI.resourceHealth.update_pet()
+			GCDI.reposition_all()
+		end
 
 	elseif event == "UNIT_THREAT_SITUATION_UPDATE" then
 		update_aggro_indicator()
@@ -4163,13 +4213,21 @@ local function init()
 	
 	local yOffset = 0
 	local resourceBarHeight = barSize + pad * 2
-	local resources = { "health", "rage", "energy", "comboPoints" }
+	local resources = { "health", "petHealth", "targetHealth", "rage", "energy", "comboPoints" }
 	for _, name in ipairs(resources) do
 		if resourceBars[name] then
-			resourceBars[name].container:ClearAllPoints()
-			resourceBars[name].container:SetPoint("TOPLEFT", anchor, "TOPLEFT", 0, yOffset)
-			resourceBars[name].container:Show()
-			yOffset = yOffset - resourceBarHeight - configs.barSpacing
+			local unitBarEnabled = true
+			if name == "petHealth" or name == "targetHealth" then
+				unitBarEnabled = GCDI.is_resource_enabled(name)
+			end
+			if unitBarEnabled then
+				resourceBars[name].container:ClearAllPoints()
+				resourceBars[name].container:SetPoint("TOPLEFT", anchor, "TOPLEFT", 0, yOffset)
+				resourceBars[name].container:Show()
+				yOffset = yOffset - resourceBarHeight - configs.barSpacing
+			else
+				resourceBars[name].container:Hide()
+			end
 		end
 	end
 	update_all_resources()
@@ -4211,8 +4269,9 @@ local function init()
 	for _, event in ipairs(events) do
 		main_frame:RegisterEvent(event)
 	end
-	main_frame:RegisterUnitEvent("UNIT_HEALTH", "player")
-	main_frame:RegisterUnitEvent("UNIT_MAXHEALTH", "player")
+	main_frame:RegisterUnitEvent("UNIT_HEALTH", "player", "pet", "target")
+	main_frame:RegisterUnitEvent("UNIT_MAXHEALTH", "player", "pet", "target")
+	main_frame:RegisterUnitEvent("UNIT_PET", "player")
 	main_frame:RegisterUnitEvent("UNIT_HEAL_ABSORB_AMOUNT_CHANGED", "player")
 	main_frame:RegisterUnitEvent("UNIT_HEAL_PREDICTION", "player")
 	main_frame:RegisterUnitEvent("UNIT_POWER_UPDATE", "player")
@@ -4399,6 +4458,7 @@ function GCDI.toggle_preview_mode()
 	previewMode = not previewMode
 	
 	if previewMode then
+		GCDI.reposition_all()
 		-- Create background if it doesn't exist
 		if not previewBackground then
 			previewBackground = main_frame:CreateTexture(nil, "BACKGROUND", nil, -8)
@@ -4419,7 +4479,7 @@ function GCDI.toggle_preview_mode()
 		-- IMPORTANT: Set MinMaxValues first, then Value, then Color
 		if resourceBars then
 			local allResources = {
-				"health", "mana", "rage", "energy", "focus", "runicPower", "runes",
+				"health", "petHealth", "targetHealth", "mana", "rage", "energy", "focus", "runicPower", "runes",
 				"comboPoints", "soulShards", "holyPower", "chi", "arcaneCharges",
 				"insanity", "maelstrom", "fury", "pain", "astralPower", "essence",
 				"stagger",
@@ -4526,6 +4586,7 @@ function GCDI.toggle_preview_mode()
 		if previewBackground then
 			previewBackground:Hide()
 		end
+		GCDI.reposition_all()
 
 		-- Preview wrote indicator textures directly, bypassing the change-detection
 		-- caches. Clear them so the updates below actually repaint instead of
