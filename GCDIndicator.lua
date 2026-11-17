@@ -96,6 +96,7 @@ local lastBuffDebugState = {}  -- buffID -> { isActive } for debug-on-change onl
 local spellIDToCooldownID = {}  -- Maps spellID -> cooldownID for frame lookup
 
 local CONSUMABLE_ITEM_IDS = {
+	[5511] = "Lesser Healthstone",
 	[5512] = "Healthstone",
 	[191380] = "Refreshing Healing Potion",
 	[191381] = "Potion of Withering Dreams",
