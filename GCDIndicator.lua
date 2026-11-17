@@ -96,13 +96,26 @@ local lastBuffDebugState = {}  -- buffID -> { isActive } for debug-on-change onl
 local spellIDToCooldownID = {}  -- Maps spellID -> cooldownID for frame lookup
 
 local CONSUMABLE_ITEM_IDS = {
+	[5512] = GCDI._gcdState.isForever and "Minor Healthstone" or "Healthstone",
+	[19004] = "Minor Healthstone",
+	[19005] = "Minor Healthstone",
 	[5511] = "Lesser Healthstone",
-	[5512] = "Healthstone",
+	[19006] = "Lesser Healthstone",
+	[19007] = "Lesser Healthstone",
+	[5509] = "Healthstone",
+	[19008] = "Healthstone",
+	[19009] = "Healthstone",
+	[5510] = "Greater Healthstone",
+	[19010] = "Greater Healthstone",
+	[19011] = "Greater Healthstone",
+	[9421] = "Major Healthstone",
+	[19012] = "Major Healthstone",
+	[19013] = "Major Healthstone",
 	[191380] = "Refreshing Healing Potion",
 	[191381] = "Potion of Withering Dreams",
 	[211878] = "Algari Healing Potion",
 	[212241] = "Cavedweller's Delight",
-	[224464] = "Potion of Unwavering Focus",
+	[224464] = "Demonic Healthstone",
 }
 
 local actionBarItems = {}
