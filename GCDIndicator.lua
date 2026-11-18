@@ -3700,6 +3700,19 @@ end
 -- EVENT HANDLING
 -- ═══════════════════════════════════════════════════════════════════════════
 
+function GCDI.update_casting_indicator(state)
+	local bar = main_frame.castingbar
+	if not bar then return end
+	bar.spellcastState = state
+	if previewMode or state == "casting" then
+		bar:SetStatusBarColor(0, 0.82, 1)
+	elseif state == "channeling" then
+		bar:SetStatusBarColor(1, 0.8, 0)
+	else
+		bar:SetStatusBarColor(0, 0, 0)
+	end
+end
+
 local function on_event(self, event, arg1, arg2, ...)
 	if event == "UI_ERROR_MESSAGE" then
 		local ok, isBehindError = pcall(function()
@@ -3965,13 +3978,23 @@ local function on_event(self, event, arg1, arg2, ...)
 		end
 		
 	elseif event == "UNIT_SPELLCAST_START" then
-		if arg1 == "player" and main_frame.castingbar then
-			main_frame.castingbar:SetStatusBarColor(0, 0.82, 1)
+		if arg1 == "player" then
+			GCDI.update_casting_indicator("casting")
+		end
+
+	elseif event == "UNIT_SPELLCAST_CHANNEL_START" then
+		if arg1 == "player" then
+			GCDI.update_casting_indicator("channeling")
 		end
 
 	elseif event == "UNIT_SPELLCAST_STOP" or event == "UNIT_SPELLCAST_FAILED" or event == "UNIT_SPELLCAST_INTERRUPTED" then
-		if arg1 == "player" and main_frame.castingbar then
-			main_frame.castingbar:SetStatusBarColor(0, 0, 0)
+		if arg1 == "player" and main_frame.castingbar and main_frame.castingbar.spellcastState ~= "channeling" then
+			GCDI.update_casting_indicator(nil)
+		end
+
+	elseif event == "UNIT_SPELLCAST_CHANNEL_STOP" then
+		if arg1 == "player" and main_frame.castingbar and main_frame.castingbar.spellcastState == "channeling" then
+			GCDI.update_casting_indicator(nil)
 		end
 
 	end
@@ -4283,6 +4306,8 @@ local function init()
 	main_frame:RegisterUnitEvent("UNIT_SPELLCAST_STOP", "player")
 	main_frame:RegisterUnitEvent("UNIT_SPELLCAST_FAILED", "player")
 	main_frame:RegisterUnitEvent("UNIT_SPELLCAST_INTERRUPTED", "player")
+	main_frame:RegisterUnitEvent("UNIT_SPELLCAST_CHANNEL_START", "player")
+	main_frame:RegisterUnitEvent("UNIT_SPELLCAST_CHANNEL_STOP", "player")
 	main_frame:RegisterUnitEvent("UNIT_TARGET", "target")  -- So aggro indicator updates when target's target changes
 	main_frame:SetScript("OnEvent", on_event)
 
@@ -4456,6 +4481,9 @@ local previewBackground = nil
 -- Function to toggle preview mode
 function GCDI.toggle_preview_mode()
 	previewMode = not previewMode
+	if main_frame.castingbar then
+		GCDI.update_casting_indicator(main_frame.castingbar.spellcastState)
+	end
 	
 	if previewMode then
 		GCDI.reposition_all()
@@ -4556,10 +4584,6 @@ function GCDI.toggle_preview_mode()
 		if main_frame.aggrobar then
 			main_frame.aggrobar:SetStatusBarColor(1, 0.5, 0)  -- Orange = has aggro
 			main_frame.aggrobar:SetValue(100)
-		end
-		if main_frame.castingbar then
-			main_frame.castingbar:SetStatusBarColor(0, 0.82, 1)  -- Cyan = casting
-			main_frame.castingbar:SetValue(100)
 		end
 		if main_frame.mobcountbar then
 			main_frame.mobcountbar:SetStatusBarColor(1, 1, 1)
