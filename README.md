@@ -12,7 +12,7 @@ The top row displays 5 status indicators (left to right):
 | **GCD** | White | Black |
 | **Combat** | Red | Black |
 | **Aggro** | Orange (has aggro) / Grey (no aggro) | White (no target) |
-| **Casting** | Cyan | Black |
+| **Casting / Channeling** | Cyan while casting, yellow while channeling | Black |
 
 ### Form/Stance Colors
 - **Bear Form**: Brown
