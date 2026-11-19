@@ -87,7 +87,7 @@ local TRACKED_ITEM_TYPES = {
 -- Buff tracking via Cooldown Manager integration
 -- Blizzard's CDM frames: cooldownID is readable; auraInstanceID may be SECRET.
 -- 12.1+: GetAuraDataByAuraInstanceID Lua-errors when auras are secret while tainted.
--- Active = auraInstanceID ~= nil. Stacks/duration: use auraDataCached / GetAuraDuration (tainted-safe).
+-- Active uses auraInstanceID and checks readable target debuff durations for expiry.
 GCDI.buffCatalog = {}
 local trackedBuffs = {}
 local buffBars = {}
@@ -1374,6 +1374,25 @@ local function gcdi_cdm_find_active_frame(cooldownID)
 	return nil
 end
 
+function GCDI.target_has_aura_instance(auraInstanceID)
+	if issecretvalue and issecretvalue(auraInstanceID) then return nil end
+	if not UnitIsVisible("target") then return nil end
+	if not C_UnitAuras.GetUnitAuraInstanceIDs then return nil end
+	local hasOpaqueID = false
+	for _, filter in ipairs({"HARMFUL", "HELPFUL"}) do
+		local ids = C_UnitAuras.GetUnitAuraInstanceIDs("target", filter)
+		for _, id in ipairs(ids) do
+			if issecretvalue and issecretvalue(id) then
+				hasOpaqueID = true
+			elseif id == auraInstanceID then
+				return true
+			end
+		end
+	end
+	if hasOpaqueID then return nil end
+	return false
+end
+
 local function update_buff_bar(buffID)
 	if previewMode then return end
 	if not GCDI.is_buff_enabled(buffID) then return end
@@ -1383,6 +1402,7 @@ local function update_buff_bar(buffID)
 	-- Use Cooldown Manager integration (like ArcUI)
 	-- CDM frames: cooldownID readable; auraInstanceID may be secret (presence = active).
 	local isActive = false
+	local targetDuration
 	
 	local catalogEntry = GCDI.buffCatalog[buffID]
 	local cooldownID = catalogEntry and catalogEntry.cooldownID or buffID
@@ -1408,7 +1428,7 @@ local function update_buff_bar(buffID)
 	-- go; a cached reference can outlive that reassignment (RefreshData hook narrows but
 	-- doesn't close the window). If the frame's own cooldownID no longer matches the one we
 	-- looked it up under, it belongs to a different buff now - do not read state off it.
-	if cdmFrame and cdmFrame.cooldownID and cdmFrame.cooldownID ~= cooldownID then
+	if cdmFrame and cdmFrame.cooldownID ~= cooldownID then
 		cdmFrame = nil
 		lookupMethod = "stale-discarded"
 	end
@@ -1438,7 +1458,26 @@ local function update_buff_bar(buffID)
 			isActive = true
 			data._lastAuraUnit = (cdmFrame.GetAuraDataUnit and cdmFrame:GetAuraDataUnit())
 				or cdmFrame.auraDataUnit
+				or (catalogEntry and catalogEntry.isTargetDebuff and "target")
 				or "player"
+			if (not issecretvalue or not issecretvalue(data._lastAuraUnit)) and data._lastAuraUnit == "target" and C_UnitAuras and C_UnitAuras.GetAuraDuration then
+				local ok, duration = pcall(C_UnitAuras.GetAuraDuration, "target", auraInstanceID)
+				if ok and duration ~= nil then
+					targetDuration = duration
+					-- A cached aura instance can outlive its timer if no removal event arrives.
+					local readable, expired = pcall(function()
+						local total = duration:GetTotalDuration()
+						local remaining = duration:GetRemainingDuration()
+						if issecretvalue and (issecretvalue(total) or issecretvalue(remaining)) then return false end
+						return total > 0 and remaining <= 0
+					end)
+					isActive = not (readable and expired)
+				else
+					-- A removed instance no longer has a duration to query.
+					local readable, present = pcall(GCDI.target_has_aura_instance, auraInstanceID)
+					if readable and present == false then isActive = false end
+				end
+			end
 		end
 	end
 	
@@ -1495,7 +1534,10 @@ local function update_buff_bar(buffID)
 					or data._lastAuraUnit
 					or cdmFrame.auraDataUnit
 					or "player"
-				local ok, durObj = pcall(C_UnitAuras.GetAuraDuration, unit, cdmFrame.auraInstanceID)
+				local ok, durObj = true, targetDuration
+				if not durObj then
+					ok, durObj = pcall(C_UnitAuras.GetAuraDuration, unit, cdmFrame.auraInstanceID)
+				end
 				if ok and durObj then
 					data.durationArmedGeneration = buffAuraUpdateGeneration
 					data.durationBar.bar:SetMinMaxValues(0, 1)
