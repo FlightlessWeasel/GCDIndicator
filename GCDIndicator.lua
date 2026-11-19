@@ -3755,6 +3755,29 @@ function GCDI.update_casting_indicator(state)
 	end
 end
 
+function GCDI.sync_casting_indicator()
+	local bar = main_frame.castingbar
+	if not bar then return end
+	local state
+	if GCDI._gcdState.isForever then
+		state = bar.spellcastState
+		local channelOK, channel = pcall(UnitChannelInfo, "player")
+		if channelOK and not (issecretvalue and issecretvalue(channel)) then
+			if channel then
+				state = "channeling"
+			else
+				local castOK, cast = pcall(UnitCastingInfo, "player")
+				if castOK and not (issecretvalue and issecretvalue(cast)) then
+					state = cast and "casting" or nil
+				end
+			end
+		end
+	end
+	if state ~= bar.spellcastState then
+		GCDI.update_casting_indicator(state)
+	end
+end
+
 local function on_event(self, event, arg1, arg2, ...)
 	if event == "UI_ERROR_MESSAGE" then
 		local ok, isBehindError = pcall(function()
@@ -4031,12 +4054,12 @@ local function on_event(self, event, arg1, arg2, ...)
 
 	elseif event == "UNIT_SPELLCAST_STOP" or event == "UNIT_SPELLCAST_FAILED" or event == "UNIT_SPELLCAST_INTERRUPTED" then
 		if arg1 == "player" and main_frame.castingbar and main_frame.castingbar.spellcastState ~= "channeling" then
-			GCDI.update_casting_indicator(nil)
+			GCDI.sync_casting_indicator()
 		end
 
 	elseif event == "UNIT_SPELLCAST_CHANNEL_STOP" then
 		if arg1 == "player" and main_frame.castingbar and main_frame.castingbar.spellcastState == "channeling" then
-			GCDI.update_casting_indicator(nil)
+			GCDI.sync_casting_indicator()
 		end
 
 	end
@@ -4412,8 +4435,11 @@ local function init()
 		animate_item_bars()
 		update_charge_indicators_tick()
 
-		-- Every 2 ticks (10 Hz): range colors, stagger
+		-- Every 2 ticks (10 Hz): range colors, stagger, Forever cast state
 		if tickCount % 2 == 0 then
+			if GCDI._gcdState.isForever and main_frame.castingbar then
+				GCDI.sync_casting_indicator()
+			end
 			GCDI.UpdateRangeIndicators()
 			update_stagger_bar()
 		end
